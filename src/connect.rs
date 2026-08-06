@@ -1,7 +1,7 @@
 use crate::client::ClientManager;
 use crate::config::local_commit;
-use lan_mouse_ipc::{ClientHandle, DEFAULT_PORT};
-use lan_mouse_proto::{MAX_EVENT_SIZE, ProtoEvent};
+use deskunion_ipc::{ClientHandle, DEFAULT_PORT};
+use deskunion_proto::{Datagram, MAX_DATAGRAM_SIZE, MAX_EVENT_SIZE, ProtoEvent, decode};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
     cell::RefCell,
@@ -26,7 +26,7 @@ use webrtc_dtls::{
 use webrtc_util::Conn;
 
 #[derive(Debug, Error)]
-pub(crate) enum LanMouseConnectionError {
+pub(crate) enum DeskunionConnectionError {
     #[error(transparent)]
     Bind(#[from] io::Error),
     #[error(transparent)]
@@ -46,7 +46,7 @@ const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 async fn connect(
     addr: SocketAddr,
     cert: Certificate,
-) -> Result<(Arc<dyn Conn + Sync + Send>, SocketAddr), (SocketAddr, LanMouseConnectionError)> {
+) -> Result<(Arc<dyn Conn + Sync + Send>, SocketAddr), (SocketAddr, DeskunionConnectionError)> {
     log::info!("connecting to {addr} ...");
     let conn = Arc::new(
         UdpSocket::bind("0.0.0.0:0")
@@ -63,7 +63,7 @@ async fn connect(
     };
     let timeout = tokio::time::sleep(DEFAULT_CONNECTION_TIMEOUT);
     tokio::select! {
-        _ = timeout => Err((addr, LanMouseConnectionError::Timeout)),
+        _ = timeout => Err((addr, DeskunionConnectionError::Timeout)),
         result = DTLSConn::new(conn, config, true, None) => match result {
             Ok(dtls_conn) => Ok((Arc::new(dtls_conn), addr)),
             Err(e) => Err((addr, e.into())),
@@ -74,14 +74,14 @@ async fn connect(
 async fn connect_any(
     addrs: &[SocketAddr],
     cert: Certificate,
-) -> Result<(Arc<dyn Conn + Send + Sync>, SocketAddr), LanMouseConnectionError> {
+) -> Result<(Arc<dyn Conn + Send + Sync>, SocketAddr), DeskunionConnectionError> {
     let mut joinset = JoinSet::new();
     for &addr in addrs {
         joinset.spawn_local(connect(addr, cert.clone()));
     }
     loop {
         match joinset.join_next().await {
-            None => return Err(LanMouseConnectionError::NotConnected),
+            None => return Err(DeskunionConnectionError::NotConnected),
             Some(r) => match r.expect("join error") {
                 Ok(conn) => return Ok(conn),
                 Err((a, e)) => {
@@ -92,7 +92,7 @@ async fn connect_any(
     }
 }
 
-pub(crate) struct LanMouseConnection {
+pub(crate) struct DeskunionConnection {
     cert: Certificate,
     client_manager: ClientManager,
     conns: Rc<Mutex<HashMap<SocketAddr, Arc<dyn Conn + Send + Sync>>>>,
@@ -100,10 +100,15 @@ pub(crate) struct LanMouseConnection {
     recv_rx: Receiver<(ClientHandle, ProtoEvent)>,
     recv_tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
+    audio: crate::config::AudioSettings,
 }
 
-impl LanMouseConnection {
-    pub(crate) fn new(cert: Certificate, client_manager: ClientManager) -> Self {
+impl DeskunionConnection {
+    pub(crate) fn new(
+        cert: Certificate,
+        client_manager: ClientManager,
+        audio: crate::config::AudioSettings,
+    ) -> Self {
         let (recv_tx, recv_rx) = channel();
         Self {
             cert,
@@ -113,6 +118,7 @@ impl LanMouseConnection {
             recv_rx,
             recv_tx,
             ping_response: Default::default(),
+            audio,
         }
     }
 
@@ -124,7 +130,7 @@ impl LanMouseConnection {
         &self,
         event: ProtoEvent,
         handle: ClientHandle,
-    ) -> Result<(), LanMouseConnectionError> {
+    ) -> Result<(), DeskunionConnectionError> {
         let (buf, len): ([u8; MAX_EVENT_SIZE], usize) = event.into();
         let buf = &buf[..len];
         if let Some(addr) = self.client_manager.active_addr(handle) {
@@ -134,7 +140,7 @@ impl LanMouseConnection {
             };
             if let Some(conn) = conn {
                 if !self.client_manager.alive(handle) {
-                    return Err(LanMouseConnectionError::TargetEmulationDisabled);
+                    return Err(DeskunionConnectionError::TargetEmulationDisabled);
                 }
                 match conn.send(buf).await {
                     Ok(_) => {}
@@ -161,12 +167,14 @@ impl LanMouseConnection {
                 self.connecting.clone(),
                 self.recv_tx.clone(),
                 self.ping_response.clone(),
+                self.audio.clone(),
             ));
         }
-        Err(LanMouseConnectionError::NotConnected)
+        Err(DeskunionConnectionError::NotConnected)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_to_handle(
     client_manager: ClientManager,
     cert: Certificate,
@@ -175,7 +183,8 @@ async fn connect_to_handle(
     connecting: Rc<Mutex<HashSet<ClientHandle>>>,
     tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
-) -> Result<(), LanMouseConnectionError> {
+    audio: crate::config::AudioSettings,
+) -> Result<(), DeskunionConnectionError> {
     log::info!("client {handle} connecting ...");
     // sending did not work, figure out active conn.
     if let Some(addrs) = client_manager.get_ips(handle) {
@@ -223,11 +232,12 @@ async fn connect_to_handle(
             conns,
             tx,
             ping_response.clone(),
+            audio,
         ));
         return Ok(());
     }
     connecting.lock().await.remove(&handle);
-    Err(LanMouseConnectionError::NotConnected)
+    Err(DeskunionConnectionError::NotConnected)
 }
 
 async fn ping_pong(
@@ -258,6 +268,7 @@ async fn ping_pong(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn receive_loop(
     client_manager: ClientManager,
     handle: ClientHandle,
@@ -266,11 +277,21 @@ async fn receive_loop(
     conns: Rc<Mutex<HashMap<SocketAddr, Arc<dyn Conn + Send + Sync>>>>,
     tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
+    #[cfg_attr(not(feature = "audio"), allow(unused_variables))]
+    audio: crate::config::AudioSettings,
 ) {
-    let mut buf = [0u8; MAX_EVENT_SIZE];
-    while conn.recv(&mut buf).await.is_ok() {
-        match buf.try_into() {
-            Ok(event) => {
+    let mut buf = [0u8; MAX_DATAGRAM_SIZE];
+    // audio flows emulation -> capture (§3.1 of the audio plan): this
+    // is the capture side, so it's the receiver. One per peer, created
+    // when that peer announces a stream via `AudioControl::Start` and
+    // torn down on `Stop` or disconnect (including implicitly here,
+    // when this function returns and drops it).
+    #[cfg(feature = "audio")]
+    let mut audio_receiver: Option<deskunion_audio::AudioReceiver> = None;
+
+    while let Ok(n) = conn.recv(&mut buf).await {
+        match decode(&buf[..n]) {
+            Ok(Datagram::Event(event)) => {
                 log::trace!("{addr} <==<==<== {event}");
                 match event {
                     ProtoEvent::Pong(b) => {
@@ -282,6 +303,31 @@ async fn receive_loop(
                         client_manager.set_peer_commit(handle, Some(commit));
                     }
                     event => tx.send((handle, event)).expect("channel closed"),
+                }
+            }
+            #[cfg_attr(not(feature = "audio"), allow(unused_variables))]
+            Ok(Datagram::Audio {
+                seq,
+                ts_ms: _,
+                payload_range,
+            }) =>
+            {
+                #[cfg(feature = "audio")]
+                if let Some(receiver) = &audio_receiver {
+                    receiver.push_frame(seq, &buf[payload_range]);
+                }
+            }
+            #[cfg_attr(not(feature = "audio"), allow(unused_variables))]
+            Ok(Datagram::AudioControl(cmd)) =>
+            {
+                #[cfg(feature = "audio")]
+                match cmd {
+                    deskunion_proto::AudioControlCmd::Start { .. } => {
+                        audio_receiver = crate::audio::start_receiver(&audio);
+                    }
+                    deskunion_proto::AudioControlCmd::Stop => {
+                        audio_receiver = None;
+                    }
                 }
             }
             // Skip undecodable datagrams without dropping the

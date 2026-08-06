@@ -1,0 +1,10 @@
+# This system has `clang-libs` (libclang, used by bindgen) but not the
+# `clang` driver binary. Without the driver, bindgen's libclang-only
+# parse doesn't get the implicit resource-dir include path a normal
+# `clang` invocation adds automatically, so bindgen-based build scripts
+# (e.g. libspa-sys/pipewire-sys, pulled in by deskunion-audio's cpal
+# `pipewire` feature) fail to find compiler-builtin headers like
+# stdbool.h. If this starts failing after a base image update, check
+# `ls /usr/lib/clang/*/include` for the current version and adjust.
+[env]
+BINDGEN_EXTRA_CLANG_ARGS = "-I/usr/lib/clang/22/include"

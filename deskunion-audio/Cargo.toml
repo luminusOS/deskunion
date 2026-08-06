@@ -1,0 +1,18 @@
+[package]
+name = "deskunion-audio"
+description = "cross-platform audio capture/playback library used by deskunion"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/luminusOS/deskunion"
+
+[dependencies]
+cpal = { version = "0.18", features = ["pipewire"] }
+log = "0.4"
+thiserror = "2.0"
+ringbuf = "0.4"
+opus = "0.3"
+rubato = "0.16"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.23"

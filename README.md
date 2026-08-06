@@ -1,10 +1,16 @@
-# Lan Mouse
+<p align="center">
+  <img src="deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"
+       alt="Deskunion logo"
+       width="240">
+</p>
 
-[![CI](https://github.com/feschber/lan-mouse/actions/workflows/rust.yml/badge.svg)](https://github.com/feschber/lan-mouse/actions/workflows/rust.yml) [![Cachix](https://github.com/feschber/lan-mouse/actions/workflows/cachix.yml/badge.svg)](https://github.com/feschber/lan-mouse/actions/workflows/cachix.yml) [![Release](https://github.com/feschber/lan-mouse/actions/workflows/release.yml/badge.svg)](https://github.com/feschber/lan-mouse/actions/workflows/release.yml)
+<h1 align="center">Deskunion</h1>
 
-[![crates.io](https://img.shields.io/crates/v/lan-mouse.svg)](https://crates.io/crates/lan-mouse)  [![license](https://img.shields.io/crates/l/lan-mouse.svg)](https://github.com/feschber/lan-mouse/blob/main/Cargo.toml)
+[![CI](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml) [![Cachix](https://github.com/luminusOS/deskunion/actions/workflows/cachix.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/cachix.yml) [![Release](https://github.com/luminusOS/deskunion/actions/workflows/release.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/release.yml)
 
-Lan Mouse is a *cross-platform* mouse and keyboard sharing software similar to universal-control on Apple devices.
+[![crates.io](https://img.shields.io/crates/v/deskunion.svg)](https://crates.io/crates/deskunion)  [![license](https://img.shields.io/crates/l/deskunion.svg)](https://github.com/luminusOS/deskunion/blob/main/Cargo.toml)
+
+Deskunion is a *cross-platform* mouse and keyboard sharing software similar to universal-control on Apple devices.
 It allows for using multiple PCs via a single set of mouse and keyboard.
 This is also known as a Software KVM switch.
 
@@ -16,18 +22,41 @@ Focus lies on performance, ease of use and a maintainable implementation that ca
 ***blazingly fast™*** because it's written in rust.
 
 - _Now with a gtk frontend_
+- _Now with audio streaming (client → server)_
 
 <picture>
     <source media="(prefers-color-scheme: dark)" srcset="/screenshots/dark.png?raw=true">
     <source media="(prefers-color-scheme: light)" srcset="/screenshots/light.png?raw=true">
-    <img alt="Screenshot of Lan-Mouse" srcset="/screenshots/dark.png">
+    <img alt="Screenshot of Deskunion" srcset="/screenshots/dark.png">
 </picture>
 
 
 ## Encryption
 
-Lan Mouse encrypts all network traffic using the DTLS implementation provided by [WebRTC.rs](https://github.com/webrtc-rs/webrtc).
+Deskunion encrypts all network traffic using the DTLS implementation provided by [WebRTC.rs](https://github.com/webrtc-rs/webrtc).
 There are currently no mitigations in place for timing side-channel attacks.
+
+## Audio Streaming
+
+Deskunion can stream a client machine's audio to the server it's connected
+to, so audio plays out of the server's speakers alongside the shared mouse
+and keyboard. Streaming is one-directional (client → server) and opt-in on
+both ends — sending and receiving are toggled independently.
+
+- Codec: Opus, over the same DTLS-encrypted UDP channel used for input
+  events.
+- Capture/playback: [cpal](https://github.com/RustAudio/cpal), which covers
+  PipeWire loopback capture on Linux, WASAPI loopback on Windows, and
+  CoreAudio on macOS 14.6+ (older macOS versions can still capture a
+  microphone, just not system output).
+- A jitter buffer with clock-drift compensation absorbs network jitter and
+  slowly-diverging sender/receiver clocks.
+- Controlled from the gtk frontend's **Audio** page: enable send/receive,
+  pick capture/playback devices, adjust bitrate and jitter buffer size, and
+  watch active streams' latency/loss/level.
+- Built via the `audio` cargo feature (enabled by default); disable it with
+  `--no-default-features` if you don't need it — see
+  [Conditional compilation](#conditional-compilation) below.
 
 ## OS Support
 
@@ -57,24 +86,24 @@ For more detailed information about os support see [Detailed OS Support](#detail
 
 ### Android & IOS
 
-A proof of concept for an Android / IOS Application by [rohitsangwan01](https://github.com/rohitsangwan01) can be found [here](https://github.com/rohitsangwan01/lan-mouse-mobile).
-It can be used as a remote control for any device supported by Lan Mouse.
+A proof of concept for an Android / IOS Application by [rohitsangwan01](https://github.com/rohitsangwan01) can be found [here](https://github.com/rohitsangwan01/deskunion-mobile).
+It can be used as a remote control for any device supported by Deskunion.
 
 ## Installation
 
 <details>
     <summary>Arch Linux</summary>
 
-Lan Mouse can be installed from the [official repositories](https://archlinux.org/packages/extra/x86_64/lan-mouse/):
+Deskunion can be installed from the [official repositories](https://archlinux.org/packages/extra/x86_64/deskunion/):
 
 ```sh
-pacman -S lan-mouse
+pacman -S deskunion
 ```
 
 The prerelease version (following `main`) is available on the AUR:
 
 ```sh
-paru -S lan-mouse-git
+paru -S deskunion-git
 ```
 </details>
 
@@ -82,19 +111,19 @@ paru -S lan-mouse-git
 <details>
     <summary>Nix (OS)</summary>
 
-- nixpkgs: [search.nixos.org](https://search.nixos.org/packages?channel=unstable&show=lan-mouse&from=0&size=50&sort=relevance&type=packages&query=lan-mouse)
+- nixpkgs: [search.nixos.org](https://search.nixos.org/packages?channel=unstable&show=deskunion&from=0&size=50&sort=relevance&type=packages&query=deskunion)
 - flake: [README.md](./nix/README.md)
 </details>
 
 <details>
     <summary>Fedora</summary>
-You can install Lan Mouse from the [Terra Repository](https://terra.fyralabs.com).
+You can install Deskunion from the [Terra Repository](https://terra.fyralabs.com).
 
 
 After enabling Terra:
 
 ```sh
-dnf install lan-mouse
+dnf install deskunion
 ```
 </details>
 
@@ -103,9 +132,9 @@ dnf install lan-mouse
 
 - Download the package for your Mac (Intel or ARM) from the releases page
 - Unzip it
-- Remove the quarantine with `xattr -rd com.apple.quarantine "Lan Mouse.app"`
+- Remove the quarantine with `xattr -rd com.apple.quarantine "Deskunion.app"`
 - Launch the app
-- Use the menu bar item to open the settings window or quit Lan Mouse. Bundled macOS builds run as a menu bar app and do not keep a Dock icon visible.
+- Use the menu bar item to open the settings window or quit Deskunion. Bundled macOS builds run as a menu bar app and do not keep a Dock icon visible.
 - Grant accessibility permissions in System Preferences
 
 </details>
@@ -116,33 +145,33 @@ dnf install lan-mouse
 
 First make sure to [install the necessary dependencies](#installing-dependencies-for-development--compiling-from-source).
 
-Precompiled release binaries for Windows, MacOS and Linux are available in the [releases section](https://github.com/feschber/lan-mouse/releases).
+Precompiled release binaries for Windows, MacOS and Linux are available in the [releases section](https://github.com/luminusOS/deskunion/releases).
 For Windows, the depenedencies are included in the .zip file, for other operating systems see [Installing Dependencies](#installing-dependencies-for-development--compiling-from-source).
 
-Alternatively, the `lan-mouse` binary can be compiled from source (see below).
+Alternatively, the `deskunion` binary can be compiled from source (see below).
 
 ### Installing desktop file, app icon and firewall rules (optional)
 ```sh
-# install lan-mouse (replace path/to/ with the correct path)
-sudo cp path/to/lan-mouse /usr/local/bin/
+# install deskunion (replace path/to/ with the correct path)
+sudo cp path/to/deskunion /usr/local/bin/
 
 # install app icon
 sudo mkdir -p /usr/local/share/icons/hicolor/scalable/apps
-sudo cp lan-mouse-gtk/resources/de.feschber.LanMouse.svg /usr/local/share/icons/hicolor/scalable/apps
+sudo cp deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg /usr/local/share/icons/hicolor/scalable/apps
 
 # update icon cache
 gtk-update-icon-cache /usr/local/share/icons/hicolor/
 
 # install desktop entry
 sudo mkdir -p /usr/local/share/applications
-sudo cp de.feschber.LanMouse.desktop /usr/local/share/applications
+sudo cp io.github.luminusos.DeskUnion.desktop /usr/local/share/applications
 
 # when using firewalld: install firewall rule
-sudo cp firewall/lan-mouse.xml /etc/firewalld/services
+sudo cp firewall/deskunion.xml /etc/firewalld/services
 # -> enable the service in firewalld settings
 ```
 
-Instead of downloading from the releases, the `lan-mouse` binary
+Instead of downloading from the releases, the `deskunion` binary
 can be easily compiled via cargo or nix:
 
 ### Compiling and installing manually:
@@ -150,19 +179,19 @@ can be easily compiled via cargo or nix:
 # compile in release mode
 cargo build --release
 
-# install lan-mouse
-sudo cp target/release/lan-mouse /usr/local/bin/
+# install deskunion
+sudo cp target/release/deskunion /usr/local/bin/
 ```
 
 ### Compiling and installing via cargo:
 ```sh
 # will end up in ~/.cargo/bin
-cargo install lan-mouse
+cargo install deskunion
 ```
 
 ### Compiling and installing via nix:
 ```sh
-# you can find the executable in result/bin/lan-mouse
+# you can find the executable in result/bin/deskunion
 nix-build
 ```
 ### Conditional compilation
@@ -305,7 +334,7 @@ the gtk frontend (see conditional compilation).
 <details>
     <summary>Gtk Frontend</summary>
 
-By default the gtk frontend will open when running `lan-mouse`.
+By default the gtk frontend will open when running `deskunion`.
 
 To connect a device you want to control, simply click the `Add` button and enter the hostname
 of the device.
@@ -326,11 +355,11 @@ If the device still can not be entered, make sure you have UDP port `4242` (or t
 The cli interface can be accessed by passing `cli` as a commandline argument.
 Use
 ```sh
-lan-mouse cli help
+deskunion cli help
 ```
  to list the available commands and
 ```sh
-lan-mouse cli <cmd> help
+deskunion cli <cmd> help
 ```
 for information on how to use a specific command.
 
@@ -339,33 +368,33 @@ for information on how to use a specific command.
 <details>
     <summary>Daemon Mode</summary>
 
-Lan Mouse can be launched in daemon mode to keep it running in the background (e.g. for use in a systemd-service).
+Deskunion can be launched in daemon mode to keep it running in the background (e.g. for use in a systemd-service).
 
 To do so, use the `daemon` subcommand:
 
 ```sh
-lan-mouse daemon
+deskunion daemon
 ```
 </details>
 
 ## Systemd Service
 
-In order to start lan-mouse with a graphical session automatically,
-the [systemd-service](service/lan-mouse.service) can be used:
+In order to start deskunion with a graphical session automatically,
+the [systemd-service](service/deskunion.service) can be used:
 
 Copy the file to `~/.config/systemd/user/` and enable the service:
 
 ```sh
-cp service/lan-mouse.service ~/.config/systemd/user
+cp service/deskunion.service ~/.config/systemd/user
 systemctl --user daemon-reload
-systemctl --user enable --now lan-mouse.service
+systemctl --user enable --now deskunion.service
 ```
 > [!Important]
-> Make sure to point `ExecStart=/usr/bin/lan-mouse daemon` to the actual `lan-mouse` binary (in case it is not under `/usr/bin`, e.g. when installed manually.
+> Make sure to point `ExecStart=/usr/bin/deskunion daemon` to the actual `deskunion` binary (in case it is not under `/usr/bin`, e.g. when installed manually.
 
 
 ## Configuration
-To automatically load clients on startup, the file `$XDG_CONFIG_HOME/lan-mouse/config.toml` is parsed.
+To automatically load clients on startup, the file `$XDG_CONFIG_HOME/deskunion/config.toml` is parsed.
 `$XDG_CONFIG_HOME` defaults to `~/.config/`.
 
 To create this file you can copy the following example config:
@@ -396,7 +425,7 @@ port = 4242
 position = "right"
 # hostname
 hostname = "iridium"
-# activate this client immediately when lan-mouse is started
+# activate this client immediately when deskunion is started
 activate_on_startup = true
 # optional list of (known) ip addresses
 ips = ["192.168.178.156"]
@@ -439,7 +468,7 @@ a supported **input-emulation** *and* **input-capture** backend.
 
 A suitable backend is chosen automatically based on the active desktop environment / compositor.
 
-The following sections detail the emulation and capture backends provided by lan-mouse and their support in desktop environments / operating systems.
+The following sections detail the emulation and capture backends provided by deskunion and their support in desktop environments / operating systems.
 
 ### Input Emulation Support
 

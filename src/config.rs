@@ -16,8 +16,8 @@ use thiserror::Error;
 use toml;
 use toml_edit::{self, DocumentMut};
 
-use lan_mouse_cli::CliArgs;
-use lan_mouse_ipc::{DEFAULT_PORT, Position};
+use deskunion_cli::CliArgs;
+use deskunion_ipc::{DEFAULT_PORT, Position};
 
 use input_event::scancode::{
     self,
@@ -29,7 +29,7 @@ use shadow_rs::shadow;
 shadow!(build);
 
 /// Local build's 8-byte ASCII short commit hash, suitable for use
-/// in [`lan_mouse_proto::ProtoEvent::Hello`]. Pads with `'?'` if
+/// in [`deskunion_proto::ProtoEvent::Hello`]. Pads with `'?'` if
 /// shadow_rs returns an unexpected length so the field is always
 /// well-formed on the wire.
 pub fn local_commit() -> [u8; 8] {
@@ -41,21 +41,21 @@ pub fn local_commit() -> [u8; 8] {
 }
 
 const CONFIG_FILE_NAME: &str = "config.toml";
-const CERT_FILE_NAME: &str = "lan-mouse.pem";
+const CERT_FILE_NAME: &str = "deskunion.pem";
 
 fn default_path() -> Result<PathBuf, VarError> {
     #[cfg(unix)]
     let default_path = {
         let xdg_config_home =
             env::var("XDG_CONFIG_HOME").unwrap_or(format!("{}/.config", env::var("HOME")?));
-        format!("{xdg_config_home}/lan-mouse/")
+        format!("{xdg_config_home}/deskunion/")
     };
 
     #[cfg(not(unix))]
     let default_path = {
         let app_data =
             env::var("LOCALAPPDATA").unwrap_or(format!("{}/.config", env::var("USERPROFILE")?));
-        format!("{app_data}\\lan-mouse\\")
+        format!("{app_data}\\deskunion\\")
     };
     Ok(PathBuf::from(default_path))
 }
@@ -69,6 +69,24 @@ struct ConfigToml {
     cert_path: Option<PathBuf>,
     clients: Option<Vec<TomlClient>>,
     authorized_fingerprints: Option<HashMap<String, String>>,
+    audio: Option<AudioConfigToml>,
+}
+
+/// `[audio]` section — see `deskunion/DESKUNION_AUDIO_PLAN.md` §5.3.
+/// All fields `Option` with defaults, same convention as the rest of
+/// `ConfigToml`, so old config files keep loading unchanged.
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq)]
+struct AudioConfigToml {
+    /// send this machine's audio to connected peers (emulation side)
+    send: Option<bool>,
+    /// play audio received from peers (capture side)
+    receive: Option<bool>,
+    bitrate: Option<u32>,
+    buffer_ms: Option<u32>,
+    /// `None` = system default
+    capture_device: Option<String>,
+    /// `None` = system default
+    playback_device: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Eq, PartialEq)]
@@ -92,7 +110,7 @@ impl ConfigToml {
 #[derive(Parser, Debug)]
 #[command(author, version=build::CLAP_LONG_VERSION, about, long_about = None)]
 struct Args {
-    /// the listen port for lan-mouse
+    /// the listen port for deskunion
     #[arg(short, long)]
     port: Option<u16>,
 
@@ -123,7 +141,7 @@ pub enum Command {
     TestEmulation(TestEmulationArgs),
     /// test input capture
     TestCapture(TestCaptureArgs),
-    /// Lan Mouse commandline interface
+    /// Deskunion commandline interface
     Cli(CliArgs),
     /// run in daemon mode
     Daemon,
@@ -338,6 +356,21 @@ pub enum ConfigError {
 const DEFAULT_RELEASE_KEYS: [scancode::Linux; 4] =
     [KeyLeftCtrl, KeyLeftShift, KeyLeftMeta, KeyLeftAlt];
 
+const DEFAULT_AUDIO_BITRATE: u32 = 96_000;
+const DEFAULT_AUDIO_BUFFER_MS: u32 = 80;
+
+/// resolved (defaults-applied) audio settings — see
+/// `deskunion/DESKUNION_AUDIO_PLAN.md` §5.3.
+#[derive(Clone, Debug)]
+pub struct AudioSettings {
+    pub send: bool,
+    pub receive: bool,
+    pub bitrate: u32,
+    pub buffer_ms: u32,
+    pub capture_device: Option<String>,
+    pub playback_device: Option<String>,
+}
+
 impl Config {
     pub fn new() -> Result<Self, ConfigError> {
         let args = Args::parse();
@@ -486,6 +519,25 @@ impl Config {
             .collect()
     }
 
+    /// resolved audio settings (defaults applied)
+    pub fn audio_settings(&self) -> AudioSettings {
+        let toml = self.config_toml.as_ref().and_then(|c| c.audio.clone());
+        AudioSettings {
+            send: toml.as_ref().and_then(|a| a.send).unwrap_or(true),
+            receive: toml.as_ref().and_then(|a| a.receive).unwrap_or(true),
+            bitrate: toml
+                .as_ref()
+                .and_then(|a| a.bitrate)
+                .unwrap_or(DEFAULT_AUDIO_BITRATE),
+            buffer_ms: toml
+                .as_ref()
+                .and_then(|a| a.buffer_ms)
+                .unwrap_or(DEFAULT_AUDIO_BUFFER_MS),
+            capture_device: toml.as_ref().and_then(|a| a.capture_device.clone()),
+            playback_device: toml.and_then(|a| a.playback_device),
+        }
+    }
+
     /// release bind for returning control to the host
     pub fn release_bind(&self) -> Vec<scancode::Linux> {
         self.config_toml
@@ -504,6 +556,21 @@ impl Config {
         }
         self.config_toml.as_mut().expect("config").clients =
             Some(clients.into_iter().map(|c| c.into()).collect::<Vec<_>>());
+    }
+
+    /// update audio settings (send/receive/bitrate/buffer_ms/devices)
+    pub fn set_audio_settings(&mut self, settings: AudioSettings) {
+        if self.config_toml.is_none() {
+            self.config_toml = Some(Default::default());
+        }
+        self.config_toml.as_mut().expect("config").audio = Some(AudioConfigToml {
+            send: Some(settings.send),
+            receive: Some(settings.receive),
+            bitrate: Some(settings.bitrate),
+            buffer_ms: Some(settings.buffer_ms),
+            capture_device: settings.capture_device,
+            playback_device: settings.playback_device,
+        });
     }
 
     /// set authorized keys

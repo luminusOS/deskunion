@@ -78,7 +78,7 @@ pub async fn connect_async(
     Ok((reader, writer))
 }
 
-/// wait for the lan-mouse socket to come online
+/// wait for the deskunion socket to come online
 #[cfg(unix)]
 async fn wait_for_service() -> Result<UnixStream, ConnectionError> {
     let socket_path = crate::default_socket_path()?;

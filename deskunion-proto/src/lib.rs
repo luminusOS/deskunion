@@ -7,6 +7,12 @@ use std::{
 };
 use thiserror::Error;
 
+mod datagram;
+
+pub use datagram::{
+    AudioControlCmd, Datagram, DatagramRef, MAX_DATAGRAM_SIZE, decode, encode_into,
+};
+
 /// defines the maximum size an encoded event can take up
 /// this is currently the pointer motion event
 /// type: u8, time: u32, dx: f64, dy: f64
@@ -21,6 +27,22 @@ pub enum ProtocolError {
     /// position type does not exist
     #[error("invalid event id: `{0}`")]
     InvalidPosition(#[from] TryFromPrimitiveError<Position>),
+    /// datagram is shorter than the (variable-length) event requires
+    #[error("truncated datagram: `{0}` bytes")]
+    Truncated(usize),
+    /// audio event with an empty payload
+    #[error("invalid audio payload length: `{0}`")]
+    InvalidAudioLength(u16),
+    /// audio control command does not exist
+    #[error("invalid audio control command: `{0}`")]
+    InvalidAudioControlCmd(u8),
+    /// output buffer too small for encoding
+    #[error("buffer too small: need `{needed}` bytes, have `{have}`")]
+    BufferTooSmall { needed: usize, have: usize },
+    /// variable-length event fed through the fixed-size legacy path;
+    /// these must go through [`crate::decode`]
+    #[error("event type `{0:?}` must be decoded via `decode()`")]
+    UnexpectedVariableEvent(EventType),
 }
 
 /// Position of a client
@@ -45,7 +67,7 @@ impl Display for Position {
     }
 }
 
-/// main lan-mouse protocol event type
+/// main deskunion protocol event type
 #[derive(Clone, Copy, Debug)]
 pub enum ProtoEvent {
     /// notify a client that the cursor entered its region at the given position
@@ -97,21 +119,25 @@ impl Display for ProtoEvent {
     }
 }
 
-#[derive(TryFromPrimitive, IntoPrimitive)]
+#[derive(Debug, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum EventType {
-    PointerMotion,
-    PointerButton,
-    PointerAxis,
-    PointerAxisValue120,
-    KeyboardKey,
-    KeyboardModifiers,
-    Ping,
-    Pong,
-    Enter,
-    Leave,
-    Ack,
-    Hello,
+    PointerMotion = 0,
+    PointerButton = 1,
+    PointerAxis = 2,
+    PointerAxisValue120 = 3,
+    KeyboardKey = 4,
+    KeyboardModifiers = 5,
+    Ping = 6,
+    Pong = 7,
+    Enter = 8,
+    Leave = 9,
+    Ack = 10,
+    Hello = 11,
+    /// variable-length Opus audio frame, see [`crate::Datagram`]
+    Audio = 12,
+    /// audio stream control (start/stop), see [`crate::AudioControlCmd`]
+    AudioControl = 13,
 }
 
 impl ProtoEvent {
@@ -195,6 +221,9 @@ impl TryFrom<[u8; MAX_EVENT_SIZE]> for ProtoEvent {
                     *b = decode_u8(&mut buf)?;
                 }
                 Ok(Self::Hello { commit })
+            }
+            variant @ (EventType::Audio | EventType::AudioControl) => {
+                Err(ProtocolError::UnexpectedVariableEvent(variant))
             }
         }
     }

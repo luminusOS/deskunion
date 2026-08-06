@@ -40,7 +40,7 @@ pub enum IpcListenerCreationError {
     SocketPath(#[from] SocketPathError),
     #[error("service already running!")]
     AlreadyRunning,
-    #[error("failed to bind lan-mouse socket: `{0}`")]
+    #[error("failed to bind deskunion socket: `{0}`")]
     Bind(io::Error),
 }
 
@@ -223,6 +223,44 @@ pub enum FrontendEvent {
     IncomingDisconnected(SocketAddr),
     /// failed connection attempt (approval for fingerprint required)
     ConnectionAttempt { fingerprint: String },
+    /// current audio settings/capability
+    AudioStatus {
+        send: bool,
+        receive: bool,
+        bitrate: u32,
+        buffer_ms: u32,
+        /// false when the OS backend can't do system-output loopback
+        /// (e.g. macOS < 14.6) — the UI shows a warning banner
+        loopback_supported: bool,
+    },
+    /// available audio devices, for the capture/playback pickers
+    AudioDevices {
+        capture: Vec<AudioDeviceInfo>,
+        playback: Vec<AudioDeviceInfo>,
+    },
+    /// per-peer audio stream status, for the "active streams" list
+    AudioStream {
+        addr: SocketAddr,
+        active: bool,
+        latency_ms: u32,
+        packets_lost: u64,
+        /// normalized 0.0..=1.0 for the VU meter
+        level: f32,
+    },
+    /// an audio-specific error, optionally scoped to one peer
+    AudioError {
+        addr: Option<SocketAddr>,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioDeviceInfo {
+    pub id: String,
+    pub name: String,
+    /// true if this is a loopback/monitor (system-output) source
+    pub is_monitor: bool,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
@@ -261,6 +299,18 @@ pub enum FrontendRequest {
     UpdateEnterHook(u64, Option<String>),
     /// save config file
     SaveConfiguration,
+    /// enable/disable sending this machine's audio to peers
+    SetAudioSend(bool),
+    /// enable/disable playing audio received from peers
+    SetAudioReceive(bool),
+    /// update codec/buffer parameters
+    UpdateAudioSettings { bitrate: u32, buffer_ms: u32 },
+    /// select the audio capture device (`None` = system default)
+    SetAudioCaptureDevice(Option<String>),
+    /// select the audio playback device (`None` = system default)
+    SetAudioPlaybackDevice(Option<String>),
+    /// request enumeration of available audio devices
+    EnumerateAudioDevices,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -280,7 +330,7 @@ impl From<Status> for bool {
 }
 
 #[cfg(unix)]
-const LAN_MOUSE_SOCKET_NAME: &str = "lan-mouse-socket.sock";
+const DESKUNION_SOCKET_NAME: &str = "deskunion-socket.sock";
 
 #[derive(Debug, Error)]
 pub enum SocketPathError {
@@ -294,7 +344,7 @@ pub enum SocketPathError {
 pub fn default_socket_path() -> Result<PathBuf, SocketPathError> {
     let xdg_runtime_dir =
         env::var("XDG_RUNTIME_DIR").map_err(SocketPathError::XdgRuntimeDirNotFound)?;
-    Ok(Path::new(xdg_runtime_dir.as_str()).join(LAN_MOUSE_SOCKET_NAME))
+    Ok(Path::new(xdg_runtime_dir.as_str()).join(DESKUNION_SOCKET_NAME))
 }
 
 #[cfg(all(unix, target_os = "macos"))]
@@ -303,5 +353,5 @@ pub fn default_socket_path() -> Result<PathBuf, SocketPathError> {
     Ok(Path::new(home.as_str())
         .join("Library")
         .join("Caches")
-        .join(LAN_MOUSE_SOCKET_NAME))
+        .join(DESKUNION_SOCKET_NAME))
 }

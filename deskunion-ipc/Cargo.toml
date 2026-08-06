@@ -1,10 +1,10 @@
 [package]
-name = "lan-mouse-ipc"
-description = "library for communication between lan-mouse service and frontends"
-version = "0.3.0"
+name = "deskunion-ipc"
+description = "library for communication between deskunion service and frontends"
+version = "0.4.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/feschber/lan-mouse"
+repository = "https://github.com/luminusOS/deskunion"
 
 [dependencies]
 futures = "0.3.30"

@@ -56,7 +56,7 @@ pub fn connect() -> Result<(FrontendEventReader, FrontendRequestWriter), Connect
     Ok((reader, writer))
 }
 
-/// wait for the lan-mouse socket to come online
+/// wait for the deskunion socket to come online
 #[cfg(unix)]
 fn wait_for_service() -> Result<UnixStream, ConnectionError> {
     let socket_path = crate::default_socket_path()?;

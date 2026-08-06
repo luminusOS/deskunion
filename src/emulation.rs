@@ -1,9 +1,9 @@
 use crate::config::local_commit;
-use crate::listen::{LanMouseListener, ListenEvent, ListenerCreationError};
+use crate::listen::{DeskunionListener, ListenEvent, ListenerCreationError};
+use deskunion_proto::{Position, ProtoEvent};
 use futures::StreamExt;
 use input_emulation::{EmulationHandle, InputEmulation, InputEmulationError};
 use input_event::Event;
-use lan_mouse_proto::{Position, ProtoEvent};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
     cell::Cell,
@@ -37,7 +37,7 @@ pub(crate) enum EmulationEvent {
         /// address of the connection
         addr: SocketAddr,
         /// position of the connection
-        pos: lan_mouse_ipc::Position,
+        pos: deskunion_ipc::Position,
         /// certificate fingerprint of the connection
         fingerprint: String,
     },
@@ -76,7 +76,7 @@ enum EmulationRequest {
 impl Emulation {
     pub(crate) fn new(
         backend: Option<input_emulation::Backend>,
-        listener: LanMouseListener,
+        listener: DeskunionListener,
     ) -> Self {
         let emulation_proxy = EmulationProxy::new(backend);
         let (request_tx, request_rx) = channel();
@@ -130,7 +130,7 @@ impl Emulation {
 }
 
 struct ListenTask {
-    listener: LanMouseListener,
+    listener: DeskunionListener,
     emulation_proxy: EmulationProxy,
     request_rx: Receiver<EmulationRequest>,
     event_tx: Sender<EmulationEvent>,
@@ -410,12 +410,12 @@ impl EmulationTask {
     }
 }
 
-fn to_ipc_pos(pos: Position) -> lan_mouse_ipc::Position {
+fn to_ipc_pos(pos: Position) -> deskunion_ipc::Position {
     match pos {
-        Position::Left => lan_mouse_ipc::Position::Left,
-        Position::Right => lan_mouse_ipc::Position::Right,
-        Position::Top => lan_mouse_ipc::Position::Top,
-        Position::Bottom => lan_mouse_ipc::Position::Bottom,
+        Position::Left => deskunion_ipc::Position::Left,
+        Position::Right => deskunion_ipc::Position::Right,
+        Position::Top => deskunion_ipc::Position::Top,
+        Position::Bottom => deskunion_ipc::Position::Bottom,
     }
 }
 

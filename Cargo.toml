@@ -3,19 +3,20 @@ members = [
     "input-capture",
     "input-emulation",
     "input-event",
-    "lan-mouse-ipc",
-    "lan-mouse-cli",
-    "lan-mouse-gtk",
-    "lan-mouse-proto",
+    "deskunion-ipc",
+    "deskunion-cli",
+    "deskunion-gtk",
+    "deskunion-proto",
+    "deskunion-audio",
 ]
 
 [package]
-name = "lan-mouse"
+name = "deskunion"
 description = "Software KVM Switch / mouse & keyboard sharing software for Local Area Networks"
 version = "0.11.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/feschber/lan-mouse"
+repository = "https://github.com/luminusOS/deskunion"
 
 [profile.release]
 codegen-units = 1
@@ -30,10 +31,11 @@ shadow-rs = "1.2.0"
 input-event = { path = "input-event", version = "0.4.0" }
 input-emulation = { path = "input-emulation", version = "0.4.0", default-features = false }
 input-capture = { path = "input-capture", version = "0.4.0", default-features = false }
-lan-mouse-cli = { path = "lan-mouse-cli", version = "0.3.0" }
-lan-mouse-gtk = { path = "lan-mouse-gtk", version = "0.3.0", optional = true }
-lan-mouse-ipc = { path = "lan-mouse-ipc", version = "0.3.0" }
-lan-mouse-proto = { path = "lan-mouse-proto", version = "0.3.0" }
+deskunion-cli = { path = "deskunion-cli", version = "0.3.0" }
+deskunion-gtk = { path = "deskunion-gtk", version = "0.3.0", optional = true }
+deskunion-ipc = { path = "deskunion-ipc", version = "0.4.0" }
+deskunion-proto = { path = "deskunion-proto", version = "0.4.0" }
+deskunion-audio = { path = "deskunion-audio", version = "0.1.0", optional = true }
 shadow-rs = { version = "1.2.0", features = ["metadata"] }
 
 toml = "0.8"
@@ -74,6 +76,7 @@ libc = "0.2.148"
 [features]
 default = [
     "gtk",
+    "audio",
     "layer_shell_capture",
     "x11_capture",
     "libei_capture",
@@ -82,7 +85,8 @@ default = [
     "rdp_emulation",
     "x11_emulation",
 ]
-gtk = ["dep:lan-mouse-gtk"]
+gtk = ["dep:deskunion-gtk"]
+audio = ["dep:deskunion-audio"]
 layer_shell_capture = ["input-capture/layer_shell"]
 x11_capture = ["input-capture/x11"]
 libei_capture = ["input-event/libei", "input-capture/libei"]
@@ -92,9 +96,9 @@ x11_emulation = ["input-emulation/x11"]
 rdp_emulation = ["input-emulation/remote_desktop_portal"]
 
 [package.metadata.bundle]
-name = "Lan Mouse"
-icon = ["target/icon.icns", "lan-mouse-gtk/resources/de.feschber.LanMouse.svg"]
-identifier = "de.feschber.LanMouse"
+name = "Deskunion"
+icon = ["target/icon.icns", "deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"]
+identifier = "io.github.luminusos.DeskUnion"
 deb_depends = [ "libadwaita-1-0" ]
 osx_info_plist_exts = ["build-aux/macos-lsui-element.plist"]
 resources = ["target/menubar-template.png"]

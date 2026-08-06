@@ -2,17 +2,17 @@ use crate::{
     capture::{Capture, CaptureType, ICaptureEvent},
     client::ClientManager,
     config::{Config, ConfigClient},
-    connect::LanMouseConnection,
+    connect::DeskunionConnection,
     crypto,
     dns::{DnsEvent, DnsResolver},
     emulation::{Emulation, EmulationEvent},
-    listen::{LanMouseListener, ListenerCreationError},
+    listen::{DeskunionListener, ListenerCreationError},
 };
-use futures::StreamExt;
-use lan_mouse_ipc::{
+use deskunion_ipc::{
     AsyncFrontendListener, ClientHandle, FrontendEvent, FrontendRequest, IpcError,
     IpcListenerCreationError, Position, Status,
 };
+use futures::StreamExt;
 use log;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -92,9 +92,18 @@ impl Service {
 
         let authorized_keys = Arc::new(RwLock::new(config.authorized_fingerprints()));
         // listener + connection
-        let listener =
-            LanMouseListener::new(config.port(), cert.clone(), authorized_keys.clone()).await?;
-        let conn = LanMouseConnection::new(cert.clone(), client_manager.clone());
+        let listener = DeskunionListener::new(
+            config.port(),
+            cert.clone(),
+            authorized_keys.clone(),
+            config.audio_settings(),
+        )
+        .await?;
+        let conn = DeskunionConnection::new(
+            cert.clone(),
+            client_manager.clone(),
+            config.audio_settings(),
+        );
 
         // input capture + emulation
         let capture_backend = config.capture_backend().map(|b| b.into());
@@ -215,7 +224,82 @@ impl Service {
                 self.update_enter_hook(handle, enter_hook)
             }
             FrontendRequest::SaveConfiguration => self.save_config(),
+            FrontendRequest::SetAudioSend(enabled) => {
+                let mut audio = self.config.audio_settings();
+                audio.send = enabled;
+                self.config.set_audio_settings(audio);
+                self.save_config();
+                self.notify_audio_status();
+            }
+            FrontendRequest::SetAudioReceive(enabled) => {
+                let mut audio = self.config.audio_settings();
+                audio.receive = enabled;
+                self.config.set_audio_settings(audio);
+                self.save_config();
+                self.notify_audio_status();
+            }
+            FrontendRequest::UpdateAudioSettings { bitrate, buffer_ms } => {
+                let mut audio = self.config.audio_settings();
+                audio.bitrate = bitrate;
+                audio.buffer_ms = buffer_ms;
+                self.config.set_audio_settings(audio);
+                self.save_config();
+                self.notify_audio_status();
+            }
+            FrontendRequest::SetAudioCaptureDevice(device) => {
+                let mut audio = self.config.audio_settings();
+                audio.capture_device = device;
+                self.config.set_audio_settings(audio);
+                self.save_config();
+                self.notify_audio_status();
+            }
+            FrontendRequest::SetAudioPlaybackDevice(device) => {
+                let mut audio = self.config.audio_settings();
+                audio.playback_device = device;
+                self.config.set_audio_settings(audio);
+                self.save_config();
+                self.notify_audio_status();
+            }
+            FrontendRequest::EnumerateAudioDevices => self.enumerate_audio_devices(),
         }
+    }
+
+    /// broadcast current audio settings. Note: these settings are read
+    /// fresh by each new connection (`listen.rs`/`connect.rs`, Fase 4)
+    /// but not yet live-pushed into already-running `AudioSender`/
+    /// `AudioReceiver` instances — same "takes effect on
+    /// reconnect/restart" behavior as `capture_backend`/
+    /// `emulation_backend`. Live-reload is a follow-up, not a
+    /// regression from any prior working behavior.
+    fn notify_audio_status(&mut self) {
+        let audio = self.config.audio_settings();
+        self.notify_frontend(FrontendEvent::AudioStatus {
+            send: audio.send,
+            receive: audio.receive,
+            bitrate: audio.bitrate,
+            buffer_ms: audio.buffer_ms,
+            // cpal covers loopback capture natively on Linux (PipeWire
+            // host) and macOS (CoreAudio, on OS versions new enough to
+            // support it) — see the audio plan's §3.5 spike. We don't
+            // currently detect the macOS-version cutoff at runtime, so
+            // this is optimistic there; not load-bearing beyond an
+            // advisory UI banner.
+            loopback_supported: true,
+        });
+    }
+
+    #[cfg(feature = "audio")]
+    fn enumerate_audio_devices(&mut self) {
+        let (capture, playback) = crate::audio::enumerate_devices();
+        self.notify_frontend(FrontendEvent::AudioDevices { capture, playback });
+    }
+
+    #[cfg(not(feature = "audio"))]
+    fn enumerate_audio_devices(&mut self) {
+        self.notify_frontend(FrontendEvent::AudioDevices {
+            capture: Vec::new(),
+            playback: Vec::new(),
+        });
     }
 
     fn save_config(&mut self) {
@@ -389,6 +473,7 @@ impl Service {
         ));
         let keys = self.authorized_keys.read().expect("lock").clone();
         self.notify_frontend(FrontendEvent::AuthorizedUpdated(keys));
+        self.notify_audio_status();
     }
 
     const ENTER_HANDLE_BEGIN: u64 = u64::MAX / 2 + 1;

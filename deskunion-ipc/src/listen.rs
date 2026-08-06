@@ -48,11 +48,11 @@ impl AsyncFrontendListener {
             log::debug!("remove socket: {socket_path:?}");
             if socket_path.exists() {
                 // try to connect to see if some other instance
-                // of lan-mouse is already running
+                // of deskunion is already running
                 match UnixStream::connect(&socket_path).await {
-                    // connected -> lan-mouse is already running
+                    // connected -> deskunion is already running
                     Ok(_) => return Err(IpcListenerCreationError::AlreadyRunning),
-                    // lan-mouse is not running but a socket was left behind
+                    // deskunion is not running but a socket was left behind
                     Err(e) => {
                         log::debug!("{socket_path:?}: {e} - removing left behind socket");
                         let _ = std::fs::remove_file(&socket_path);
@@ -61,7 +61,7 @@ impl AsyncFrontendListener {
             }
             let listener = match UnixListener::bind(&socket_path) {
                 Ok(ls) => ls,
-                // some other lan-mouse instance has bound the socket in the meantime
+                // some other deskunion instance has bound the socket in the meantime
                 Err(e) if e.kind() == ErrorKind::AddrInUse => {
                     return Err(IpcListenerCreationError::AlreadyRunning);
                 }
@@ -73,7 +73,7 @@ impl AsyncFrontendListener {
         #[cfg(windows)]
         let listener = match TcpListener::bind("127.0.0.1:5252").await {
             Ok(ls) => ls,
-            // some other lan-mouse instance has bound the socket in the meantime
+            // some other deskunion instance has bound the socket in the meantime
             Err(e) if e.kind() == ErrorKind::AddrInUse => {
                 return Err(IpcListenerCreationError::AlreadyRunning);
             }

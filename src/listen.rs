@@ -1,5 +1,5 @@
+use deskunion_proto::{Datagram, MAX_DATAGRAM_SIZE, MAX_EVENT_SIZE, ProtoEvent, decode};
 use futures::{Stream, StreamExt};
-use lan_mouse_proto::{MAX_EVENT_SIZE, ProtoEvent};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use rustls::pki_types::CertificateDer;
 use std::{
@@ -48,7 +48,7 @@ pub(crate) enum ListenEvent {
     },
 }
 
-pub(crate) struct LanMouseListener {
+pub(crate) struct DeskunionListener {
     listen_rx: Receiver<ListenEvent>,
     listen_tx: Sender<ListenEvent>,
     listen_task: JoinHandle<()>,
@@ -63,11 +63,12 @@ type VerifyPeerCertificateFn = Arc<
         + Sync,
 >;
 
-impl LanMouseListener {
+impl DeskunionListener {
     pub(crate) async fn new(
         port: u16,
         cert: Certificate,
         authorized_keys: Arc<RwLock<HashMap<String, String>>>,
+        audio: crate::config::AudioSettings,
     ) -> Result<Self, ListenerCreationError> {
         let (listen_tx, listen_rx) = channel();
         let (request_port_change, mut request_port_change_rx) = channel();
@@ -119,6 +120,7 @@ impl LanMouseListener {
         let listen_task: JoinHandle<()> = {
             let listen_tx = listen_tx.clone();
             let connection_attempts = connection_attempts.clone();
+            let audio = audio.clone();
             spawn_local(async move {
                 loop {
                     let sleep = tokio::time::sleep(Duration::from_secs(2));
@@ -135,7 +137,7 @@ impl LanMouseListener {
                                 let cert = certs.first().expect("cert");
                                 let fingerprint = crypto::generate_fingerprint(cert);
                                 listen_tx.send(ListenEvent::Accept { addr, fingerprint }).expect("channel closed");
-                                spawn_local(read_loop(conns_clone.clone(), addr, conn, listen_tx.clone()));
+                                spawn_local(read_loop(conns_clone.clone(), addr, conn, listen_tx.clone(), audio.clone()));
                             },
                             Err(e) => {
                                 if let Error::Std(ref e) = e {
@@ -234,7 +236,7 @@ impl LanMouseListener {
     }
 }
 
-impl Stream for LanMouseListener {
+impl Stream for DeskunionListener {
     type Item = ListenEvent;
 
     fn poll_next(
@@ -245,30 +247,93 @@ impl Stream for LanMouseListener {
     }
 }
 
+/// awaits the next queued audio frame, or never resolves if there's no
+/// sender (audio disabled/unavailable) — lets `read_loop`'s `select!`
+/// stay a single unconditional shape regardless of the `audio` feature
+/// or runtime `audio.send` setting.
+async fn recv_audio_frame(
+    rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<(u32, u32, Vec<u8>)>>,
+) -> Option<(u32, u32, Vec<u8>)> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn read_loop(
     conns: Rc<AsyncMutex<Vec<(SocketAddr, ArcConn)>>>,
     addr: SocketAddr,
     conn: ArcConn,
     dtls_tx: Sender<ListenEvent>,
+    #[cfg_attr(not(feature = "audio"), allow(unused_variables))]
+    audio: crate::config::AudioSettings,
 ) -> Result<(), Error> {
-    let mut b = [0u8; MAX_EVENT_SIZE];
+    let mut buf = [0u8; MAX_DATAGRAM_SIZE];
 
-    while conn.recv(&mut b).await.is_ok() {
-        match b.try_into() {
-            Ok(event) => dtls_tx
-                .send(ListenEvent::Msg { event, addr })
-                .expect("channel closed"),
-            Err(e) => {
-                // Skip the malformed/unknown datagram and keep
-                // listening. Each DTLS recv returns one full
-                // datagram, so a parse error here can't desync a
-                // stream; the next call gets a fresh, framed
-                // message. This makes the protocol forward-
-                // compatible: a peer running a newer Lan Mouse
-                // version can introduce additional event types
-                // and old peers will simply ignore them rather
-                // than dropping the connection.
-                log::debug!("ignoring undecodable event from {addr}: {e}");
+    // Audio flows emulation -> capture (§3.1 of the audio plan): this
+    // is the emulation side, so it's the sender. `_audio_sender` is
+    // held only to keep the stream alive for the loop's lifetime —
+    // dropping it stops capture.
+    #[cfg(feature = "audio")]
+    let (_audio_sender, mut audio_rx) = match crate::audio::start_sender(&audio) {
+        Some((sender, rx)) => {
+            let mut out = [0u8; MAX_DATAGRAM_SIZE];
+            if let Ok(len) = deskunion_proto::encode_into(
+                deskunion_proto::DatagramRef::AudioControl(
+                    deskunion_proto::AudioControlCmd::Start {
+                        sample_rate: deskunion_audio::codec::SAMPLE_RATE,
+                        channels: crate::audio::WIRE_CHANNELS as u8,
+                    },
+                ),
+                &mut out,
+            ) {
+                let _ = conn.send(&out[..len]).await;
+            }
+            (Some(sender), Some(rx))
+        }
+        None => (None, None),
+    };
+    #[cfg(not(feature = "audio"))]
+    let mut audio_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(u32, u32, Vec<u8>)>> = None;
+
+    loop {
+        tokio::select! {
+            result = conn.recv(&mut buf) => {
+                let Ok(n) = result else { break };
+                match decode(&buf[..n]) {
+                    Ok(Datagram::Event(event)) => dtls_tx
+                        .send(ListenEvent::Msg { event, addr })
+                        .expect("channel closed"),
+                    Ok(Datagram::Audio { .. } | Datagram::AudioControl(_)) => {
+                        // audio is half-duplex in V1 (§9.7): the capture
+                        // side never sends audio to the emulation side,
+                        // so receiving one here means a peer running a
+                        // future bidirectional-audio version — skip it,
+                        // same forward-compat handling as an unknown
+                        // event type.
+                        log::debug!("ignoring unexpected audio datagram from {addr}");
+                    }
+                    Err(e) => {
+                        // Skip the malformed/unknown datagram and keep
+                        // listening. Each DTLS recv returns one full
+                        // datagram, so a parse error here can't desync a
+                        // stream; the next call gets a fresh, framed
+                        // message. This makes the protocol forward-
+                        // compatible: a peer running a newer Deskunion
+                        // version can introduce additional event types
+                        // and old peers will simply ignore them rather
+                        // than dropping the connection.
+                        log::debug!("ignoring undecodable event from {addr}: {e}");
+                    }
+                }
+            }
+            Some((seq, ts_ms, payload)) = recv_audio_frame(&mut audio_rx) => {
+                let mut out = [0u8; MAX_DATAGRAM_SIZE];
+                let dg = deskunion_proto::DatagramRef::Audio { seq, ts_ms, payload: &payload };
+                match deskunion_proto::encode_into(dg, &mut out) {
+                    Ok(len) => { let _ = conn.send(&out[..len]).await; }
+                    Err(e) => log::debug!("failed to encode audio frame for {addr}: {e}"),
+                }
             }
         }
     }
