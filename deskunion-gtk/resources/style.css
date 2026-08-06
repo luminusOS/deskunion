@@ -1,0 +1,25 @@
+.peer-match > box > list .subtitle {
+    color: @success_color;
+}
+
+.peer-mismatch > box > list .subtitle {
+    font-weight: bold;
+    color: @warning_color;
+}
+
+.peer-unknown > box > list .subtitle {
+    color: @warning_color;
+}
+
+.status-led {
+    border-radius: 999px;
+    background-color: @warning_color;
+}
+
+.status-led.success {
+    background-color: @success_color;
+}
+
+.status-led.warning {
+    background-color: @warning_color;
+}

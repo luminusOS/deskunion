@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1024"
+     height="1024"
+     viewBox="0 0 1024 1024"
+     role="img"
+     aria-labelledby="title description">
+  <title id="title">Deskunion</title>
+  <desc id="description">Two interlocking rounded links in navy blue and cyan.</desc>
+
+  <defs>
+    <linearGradient id="navy" x1="265" y1="264" x2="616" y2="631"
+                    gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#173d65"/>
+      <stop offset="1" stop-color="#12375d"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="414" y1="397" x2="735" y2="737"
+                    gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#72dbe0"/>
+      <stop offset="1" stop-color="#55cbd3"/>
+    </linearGradient>
+  </defs>
+
+  <path fill="url(#cyan)" fill-rule="evenodd" d="
+    M 408 392
+    H 759
+    V 609
+    C 759 693 692 760 608 760
+    H 559
+    C 475 760 408 693 408 609
+    Z
+
+    M 470 454
+    V 609
+    C 470 659 509 698 559 698
+    H 608
+    C 658 698 697 659 697 609
+    V 454
+    Z"/>
+
+  <path fill="url(#navy)" fill-rule="evenodd" d="
+    M 265 264
+    H 616
+    V 480
+    C 616 564 549 631 465 631
+    H 265
+    Z
+
+    M 326 326
+    V 570
+    H 465
+    C 515 570 554 531 554 480
+    V 326
+    Z"/>
+
+  <path fill="url(#cyan)" d="
+    M 408 392
+    H 470
+    V 609
+    C 470 659 509 698 559 698
+    V 760
+    C 475 760 408 693 408 609
+    Z"/>
+</svg>
