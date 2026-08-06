@@ -1,5 +1,5 @@
 {
-  description = "Nix Flake for lan-mouse";
+  description = "Nix Flake for deskunion";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     rust-overlay = {
@@ -60,11 +60,11 @@
             cargo = rustToolchainForBuild;
             rustc = rustToolchainForBuild;
           };
-          lan-mouse = pkgs.callPackage ./nix { rustPlatform = customRustPlatform; };
+          deskunion = pkgs.callPackage ./nix { rustPlatform = customRustPlatform; };
         in
         {
-          default = lan-mouse;
-          inherit lan-mouse;
+          default = deskunion;
+          inherit deskunion;
         }
       );
       devShells = forEachPkgs (

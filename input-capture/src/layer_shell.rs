@@ -186,7 +186,7 @@ impl Window {
             &surface,
             Some(output),
             Layer::Overlay,
-            "LAN Mouse Sharing".into(),
+            "Deskunion Sharing".into(),
             qh,
             (),
         );

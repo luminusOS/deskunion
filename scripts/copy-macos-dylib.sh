@@ -2,7 +2,7 @@
 set -eu
 
 homebrew_path=""
-exec_path="target/debug/bundle/osx/Lan Mouse.app/Contents/MacOS/lan-mouse"
+exec_path="target/debug/bundle/osx/Deskunion.app/Contents/MacOS/deskunion"
 
 usage() {
     cat <<EOF
@@ -71,7 +71,7 @@ fix_references() {
     if [ ! -e "$dest" ]; then
       echo "Copying $old_path -> $dest"
       cp -f "$old_path" "$dest"
-      # Ensure the copied dylib is writable so that xattr -rd /path/to/Lan\ Mouse.app works.
+      # Ensure the copied dylib is writable so that xattr -rd /path/to/Deskunion.app works.
       chmod 644 "$dest"
 
       echo "Updating $dest to have install_name of @rpath/$base_name..."

@@ -733,7 +733,7 @@ fn request_macos_capture_permissions() -> Result<(), MacosCaptureCreationError> 
 
 fn request_accessibility_permission() -> bool {
     // Silent check. The GUI owns the one-time user-visible prompt at
-    // startup (see lan_mouse_gtk::macos_privacy) so retries triggered by
+    // startup (see deskunion_gtk::macos_privacy) so retries triggered by
     // clicking the "Reenable" button don't pop a fresh Accessibility
     // alert every time.
     unsafe { AXIsProcessTrusted() }

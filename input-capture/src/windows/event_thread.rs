@@ -184,7 +184,7 @@ fn start_routine(
     let window_class: WNDCLASSW = WNDCLASSW {
         lpfnWndProc: window_proc,
         hInstance: instance,
-        lpszClassName: w!("lan-mouse-message-window-class"),
+        lpszClassName: w!("deskunion-message-window-class"),
         ..Default::default()
     };
 
@@ -206,8 +206,8 @@ fn start_routine(
     unsafe {
         CreateWindowExW(
             Default::default(),
-            w!("lan-mouse-message-window-class"),
-            w!("lan-mouse-msg-window"),
+            w!("deskunion-message-window-class"),
+            w!("deskunion-msg-window"),
             WINDOW_STYLE::default(),
             0,
             0,
@@ -317,7 +317,7 @@ unsafe extern "system" fn mouse_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM)
         return LRESULT(1);
     };
 
-    /* convert to lan-mouse event */
+    /* convert to deskunion event */
     let Some(pointer_event) = to_mouse_event(wparam, lparam) else {
         return LRESULT(1);
     };

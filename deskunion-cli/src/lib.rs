@@ -4,7 +4,7 @@ use futures::StreamExt;
 use std::{net::IpAddr, time::Duration};
 use thiserror::Error;
 
-use lan_mouse_ipc::{
+use deskunion_ipc::{
     ClientHandle, ConnectionError, FrontendEvent, FrontendRequest, IpcError, Position,
     connect_async,
 };
@@ -19,7 +19,7 @@ pub enum CliError {
 }
 
 #[derive(Parser, Clone, Debug, PartialEq, Eq)]
-#[command(name = "lan-mouse-cli", about = "LanMouse CLI interface")]
+#[command(name = "deskunion-cli", about = "Deskunion CLI interface")]
 pub struct CliArgs {
     #[command(subcommand)]
     command: CliSubcommand,

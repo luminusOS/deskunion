@@ -3,10 +3,10 @@
 ## Run
 
 ```bash
-nix run github:feschber/lan-mouse
+nix run github:luminusOS/deskunion
 
 # With params
-nix run github:feschber/lan-mouse -- --help
+nix run github:luminusOS/deskunion -- --help
 
 ```
 
@@ -16,24 +16,24 @@ Add input:
 
 ```nix
 inputs = {
-    lan-mouse.url = "github:feschber/lan-mouse";
+    deskunion.url = "github:luminusOS/deskunion";
 }
 ```
 
-Optional: add [our binary cache](https://app.cachix.org/cache/lan-mouse) to allow a faster package install.
+Optional: add [our binary cache](https://app.cachix.org/cache/deskunion) to allow a faster package install.
 
 ```nix
 nixConfig = {
     extra-substituters = [
-        "https://lan-mouse.cachix.org/"
+        "https://deskunion.cachix.org/"
     ];
     extra-trusted-public-keys = [
-      "lan-mouse.cachix.org-1:KlE2AEZUgkzNKM7BIzMQo8w9yJYqUpor1CAUNRY6OyM="
+      "deskunion.cachix.org-1:KlE2AEZUgkzNKM7BIzMQo8w9yJYqUpor1CAUNRY6OyM="
     ];
 };
 ```
 
-Enable lan-mouse:
+Enable deskunion:
 
 ``` nix
 {
@@ -41,12 +41,12 @@ Enable lan-mouse:
   ...
 }: {
   # Add the Home Manager module
-  imports = [inputs.lan-mouse.homeManagerModules.default];
+  imports = [inputs.deskunion.homeManagerModules.default];
 
-  programs.lan-mouse = {
+  programs.deskunion = {
     enable = true;
     # systemd = false;
-    # package = inputs.lan-mouse.packages.${pkgs.stdenv.hostPlatform.system}.default
+    # package = inputs.deskunion.packages.${pkgs.stdenv.hostPlatform.system}.default
     # Optional configuration in nix syntax, see config.toml for available options
     # settings = { };
     };

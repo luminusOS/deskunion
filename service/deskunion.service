@@ -1,12 +1,12 @@
 [Unit]
-Description=Lan Mouse
-# lan mouse needs an active graphical session
+Description=Deskunion
+# deskunion needs an active graphical session
 After=graphical-session.target
 # make sure the service terminates with the graphical session
 BindsTo=graphical-session.target
 
 [Service]
-ExecStart=/usr/bin/lan-mouse daemon
+ExecStart=/usr/bin/deskunion daemon
 Restart=on-failure
 
 [Install]
