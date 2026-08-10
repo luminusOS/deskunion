@@ -10,20 +10,20 @@ use std::{
 use std::os::unix::net::UnixStream;
 
 #[cfg(windows)]
-use std::net::TcpStream;
+use std::fs::File;
 
 pub struct FrontendEventReader {
     #[cfg(unix)]
     lines: Lines<BufReader<UnixStream>>,
     #[cfg(windows)]
-    lines: Lines<BufReader<TcpStream>>,
+    lines: Lines<BufReader<File>>,
 }
 
 pub struct FrontendRequestWriter {
     #[cfg(unix)]
     line_writer: LineWriter<UnixStream>,
     #[cfg(windows)]
-    line_writer: LineWriter<TcpStream>,
+    line_writer: LineWriter<File>,
 }
 
 impl FrontendEventReader {
@@ -71,12 +71,19 @@ fn wait_for_service() -> Result<UnixStream, ConnectionError> {
     }
 }
 
+/// a duplex named pipe opens as a regular file handle, which is all the
+/// blocking CLI path needs (`try_clone` splits read/write like the unix
+/// socket does)
 #[cfg(windows)]
-fn wait_for_service() -> Result<TcpStream, ConnectionError> {
+fn wait_for_service() -> Result<File, ConnectionError> {
     let mut duration = Duration::from_millis(10);
     loop {
-        if let Ok(stream) = TcpStream::connect("127.0.0.1:5252") {
-            break Ok(stream);
+        if let Ok(pipe) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(crate::DESKUNION_PIPE_NAME)
+        {
+            break Ok(pipe);
         }
         thread::sleep(exponential_back_off(&mut duration));
     }

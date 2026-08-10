@@ -8,7 +8,7 @@ repository = "https://github.com/luminusOS/deskunion"
 
 [dependencies]
 futures = "0.3.30"
-deskunion-ipc = { path = "../deskunion-ipc", version = "0.6.0" }
+deskunion-ipc = { path = "../deskunion-ipc", version = "0.7.0" }
 clap = { version = "4.4.11", features = ["derive"] }
 thiserror = "2.0.0"
 tokio = { version = "1.32.0", features = [

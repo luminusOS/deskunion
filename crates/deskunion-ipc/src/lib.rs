@@ -395,6 +395,16 @@ impl From<Status> for bool {
 #[cfg(unix)]
 const DESKUNION_SOCKET_NAME: &str = "deskunion-socket.sock";
 
+/// frontend <-> daemon transport on Windows.
+///
+/// A named pipe is the counterpart of the unix socket: local-only, with
+/// no port and no socket in the TCP stack. The previous loopback
+/// `TcpListener` was a real listening socket opened in every operation
+/// mode — including client mode, where DeskUnion is supposed to open
+/// nothing at all.
+#[cfg(windows)]
+pub const DESKUNION_PIPE_NAME: &str = r"\\.\pipe\deskunion";
+
 #[derive(Debug, Error)]
 pub enum SocketPathError {
     #[error("could not determine $XDG_RUNTIME_DIR: `{0}`")]

@@ -24,7 +24,7 @@ input-emulation = { path = "../input-emulation", version = "0.4.0", default-feat
 input-capture = { path = "../input-capture", version = "0.4.0", default-features = false }
 deskunion-cli = { path = "../deskunion-cli", version = "0.3.0" }
 deskunion-gtk = { path = "../deskunion-gtk", version = "0.3.0", optional = true }
-deskunion-ipc = { path = "../deskunion-ipc", version = "0.6.0" }
+deskunion-ipc = { path = "../deskunion-ipc", version = "0.7.0" }
 deskunion-proto = { path = "../deskunion-proto", version = "0.4.0" }
 deskunion-audio = { path = "../deskunion-audio", version = "0.1.0", optional = true }
 shadow-rs = { version = "1.2.0", features = ["metadata"] }

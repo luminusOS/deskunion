@@ -310,6 +310,31 @@ and run `deskunion\bin\deskunion.exe`; do not copy the executable away from its
 `bin`, `share`, and `lib` directories, because GTK loads its icon theme and
 runtime data from that layout.
 
+DeskUnion talks to its own daemon over a named pipe and, in client mode, only
+dials out — it opens no listening port. Windows Defender may still show the
+"allow network access" prompt once, and dismissing it leaves a *block* rule
+behind. The ZIP ships a script that registers the program explicitly; run it
+from an elevated PowerShell:
+
+```powershell
+# client machine (dials out only)
+powershell -ExecutionPolicy Bypass -File windows-firewall.ps1
+
+# server machine (also listens on UDP 4242)
+powershell -ExecutionPolicy Bypass -File windows-firewall.ps1 -Server
+```
+
+Set the role explicitly in `%LOCALAPPDATA%\deskunion\config.toml`. Without
+`operation_mode`, a file that still carries any `[[clients]]` entry is inferred
+to be a **server** and opens the listen port:
+
+```toml
+operation_mode = "client"
+server_ips = ["10.0.2.2"]
+server_port = 4242
+# and no [[clients]] entries
+```
+
 - First install [Rust](https://www.rust-lang.org/tools/install).
 
 - Then follow the instructions at [gtk-rs.org](https://gtk-rs.org/gtk4-rs/stable/latest/book/installation_windows.html)
@@ -379,7 +404,9 @@ pick an edge by hand.
 
 If the device still can not be entered, make sure UDP port `4242`
 (or the selected port) is open in the **server's** firewall. The client opens
-no ports at all.
+no ports at all. On Windows use `windows-firewall.ps1` from the release ZIP
+(`-Server` on the server machine) — it also clears the block rule a dismissed
+Defender prompt leaves behind.
 </details>
 
 <details>
@@ -455,7 +482,11 @@ To create this file you can copy the following example config:
 ```toml
 # example configuration
 
-# operation role (server | client; defaults to server)
+# operation role (server | client). When absent it is inferred: a file
+# with [[clients]] entries is a server, one with server_hostname/server_ips
+# is a client, and an empty one is unconfigured. Set it explicitly —
+# a leftover [[clients]] entry otherwise turns a client into a server
+# and opens the listen port.
 operation_mode = "server"
 
 # configure release bind

@@ -13,20 +13,20 @@ use tokio_stream::wrappers::LinesStream;
 use tokio::net::UnixStream;
 
 #[cfg(windows)]
-use tokio::net::TcpStream;
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 
 pub struct AsyncFrontendEventReader {
     #[cfg(unix)]
     lines_stream: LinesStream<BufReader<ReadHalf<UnixStream>>>,
     #[cfg(windows)]
-    lines_stream: LinesStream<BufReader<ReadHalf<TcpStream>>>,
+    lines_stream: LinesStream<BufReader<ReadHalf<NamedPipeClient>>>,
 }
 
 pub struct AsyncFrontendRequestWriter {
     #[cfg(unix)]
     tx: WriteHalf<UnixStream>,
     #[cfg(windows)]
-    tx: WriteHalf<TcpStream>,
+    tx: WriteHalf<NamedPipeClient>,
 }
 
 impl Stream for AsyncFrontendEventReader {
@@ -69,7 +69,8 @@ pub async fn connect_async(
     #[cfg(unix)]
     let (rx, tx): (ReadHalf<UnixStream>, WriteHalf<UnixStream>) = tokio::io::split(stream);
     #[cfg(windows)]
-    let (rx, tx): (ReadHalf<TcpStream>, WriteHalf<TcpStream>) = tokio::io::split(stream);
+    let (rx, tx): (ReadHalf<NamedPipeClient>, WriteHalf<NamedPipeClient>) =
+        tokio::io::split(stream);
     let buf_reader = BufReader::new(rx);
     let lines = buf_reader.lines();
     let lines_stream = LinesStream::new(lines);
@@ -94,10 +95,12 @@ async fn wait_for_service() -> Result<UnixStream, ConnectionError> {
 }
 
 #[cfg(windows)]
-async fn wait_for_service() -> Result<TcpStream, ConnectionError> {
+async fn wait_for_service() -> Result<NamedPipeClient, ConnectionError> {
     let mut duration = Duration::from_millis(10);
     loop {
-        if let Ok(stream) = TcpStream::connect("127.0.0.1:5252").await {
+        // this also covers ERROR_PIPE_BUSY: every instance is taken, so
+        // back off until the daemon has created a fresh one
+        if let Ok(stream) = ClientOptions::new().open(crate::DESKUNION_PIPE_NAME) {
             break Ok(stream);
         }
         tokio::time::sleep(exponential_back_off(&mut duration)).await;

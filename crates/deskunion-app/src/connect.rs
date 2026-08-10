@@ -2,7 +2,7 @@ use crate::config::local_commit;
 use deskunion_proto::{Datagram, MAX_DATAGRAM_SIZE, MAX_EVENT_SIZE, ProtoEvent, decode};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -81,13 +81,41 @@ const RECONNECT_INTERVAL: Duration = Duration::from_secs(3);
 
 type ArcConn = Arc<dyn Conn + Send + Sync>;
 
+/// local address to bind the dialing socket to: the address of the
+/// interface the OS would route to `addr`, not the wildcard.
+///
+/// A wildcard-bound UDP socket can receive from anyone, so Windows
+/// Defender treats it as a server and raises the "allow network access"
+/// prompt even though DeskUnion only dials out in client mode. Binding
+/// the outgoing interface address keeps the socket to what it is. It
+/// also picks the right address family — the previous hardcoded
+/// `0.0.0.0:0` could not reach an IPv6 peer at all.
+///
+/// The probe socket never sends a packet; `connect` only makes the
+/// kernel run the route lookup so `local_addr` reveals the interface.
+fn local_bind_addr(addr: SocketAddr) -> SocketAddr {
+    let unspecified = match addr {
+        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+    };
+    let probe = std::net::UdpSocket::bind(unspecified)
+        .and_then(|socket| socket.connect(addr).and_then(|()| socket.local_addr()));
+    match probe {
+        Ok(local) => SocketAddr::new(local.ip(), 0),
+        Err(e) => {
+            log::debug!("no route to {addr} yet ({e}); binding the wildcard instead");
+            unspecified
+        }
+    }
+}
+
 pub(crate) async fn connect(
     addr: SocketAddr,
     cert: Certificate,
 ) -> Result<(ArcConn, SocketAddr), (SocketAddr, DeskunionConnectionError)> {
     log::info!("connecting to {addr} ...");
     let conn = Arc::new(
-        UdpSocket::bind("0.0.0.0:0")
+        UdpSocket::bind(local_bind_addr(addr))
             .await
             .map_err(|e| (addr, e.into()))?,
     );
@@ -649,5 +677,30 @@ async fn server_loop(
     if shared.target.lock().await.is_some() {
         log::debug!("redialing server ...");
         ensure_connecting(shared, cert, tx, audio);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// the dialing socket must not sit on the wildcard: that is what
+    /// makes Windows Defender ask for network permission on a
+    /// client-mode machine that only dials out
+    #[test]
+    fn dial_socket_binds_the_routed_interface() {
+        let v4 = local_bind_addr("127.0.0.1:4242".parse().expect("addr"));
+        assert_eq!(v4.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(v4.port(), 0);
+        assert!(!v4.ip().is_unspecified());
+    }
+
+    /// ... and it must match the peer's address family, which the old
+    /// hardcoded `0.0.0.0:0` did not
+    #[test]
+    fn dial_socket_matches_the_peer_address_family() {
+        let v6 = local_bind_addr("[::1]:4242".parse().expect("addr"));
+        assert!(v6.is_ipv6(), "{v6} should be IPv6");
+        assert_eq!(v6.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
     }
 }

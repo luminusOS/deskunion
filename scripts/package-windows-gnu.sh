@@ -77,6 +77,11 @@ cp -r "$MINGW_SYSROOT/share/icons/Adwaita" "$STAGING/share/icons/"
     cp -r "$MINGW_SYSROOT/share/icons/hicolor" "$STAGING/share/icons/"
 gtk4-update-icon-cache -q "$STAGING/share/icons/Adwaita" || true
 
+# firewall helper: DeskUnion opens no port in client mode, but a
+# dismissed Windows prompt leaves a block rule behind — ship the script
+# that registers the program explicitly.
+cp scripts/windows-firewall.ps1 "$STAGING/"
+
 # --- 3. zip -----------------------------------------------------------------
 (cd dist && zip -qr "$BUNDLE_NAME.zip" "$BUNDLE_NAME")
 echo "packed: dist/$BUNDLE_NAME.zip"
