@@ -4,5 +4,7 @@
 <service>
   <short>Deskunion</short>
   <description>mouse and keyboard sharing via LAN</description>
+  <!-- only needed on the server (capture side), which listens for incoming
+       DTLS connections; clients dial out and need no open ports -->
   <port port="4242" protocol="udp"/>
 </service>

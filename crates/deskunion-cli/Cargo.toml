@@ -1,0 +1,20 @@
+[package]
+name = "deskunion-cli"
+description = "CLI Frontend for deskunion"
+version = "0.3.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/luminusOS/deskunion"
+
+[dependencies]
+futures = "0.3.30"
+deskunion-ipc = { path = "../deskunion-ipc", version = "0.6.0" }
+clap = { version = "4.4.11", features = ["derive"] }
+thiserror = "2.0.0"
+tokio = { version = "1.32.0", features = [
+    "io-util",
+    "io-std",
+    "macros",
+    "net",
+    "rt",
+] }

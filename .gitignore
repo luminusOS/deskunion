@@ -12,3 +12,6 @@ extfile.conf
 # flatpak files
 .flatpak-builder
 repo
+
+# packaged artifacts
+/dist

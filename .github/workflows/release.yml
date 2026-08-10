@@ -113,10 +113,17 @@ jobs:
       run: cargo build --release
     - name: Create Archive
       run: |
-        mkdir "deskunion-windows"
-        Get-Childitem -Path "C:\\gtk-build\\gtk\\x64\\release\\bin\\*.dll" -File -Recurse | Copy-Item -Destination "deskunion-windows"
-        Copy-Item -Path "target\release\deskunion.exe" -Destination "deskunion-windows"
-        Compress-Archive -Path "deskunion-windows\*" -DestinationPath deskunion-windows-x86_64.zip
+        $runtime = "C:\gtk-build\gtk\x64\release"
+        New-Item -ItemType Directory -Force -Path "deskunion-windows\bin", "deskunion-windows\share", "deskunion-windows\lib" | Out-Null
+        Get-Childitem -Path "$runtime\bin\*.dll" -File -Recurse | Copy-Item -Destination "deskunion-windows\bin"
+        Copy-Item -Path "target\release\deskunion.exe" -Destination "deskunion-windows\bin"
+        Copy-Item -Recurse -Force -ErrorAction SilentlyContinue "$runtime\share\glib-2.0" "deskunion-windows\share\"
+        Copy-Item -Recurse -Force -ErrorAction SilentlyContinue "$runtime\share\icons" "deskunion-windows\share\"
+        Copy-Item -Recurse -Force -ErrorAction SilentlyContinue "$runtime\share\themes" "deskunion-windows\share\"
+        Copy-Item -Recurse -Force -ErrorAction SilentlyContinue "$runtime\lib\gdk-pixbuf-2.0" "deskunion-windows\lib\"
+        Copy-Item -Recurse -Force -ErrorAction SilentlyContinue "$runtime\lib\gio" "deskunion-windows\lib\"
+        & "$runtime\bin\glib-compile-schemas.exe" "deskunion-windows\share\glib-2.0\schemas"
+        Compress-Archive -Path "deskunion-windows" -DestinationPath deskunion-windows-x86_64.zip
     - name: Upload build artifact
       uses: actions/upload-artifact@v6
       with:

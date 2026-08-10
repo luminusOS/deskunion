@@ -48,7 +48,7 @@ rustPlatform.buildRustPackage {
 
   postInstall = ''
     install -Dm444 *.desktop -t $out/share/applications
-    install -Dm444 deskunion-gtk/resources/*.svg -t $out/share/icons/hicolor/scalable/apps
+    install -Dm444 crates/deskunion-gtk/resources/*.svg -t $out/share/icons/hicolor/scalable/apps
   '';
 
   meta = with lib; {

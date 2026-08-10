@@ -15,7 +15,7 @@ usage: $0 [SVG [ICNS [ICONSET]]]
 
 ARGUMENTS
     SVG     The SVG file to convert
-            Defaults to ./deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg
+            Defaults to ./crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg
     ICNS    The icns file to create
             Defaults to ./target/icon.icns
     ICONSET The iconset directory to create
@@ -29,7 +29,7 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     exit 0
 fi
 
-svg="${1:-./deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg}"
+svg="${1:-./crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg}"
 icns="${2:-./target/icon.icns}"
 iconset="${3:-./target/icon.iconset}"
 

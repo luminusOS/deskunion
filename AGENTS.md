@@ -13,7 +13,7 @@ Deskunion is an open-source Software KVM sharing mouse/keyboard input across loc
 
 ## Terminology
 
-- **Client:** A remote machine that can receive or send input events. Each client is either _active_ (receiving events) or _inactive_ (can send events back). This mutual exclusion prevents feedback loops.
+- **Client:** A remote machine paired with this server by certificate fingerprint. Each client is either _active_ (receiving events) or _inactive_ (can send events back). This mutual exclusion prevents feedback loops.
 - **Backend:** OS-specific implementation for capture or emulation (e.g., libei, layer-shell, wlroots, X11, Windows, macOS).
 - **Handle:** A per-client identifier used to route events and track state (pressed keys, position).
 
@@ -21,11 +21,12 @@ Deskunion is an open-source Software KVM sharing mouse/keyboard input across loc
 
 **Pipeline:** `input-capture` → `deskunion-ipc` → `input-emulation`
 
+- **Connection direction:** All traffic is DTLS over a single UDP port (default 4242). `OperationMode::Server` (capture side, physical mouse/keyboard) is the only listener; `OperationMode::Client` (emulation side) dials out to its configured server endpoint (`server_hostname`/`server_ips`/`server_port`). Only the server needs an open firewall port — clients work through NAT. Pairing is by certificate fingerprint: the server authorizes an incoming device's fingerprint, the device waits "parked" until the user assigns a screen position, and the binding persists as `fingerprint` in the `[[clients]]` entry. Liveness: the listener pings (~5 s), the dialer answers `Pong(emulation_active)`; any datagram counts as alive, ~6 misses closes the connection deterministically.
 - **input-capture:** Reads OS events into a `Stream<CaptureEvent>`. Backends tried in priority order (libei → layer-shell → X11 → fallback). Tracks `pressed_keys` to avoid stuck modifiers. `position_map` queues events when multiple clients share a screen edge.
 - **input-emulation:** Replays events via the `Emulation` trait (`consume`, `create`, `destroy`, `terminate`). Maintains `pressed_keys` and releases them on disconnect.
-- **deskunion-ipc / deskunion-proto:** Protocol glue and serialization. Events are UDP; connection requests are TCP on the same port. Version bumps required when serialization changes.
+- **deskunion-ipc / deskunion-proto:** Protocol glue and serialization. Everything (input events, control datagrams, audio) travels over the same DTLS/UDP connection. Version bumps required when serialization changes.
 - **input-event:** Shared scancode enums and abstract event types—extend here, don't duplicate translations.
-- **deskunion-audio:** One-directional (client → server) audio streaming, parallel to the input pipeline. cpal for capture/playback, Opus for encoding, a jitter buffer with clock-drift compensation on the receive side. Wire format is a separate datagram type in `deskunion-proto` (not part of the `Copy` `ProtoEvent` enum), gated behind the `audio` cargo feature (default on). Controlled from the gtk frontend's Audio page via `FrontendRequest`/`FrontendEvent` variants in `deskunion-ipc`.
+- **deskunion-audio:** One-directional (client → server) audio streaming, parallel to the input pipeline: the client captures its system output (WASAPI loopback, PipeWire monitor, CoreAudio loopback on macOS ≥ 14.6) and the server plays it back. cpal for capture/playback, Opus for encoding, a jitter buffer with clock-drift compensation on the receive side. Wire format is a separate datagram type in `deskunion-proto` (not part of the `Copy` `ProtoEvent` enum), gated behind the `audio` cargo feature (default on). Controlled from the gtk frontend's Audio page via `FrontendRequest`/`FrontendEvent` variants in `deskunion-ipc`.
 
 ## Feature & cfg discipline
 

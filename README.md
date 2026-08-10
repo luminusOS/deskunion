@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"
+  <img src="crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"
        alt="Deskunion logo"
        width="240">
 </p>
@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml) [![Cachix](https://github.com/luminusOS/deskunion/actions/workflows/cachix.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/cachix.yml) [![Release](https://github.com/luminusOS/deskunion/actions/workflows/release.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/release.yml)
 
-[![crates.io](https://img.shields.io/crates/v/deskunion.svg)](https://crates.io/crates/deskunion)  [![license](https://img.shields.io/crates/l/deskunion.svg)](https://github.com/luminusOS/deskunion/blob/main/Cargo.toml)
+[![crates.io](https://img.shields.io/crates/v/deskunion-app.svg)](https://crates.io/crates/deskunion-app)  [![license](https://img.shields.io/crates/l/deskunion-app.svg)](https://github.com/luminusOS/deskunion/blob/main/Cargo.toml)
 
 Deskunion is a *cross-platform* mouse and keyboard sharing software similar to universal-control on Apple devices.
 It allows for using multiple PCs via a single set of mouse and keyboard.
@@ -157,7 +157,7 @@ sudo cp path/to/deskunion /usr/local/bin/
 
 # install app icon
 sudo mkdir -p /usr/local/share/icons/hicolor/scalable/apps
-sudo cp deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg /usr/local/share/icons/hicolor/scalable/apps
+sudo cp crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg /usr/local/share/icons/hicolor/scalable/apps
 
 # update icon cache
 gtk-update-icon-cache /usr/local/share/icons/hicolor/
@@ -179,14 +179,29 @@ can be easily compiled via cargo or nix:
 # compile in release mode
 cargo build --release
 
+# equivalent explicit package selection
+cargo run -p deskunion-app
+
+# build Linux packages, including the AppImage
+cargo install cargo-bundle
+cargo bundle --release
+# output: target/release/bundle/appimage/deskunion_*.AppImage
+
 # install deskunion
 sudo cp target/release/deskunion /usr/local/bin/
 ```
 
+Connection direction: the **server** (the machine with the physical mouse and
+keyboard) listens on UDP port `4242`; each **client** (a machine that emulates
+the received input) dials out to the server. Only the server needs an open
+firewall port — clients need none and work through NAT. If the server runs on
+the host of a GNOME Boxes VM, the guest reaches it at `10.0.2.2:4242` (the
+default slirp NAT gateway), with no port forwarding required.
+
 ### Compiling and installing via cargo:
 ```sh
 # will end up in ~/.cargo/bin
-cargo install deskunion
+cargo install deskunion-app
 ```
 
 ### Compiling and installing via nix:
@@ -290,6 +305,11 @@ nix develop
 <details>
     <summary>Windows</summary>
 
+The release ZIP is self-contained. Extract the complete `deskunion` directory
+and run `deskunion\bin\deskunion.exe`; do not copy the executable away from its
+`bin`, `share`, and `lib` directories, because GTK loads its icon theme and
+runtime data from that layout.
+
 - First install [Rust](https://www.rust-lang.org/tools/install).
 
 - Then follow the instructions at [gtk-rs.org](https://gtk-rs.org/gtk4-rs/stable/latest/book/installation_windows.html)
@@ -336,17 +356,30 @@ the gtk frontend (see conditional compilation).
 
 By default the gtk frontend will open when running `deskunion`.
 
-To connect a device you want to control, simply click the `Add` button and enter the hostname
-of the device.
+The machine whose mouse and keyboard you want to share runs in **server** mode
+(`Operation mode` selector in the sidebar): it listens for incoming connections
+on UDP port `4242` (configurable). Each machine you want to control runs in
+**client** mode: enter the server's hostname or IP address and port in the
+**Server** section and click `Connect`. The client only dials out, so it works
+behind NAT (e.g. a GNOME Boxes VM connecting to its host at `10.0.2.2:4242`)
+and needs no firewall changes.
 
-On the *remote* device, authorize your *local* device for incoming traffic using the `Authorize` button
-under the "Incoming Connections" section.
-The fingerprint for authorization can be found under the general section of your *local* device.
-It is of the form "aa:bb:cc:..."
+When a client connects for the first time, an authorization dialog pops up on
+the **server** showing the client's certificate fingerprint (also visible on
+the client under the general section, of the form "aa:bb:cc:..."). Authorize
+it — the device is then paired automatically and placed on the first free
+screen edge, preferring the right one (right, then left, top, bottom). This
+persists the fingerprint binding in the configuration file (see
+[Configuration](#configuration)); you can move the device to another edge at
+any time from the Screens page.
 
-Authorized devices can be persisted using the configuration file (see [Configuration](#configuration)).
+Only when all four edges are already taken does the device show up under
+"Devices awaiting a position" on the server's Screens page and wait for you to
+pick an edge by hand.
 
-If the device still can not be entered, make sure you have UDP port `4242` (or the one selected) opened up in your firewall.
+If the device still can not be entered, make sure UDP port `4242`
+(or the selected port) is open in the **server's** firewall. The client opens
+no ports at all.
 </details>
 
 <details>
@@ -397,52 +430,77 @@ systemctl --user enable --now deskunion.service
 To automatically load clients on startup, the file `$XDG_CONFIG_HOME/deskunion/config.toml` is parsed.
 `$XDG_CONFIG_HOME` defaults to `~/.config/`.
 
+The GTK sidebar exposes an **Operation mode** selector:
+
+- `server` captures this computer's keyboard and pointer, listens for incoming
+  client connections on UDP port `4242` and sends input to paired clients;
+- `client` dials out to a configured server, accepts remote input and emulates
+  it on this computer.
+
+DeskUnion starts only the backend required by the selected mode, so opening
+the application does not request unrelated input permissions. The choice is
+stored in `config.toml`. Fresh installations request no input permission until
+a mode is selected; legacy configurations containing clients are inferred as
+`server`, and configurations with `server_hostname` set are inferred as
+`client`.
+
 To create this file you can copy the following example config:
 
 ### Example config
 > [!TIP]
 > key symbols in the release bind are named according
-> to their names in [input-event/src/scancode.rs#L172](input-event/src/scancode.rs#L176).
+> to their names in [crates/input-event/src/scancode.rs#L172](crates/input-event/src/scancode.rs#L176).
 > This is bound to change
 
 ```toml
 # example configuration
 
+# operation role (server | client; defaults to server)
+operation_mode = "server"
+
 # configure release bind
 release_bind = [ "KeyA", "KeyS", "KeyD", "KeyF" ]
 
-# optional port (defaults to 4242)
+# optional port the server listens on (defaults to 4242)
 port = 4242
+
+# client mode only: the server this device dials out to
+# (operation_mode = "client"); the client opens no ports itself
+# server_hostname = "my-server.local"
+# server_ips = ["192.168.178.10"]
+# server_port = 4242
 
 # list of authorized tls certificate fingerprints that
 # are accepted for incoming traffic
 [authorized_fingerprints]
 "bc:05:ab:7a:a4:de:88:8c:2f:92:ac:bc:b8:49:b8:24:0d:44:b3:e6:a4:ef:d7:0b:6c:69:6d:77:53:0b:14:80" = "iridium"
 
-# define a client on the right side with host name "iridium"
+# define a paired client on the right side with label "iridium"
 [[clients]]
 # position (left | right | top | bottom)
 position = "right"
-# hostname
+# display label for the device
 hostname = "iridium"
+# sha256 certificate fingerprint of the paired device — the stable
+# identity a connecting device is matched by (assigned when pairing)
+fingerprint = "bc:05:ab:7a:a4:de:88:8c:2f:92:ac:bc:b8:49:b8:24:0d:44:b3:e6:a4:ef:d7:0b:6c:69:6d:77:53:0b:14:80"
 # activate this client immediately when deskunion is started
 activate_on_startup = true
-# optional list of (known) ip addresses
-ips = ["192.168.178.156"]
 
-# define a client on the left side with IP address 192.168.178.189
+# define a paired client on the left side with label "thorium"
 [[clients]]
 position = "left"
-# The hostname is optional: When no hostname is specified,
-# at least one ip address needs to be specified.
 hostname = "thorium"
-# ips for ethernet and wifi
-ips = ["192.168.178.189", "192.168.178.172"]
-# optional port
-port = 4242
+fingerprint = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
 ```
 
 Where `left` can be either `left`, `right`, `top` or `bottom`.
+
+> [!NOTE]
+> `ips` and `port` inside `[[clients]]` are deprecated: the server no longer
+> dials out to clients — devices connect in and are matched by `fingerprint`.
+> Both keys are still parsed for compatibility (and logged as deprecated) but
+> are ignored; `hostname` is now only a display label.
 
 ## Roadmap
 - [x] Graphical frontend (gtk + libadwaita)
