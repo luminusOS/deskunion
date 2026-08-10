@@ -652,9 +652,23 @@ async fn server_loop(
                     send_audio_start(&conn, addr).await;
                 }
             }
-            Some(frame) = recv_audio_frame(&mut audio_rx) => {
-                send_audio_batch(&conn, addr, &mut audio_rx, frame, &mut sent_audio_frames).await;
-            }
+            // `frame = ...` and not `Some(frame) = ...`: on `None` a
+            // pattern-guarded arm is disabled for the rest of the loop,
+            // so a dead encode thread would leave the session up and
+            // permanently silent with nothing in the log
+            frame = recv_audio_frame(&mut audio_rx) => match frame {
+                Some(frame) => {
+                    send_audio_batch(&conn, addr, &mut audio_rx, frame, &mut sent_audio_frames).await;
+                }
+                None => {
+                    log::error!(
+                        "audio capture for {addr} ended after {sent_audio_frames} frames; no more audio will be sent on this connection"
+                    );
+                    audio_rx = None;
+                    #[cfg(feature = "audio")]
+                    send_audio_stop(&conn, addr).await;
+                }
+            },
         }
     }
     log::info!("server disconnected {addr} after sending {sent_audio_frames} audio frames");

@@ -33,6 +33,18 @@ const BYTES_PER_SAMPLE: usize = 4; // 32-bit float, matches WaveFormat below
 /// how long to wait for a WASAPI buffer-ready event before checking for
 /// a stop request; keeps `stop()` responsive without busy-polling
 const EVENT_TIMEOUT_MS: u32 = 100;
+/// how long to wait before reopening the endpoint after the capture
+/// stream broke, doubling up to this ceiling
+const MAX_REOPEN_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// why [`run_capture`] returned
+enum CaptureRun {
+    /// `stop()` was requested
+    Stopped,
+    /// the endpoint went away (device change, format change, session
+    /// reset); the caller reopens it
+    Interrupted,
+}
 
 fn ensure_com_initialized() -> Result<(), AudioError> {
     // safe to call more than once per thread: repeat CoInitializeEx
@@ -109,97 +121,38 @@ impl AudioCapture for WasapiCapture {
                 return;
             }
 
-            let mut run = || -> Result<AudioFormat, AudioError> {
-                let enumerator = DeviceEnumerator::new()?;
-                let device = match &device_id {
-                    Some(id) => match enumerator.get_device(id) {
-                        Ok(device) => device,
-                        Err(error) => {
-                            // Older DeskUnion builds enumerated CPAL input
-                            // devices on Windows. Their persisted IDs are not
-                            // render endpoint IDs, so keep upgrades working by
-                            // falling back to the default output.
-                            log::warn!(
-                                "configured Windows audio endpoint is unavailable ({error}); using the default output"
-                            );
-                            enumerator.get_default_device(&Direction::Render)?
+            // a broken capture used to end the thread with a single
+            // warning: the encode thread then slept forever on an empty
+            // ring and audio stopped while the connection stayed up.
+            // Reopen instead.
+            let mut announced = false;
+            let mut backoff = std::time::Duration::from_millis(200);
+            loop {
+                match run_capture(
+                    device_id.as_deref(),
+                    &mut on_data,
+                    &stop_rx,
+                    &format_tx,
+                    &mut announced,
+                ) {
+                    Ok(CaptureRun::Stopped) => break,
+                    Ok(CaptureRun::Interrupted) => {
+                        log::error!(
+                            "wasapi loopback capture was interrupted; reopening the endpoint"
+                        );
+                    }
+                    Err(e) => {
+                        if !announced {
+                            let _ = format_tx.send(Err(e));
+                            return;
                         }
-                    },
-                    None => enumerator.get_default_device(&Direction::Render)?,
-                };
-
-                let mut audio_client = device.get_iaudioclient()?;
-                let desired_format = WaveFormat::new(
-                    32,
-                    32,
-                    &SampleType::Float,
-                    SAMPLE_RATE as usize,
-                    CHANNELS as usize,
-                    None,
-                );
-                let (default_period, _min_period) = audio_client.get_device_period()?;
-                // requesting the minimum period in event-driven shared
-                // mode leaves no headroom: any scheduling jitter on the
-                // capture thread overruns the buffer and glitches the
-                // stream. 3× the engine's default period absorbs that
-                // while adding only ~20-30 ms of capture latency.
-                let mode = StreamMode::EventsShared {
-                    autoconvert: true,
-                    buffer_duration_hns: default_period * 3,
-                };
-                // requesting `Direction::Capture` against a client whose
-                // own device is `Direction::Render` is what makes this
-                // loopback rather than plain capture — see module docs.
-                audio_client.initialize_client(&desired_format, &Direction::Capture, &mode)?;
-
-                let event_handle = audio_client.set_get_eventhandle()?;
-                let capture_client = audio_client.get_audiocaptureclient()?;
-                audio_client.start_stream()?;
-
-                let format = AudioFormat {
-                    sample_rate: SAMPLE_RATE,
-                    channels: CHANNELS,
-                };
-                let _ = format_tx.send(Ok(format));
-
-                let mut byte_queue: VecDeque<u8> = VecDeque::with_capacity(BYTES_PER_SAMPLE * 4096);
-                loop {
-                    if stop_rx.try_recv().is_ok() {
-                        break;
+                        log::error!("wasapi loopback capture failed: {e}; reopening the endpoint");
                     }
-                    match event_handle.wait_for_event(EVENT_TIMEOUT_MS) {
-                        Ok(()) => {}
-                        Err(WasapiError::EventTimeout) => continue,
-                        Err(e) => {
-                            log::warn!("wasapi loopback event wait failed: {e}");
-                            break;
-                        }
-                    }
-                    if let Err(e) = capture_client.read_from_device_to_deque(&mut byte_queue) {
-                        log::warn!("wasapi loopback read failed: {e}");
-                        break;
-                    }
-                    let usable_bytes = byte_queue.len() - (byte_queue.len() % BYTES_PER_SAMPLE);
-                    if usable_bytes == 0 {
-                        continue;
-                    }
-                    let mut samples = Vec::with_capacity(usable_bytes / BYTES_PER_SAMPLE);
-                    for _ in 0..usable_bytes / BYTES_PER_SAMPLE {
-                        let mut bytes = [0u8; BYTES_PER_SAMPLE];
-                        for byte in &mut bytes {
-                            *byte = byte_queue.pop_front().expect("checked usable_bytes above");
-                        }
-                        samples.push(f32::from_le_bytes(bytes));
-                    }
-                    on_data(&samples);
                 }
-
-                let _ = audio_client.stop_stream();
-                Ok(format)
-            };
-
-            if let Err(e) = run() {
-                let _ = format_tx.send(Err(e));
+                if stop_rx.recv_timeout(backoff).is_ok() {
+                    break;
+                }
+                backoff = (backoff * 2).min(MAX_REOPEN_BACKOFF);
             }
         });
 
@@ -216,4 +169,105 @@ impl AudioCapture for WasapiCapture {
             let _ = join.join();
         }
     }
+}
+
+/// open the loopback endpoint and pump samples into `on_data` until
+/// `stop_rx` fires or the endpoint breaks. Announces the negotiated
+/// format through `format_tx` on the first successful open only —
+/// `start()` blocks on that, and later reopens must not resend it.
+fn run_capture(
+    device_id: Option<&str>,
+    on_data: &mut CaptureCallback,
+    stop_rx: &mpsc::Receiver<()>,
+    format_tx: &mpsc::Sender<Result<AudioFormat, AudioError>>,
+    announced: &mut bool,
+) -> Result<CaptureRun, AudioError> {
+    let enumerator = DeviceEnumerator::new()?;
+    let device = match device_id {
+        Some(id) => match enumerator.get_device(id) {
+            Ok(device) => device,
+            Err(error) => {
+                // Older DeskUnion builds enumerated CPAL input
+                // devices on Windows. Their persisted IDs are not
+                // render endpoint IDs, so keep upgrades working by
+                // falling back to the default output.
+                log::warn!(
+                    "configured Windows audio endpoint is unavailable ({error}); using the default output"
+                );
+                enumerator.get_default_device(&Direction::Render)?
+            }
+        },
+        None => enumerator.get_default_device(&Direction::Render)?,
+    };
+
+    let mut audio_client = device.get_iaudioclient()?;
+    let desired_format = WaveFormat::new(
+        32,
+        32,
+        &SampleType::Float,
+        SAMPLE_RATE as usize,
+        CHANNELS as usize,
+        None,
+    );
+    let (default_period, _min_period) = audio_client.get_device_period()?;
+    // requesting the minimum period in event-driven shared
+    // mode leaves no headroom: any scheduling jitter on the
+    // capture thread overruns the buffer and glitches the
+    // stream. 3× the engine's default period absorbs that
+    // while adding only ~20-30 ms of capture latency.
+    let mode = StreamMode::EventsShared {
+        autoconvert: true,
+        buffer_duration_hns: default_period * 3,
+    };
+    // requesting `Direction::Capture` against a client whose
+    // own device is `Direction::Render` is what makes this
+    // loopback rather than plain capture — see module docs.
+    audio_client.initialize_client(&desired_format, &Direction::Capture, &mode)?;
+
+    let event_handle = audio_client.set_get_eventhandle()?;
+    let capture_client = audio_client.get_audiocaptureclient()?;
+    audio_client.start_stream()?;
+
+    if !*announced {
+        let _ = format_tx.send(Ok(AudioFormat {
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+        }));
+        *announced = true;
+    }
+
+    let mut byte_queue: VecDeque<u8> = VecDeque::with_capacity(BYTES_PER_SAMPLE * 4096);
+    let outcome = loop {
+        if stop_rx.try_recv().is_ok() {
+            break CaptureRun::Stopped;
+        }
+        match event_handle.wait_for_event(EVENT_TIMEOUT_MS) {
+            Ok(()) => {}
+            Err(WasapiError::EventTimeout) => continue,
+            Err(e) => {
+                log::warn!("wasapi loopback event wait failed: {e}");
+                break CaptureRun::Interrupted;
+            }
+        }
+        if let Err(e) = capture_client.read_from_device_to_deque(&mut byte_queue) {
+            log::warn!("wasapi loopback read failed: {e}");
+            break CaptureRun::Interrupted;
+        }
+        let usable_bytes = byte_queue.len() - (byte_queue.len() % BYTES_PER_SAMPLE);
+        if usable_bytes == 0 {
+            continue;
+        }
+        let mut samples = Vec::with_capacity(usable_bytes / BYTES_PER_SAMPLE);
+        for _ in 0..usable_bytes / BYTES_PER_SAMPLE {
+            let mut bytes = [0u8; BYTES_PER_SAMPLE];
+            for byte in &mut bytes {
+                *byte = byte_queue.pop_front().expect("checked usable_bytes above");
+            }
+            samples.push(f32::from_le_bytes(bytes));
+        }
+        on_data(&samples);
+    };
+
+    let _ = audio_client.stop_stream();
+    Ok(outcome)
 }

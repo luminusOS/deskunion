@@ -199,11 +199,24 @@ impl JitterBuffer {
     /// [`FRAME_SAMPLES`] × channels samples — the playback sink relies
     /// on a constant per-tick sample count to keep its ring fed.
     pub fn pop(&mut self) -> Result<Vec<f32>, AudioError> {
+        let mut out = vec![0.0; FRAME_SAMPLES * self.channels as usize];
+        self.pop_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// [`JitterBuffer::pop`] into a caller-owned buffer of exactly
+    /// `FRAME_SAMPLES * channels` samples. This is the form the playback
+    /// callback uses: it runs on the output device's realtime thread, so
+    /// it must not allocate.
+    pub fn pop_into(&mut self, out: &mut [f32]) -> Result<(), AudioError> {
+        debug_assert_eq!(out.len(), FRAME_SAMPLES * self.channels as usize);
         let Some(mut next) = self.next_seq else {
-            return Ok(vec![0.0; FRAME_SAMPLES * self.channels as usize]);
+            out.fill(0.0);
+            return Ok(());
         };
         if !self.started && self.occupancy() < self.startup_frames {
-            return Ok(vec![0.0; FRAME_SAMPLES * self.channels as usize]);
+            out.fill(0.0);
+            return Ok(());
         }
         self.started = true;
 
@@ -218,10 +231,10 @@ impl JitterBuffer {
             }
         }
 
-        let pcm = match self.packets.remove(&next) {
+        match self.packets.remove(&next) {
             Some(payload) => {
                 self.consecutive_plc = 0;
-                self.decoder.decode_frame(&payload)?
+                self.decoder.decode_frame_into(&payload, out)?;
             }
             None => {
                 if self.stretch_pending {
@@ -233,7 +246,7 @@ impl JitterBuffer {
                     self.consecutive_plc += 1;
                     self.packets_lost += 1;
                 }
-                self.decoder.decode_frame(&[])?
+                self.decoder.decode_frame_into(&[], out)?;
             }
         };
         self.next_seq = Some(next.wrapping_add(1));
@@ -269,7 +282,7 @@ impl JitterBuffer {
                 None => {}
             }
         }
-        Ok(pcm)
+        Ok(())
     }
 
     /// drop all buffered state — call on `AudioControl::Stop` and on

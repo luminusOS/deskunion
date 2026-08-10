@@ -512,6 +512,23 @@ impl AudioRxState {
         }
     }
 
+    /// tear down a playback stream the backend reported as failed, so a
+    /// later `Start` or frame rebuilds it. `lazy_failed` is cleared too:
+    /// this is a new failure, not the one that latched it.
+    pub(crate) fn drop_if_failed(&mut self, addr: SocketAddr) {
+        let failed = self
+            .receiver
+            .as_ref()
+            .is_some_and(|receiver| !receiver.is_healthy());
+        if failed {
+            log::error!(
+                "audio playback from {addr} failed; dropping the stream so it can be restarted"
+            );
+            self.receiver = None;
+            self.lazy_failed = false;
+        }
+    }
+
     pub(crate) fn received(&self) -> u64 {
         self.received
     }
@@ -598,6 +615,13 @@ async fn read_loop(
         }
         #[cfg(feature = "audio")]
         if last_audio_stats.elapsed() >= Duration::from_secs(1) {
+            // a cpal stream that errored never calls its data callback
+            // again: drop the receiver so the next `AudioControl::Start`
+            // retransmit (every 2s while a stream is active) or the next
+            // frame builds a fresh one. Without this the connection,
+            // the jitter buffer and the stats all stay healthy while
+            // nothing is audible.
+            audio_rx.drop_if_failed(addr);
             if let Some(receiver) = &audio_rx.receiver {
                 let stats = receiver.stats();
                 dtls_tx

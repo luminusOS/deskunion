@@ -69,6 +69,19 @@ impl Decoder {
         out.truncate(decoded_frames * self.channels as usize);
         Ok(out)
     }
+
+    /// decode one frame into a caller-owned buffer of exactly
+    /// `FRAME_SAMPLES * channels` samples, zero-padding if Opus produced
+    /// a short frame. Allocation-free: this runs inside the playback
+    /// callback, which pulls decoded audio on the output device's clock.
+    pub fn decode_frame_into(&mut self, payload: &[u8], out: &mut [f32]) -> Result<(), AudioError> {
+        debug_assert_eq!(out.len(), FRAME_SAMPLES * self.channels as usize);
+        let decoded_frames = self.inner.decode_float(payload, out, false)?;
+        for sample in &mut out[decoded_frames * self.channels as usize..] {
+            *sample = 0.0;
+        }
+        Ok(())
+    }
 }
 
 /// converts interleaved PCM from a capture device's native rate to

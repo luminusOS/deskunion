@@ -2,30 +2,89 @@
 //! `deskunion/DESKUNION_AUDIO_PLAN.md` §3.4.
 //!
 //! Network arrivals come in from async/service code via [`push_frame`],
-//! which just takes a mutex briefly. A dedicated OS thread pops the
-//! jitter buffer at a steady one-frame-per-tick cadence and forwards
-//! decoded PCM to the playback sink — decoupled from any async runtime
-//! so this crate stays runtime-agnostic (see `AGENTS.md`'s crate
-//! boundaries).
+//! which just takes a mutex briefly. The output device pulls the other
+//! end: its callback pops the jitter buffer through [`JitterSource`], so
+//! playback advances on the device's clock and nothing in between can
+//! drain. This keeps the crate runtime-agnostic (see `AGENTS.md`'s crate
+//! boundaries) with no thread of its own.
+//!
+//! An earlier version had a thread pop on `thread::sleep(20ms)` and push
+//! into a ring the device drained. `sleep` only ever overshoots, so the
+//! ring lost a little on every tick and playback went permanently silent
+//! once it ran dry — the "plays the first seconds, then stops" failure.
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU32, AtomicU64, Ordering},
 };
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
 
-use crate::codec::{FRAME_MS, SAMPLE_RATE};
+use crate::codec::{FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE};
 use crate::jitter::JitterBuffer;
-use crate::playback::{self, AudioPlayback, AudioSink};
+use crate::playback::{self, AudioPlayback, AudioSource};
 use crate::{AudioError, AudioFormat};
 
 pub struct AudioReceiver {
     playback: Box<dyn AudioPlayback>,
     jitter: Arc<Mutex<JitterBuffer>>,
-    tick_stop_tx: Option<std::sync::mpsc::Sender<()>>,
-    tick_thread: Option<JoinHandle<()>>,
     level_bits: Arc<AtomicU32>,
+    /// device callbacks that had to emit silence because the jitter
+    /// lock was held by a network push at that instant
+    contended: Arc<AtomicU64>,
+}
+
+/// pops the jitter buffer from inside the output device's callback.
+///
+/// `try_lock` rather than `lock`: a network push holds the mutex for the
+/// few microseconds it takes to insert a packet, and blocking the
+/// realtime thread on it would risk an xrun. Losing that race costs one
+/// block of silence, and the counter makes it visible.
+struct JitterSource {
+    jitter: Arc<Mutex<JitterBuffer>>,
+    /// one decoded frame, refilled as the device consumes it
+    frame: Vec<f32>,
+    /// how much of `frame` has already been handed to the device
+    frame_at: usize,
+    level_bits: Arc<AtomicU32>,
+    contended: Arc<AtomicU64>,
+}
+
+impl AudioSource for JitterSource {
+    fn fill(&mut self, out: &mut [f32]) {
+        let mut filled = 0;
+        while filled < out.len() {
+            if self.frame_at == self.frame.len() {
+                let popped = match self.jitter.try_lock() {
+                    Ok(mut jitter) => jitter.pop_into(&mut self.frame),
+                    Err(_) => {
+                        self.contended.fetch_add(1, Ordering::Relaxed);
+                        out[filled..].fill(0.0);
+                        break;
+                    }
+                };
+                if popped.is_err() {
+                    // a decode failure is not recoverable within this
+                    // callback; `stats()` reports it out of band
+                    self.contended.fetch_add(1, Ordering::Relaxed);
+                    out[filled..].fill(0.0);
+                    break;
+                }
+                self.frame_at = 0;
+            }
+            let n = (out.len() - filled).min(self.frame.len() - self.frame_at);
+            out[filled..filled + n].copy_from_slice(&self.frame[self.frame_at..self.frame_at + n]);
+            self.frame_at += n;
+            filled += n;
+        }
+
+        let rms = if out.is_empty() {
+            0.0
+        } else {
+            (out.iter().map(|sample| sample * sample).sum::<f32>() / out.len() as f32)
+                .sqrt()
+                .clamp(0.0, 1.0)
+        };
+        self.level_bits.store(rms.to_bits(), Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -71,30 +130,31 @@ impl AudioReceiver {
                 "peer announced audio at {sample_rate} Hz, but the wire format is {SAMPLE_RATE} Hz; decoding as {SAMPLE_RATE} Hz"
             );
         }
-        let sink = playback.start(
+        let jitter = Arc::new(Mutex::new(JitterBuffer::new(channels, target_ms)?));
+        let level_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let contended = Arc::new(AtomicU64::new(0));
+
+        playback.start(
             device,
             AudioFormat {
                 sample_rate: SAMPLE_RATE,
                 channels,
             },
+            Box::new(JitterSource {
+                jitter: jitter.clone(),
+                frame: vec![0.0; FRAME_SAMPLES * channels as usize],
+                // start empty so the first callback pops a frame
+                frame_at: FRAME_SAMPLES * channels as usize,
+                level_bits: level_bits.clone(),
+                contended: contended.clone(),
+            }),
         )?;
-
-        let jitter = Arc::new(Mutex::new(JitterBuffer::new(channels, target_ms)?));
-        let jitter_tick = jitter.clone();
-        let (tick_stop_tx, tick_stop_rx) = std::sync::mpsc::channel::<()>();
-        let level_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
-
-        let tick_thread = thread::spawn({
-            let level_bits = level_bits.clone();
-            move || tick_loop(jitter_tick, sink, tick_stop_rx, level_bits)
-        });
 
         Ok(Self {
             playback,
             jitter,
-            tick_stop_tx: Some(tick_stop_tx),
-            tick_thread: Some(tick_thread),
             level_bits,
+            contended,
         })
     }
 
@@ -131,13 +191,21 @@ impl AudioReceiver {
     }
 
     pub fn stop(&mut self) {
-        if let Some(tx) = self.tick_stop_tx.take() {
-            let _ = tx.send(());
-        }
-        if let Some(join) = self.tick_thread.take() {
-            let _ = join.join();
-        }
         self.playback.stop();
+    }
+
+    /// false once the playback backend reported a stream error. A dead
+    /// cpal stream never calls its data callback again, so the owner
+    /// must drop this receiver and start a new one — everything
+    /// upstream (jitter buffer, connection, stats) still looks healthy.
+    pub fn is_healthy(&self) -> bool {
+        !self.playback.failed()
+    }
+
+    /// device callbacks that emitted silence because the jitter lock was
+    /// contended or a frame failed to decode
+    pub fn contended_callbacks(&self) -> u64 {
+        self.contended.load(Ordering::Relaxed)
     }
 }
 
@@ -147,63 +215,9 @@ impl Drop for AudioReceiver {
     }
 }
 
-fn tick_loop(
-    jitter: Arc<Mutex<JitterBuffer>>,
-    mut sink: Box<dyn AudioSink>,
-    stop_rx: std::sync::mpsc::Receiver<()>,
-    level_bits: Arc<AtomicU32>,
-) {
-    let tick = Duration::from_millis(FRAME_MS as u64);
-    let mut last_lost = 0u64;
-    let mut underrun_logs = 0u64;
-    loop {
-        if stop_rx.try_recv().is_ok() {
-            break;
-        }
-        let tick_start = Instant::now();
-
-        let (pcm, lost) = {
-            let mut jitter = jitter.lock().expect("jitter lock poisoned");
-            let pcm = jitter.pop();
-            let lost = jitter.packets_lost();
-            (pcm, lost)
-        };
-        // a stall here is otherwise silent: the playback sink just gets
-        // fewer/emptier pushes and the stream fades without any error
-        if lost > last_lost {
-            let concealed = lost - last_lost;
-            last_lost = lost;
-            underrun_logs += 1;
-            if underrun_logs == 1 || underrun_logs.is_multiple_of(50) {
-                log::debug!(
-                    "audio receiver underrun: concealing missing frame(s) with PLC ({lost} lost so far, +{concealed})"
-                );
-            }
-        }
-        match pcm {
-            Ok(pcm) => {
-                let rms = if pcm.is_empty() {
-                    0.0
-                } else {
-                    (pcm.iter().map(|sample| sample * sample).sum::<f32>() / pcm.len() as f32)
-                        .sqrt()
-                        .clamp(0.0, 1.0)
-                };
-                level_bits.store(rms.to_bits(), Ordering::Relaxed);
-                sink.push(&pcm)
-            }
-            Err(e) => log::warn!("jitter buffer pop error: {e}"),
-        }
-
-        let elapsed = tick_start.elapsed();
-        if elapsed < tick {
-            thread::sleep(tick - elapsed);
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
+    use std::thread;
     use std::time::Duration;
 
     use super::*;
@@ -239,8 +253,8 @@ mod test {
             receiver.push_frame(seq as u32, payload);
         }
 
-        // give the tick thread real wall-clock time to drain the
-        // buffer at its 20ms cadence
+        // give the dummy device's clock real wall-clock time to pull
+        // the buffer dry
         thread::sleep(Duration::from_millis(300));
 
         assert_eq!(
@@ -264,8 +278,8 @@ mod test {
             crate::jitter::DEFAULT_TARGET_MS,
         )
         .expect("start receiver");
-        // push far more than the tick thread could drain in one tick,
-        // then reset before it gets a chance
+        // push far more than the device could pull in one block, then
+        // reset before it gets a chance
         for seq in 0..50 {
             receiver.push_frame(seq, &payload);
         }

@@ -8,7 +8,8 @@
 //! work (resample, Opus encode, invoking `on_frame`), where blocking
 //! and allocating are fine.
 
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,8 @@ const RING_CAPACITY_SECONDS: f64 = 1.0;
 /// how long the encode thread sleeps when the ring is empty, before
 /// checking again
 const IDLE_SLEEP: Duration = Duration::from_millis(5);
+/// how often the encode thread reports capture-ring overflows
+const DROP_REPORT_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct AudioSender {
     capture: Box<dyn AudioCapture>,
@@ -56,12 +59,17 @@ impl AudioSender {
         let ring = HeapRb::<f32>::new(ring_capacity.max(1));
         let (mut producer, mut consumer) = ring.split();
 
+        // the capture callback is a real-time thread: it can neither
+        // block nor log, so overflows are counted here and reported
+        // from the encode thread
+        let dropped_samples = Arc::new(AtomicU64::new(0));
+        let capture_dropped = dropped_samples.clone();
         let format = capture.start(
             device,
             Box::new(move |data: &[f32]| {
                 let pushed = producer.push_slice(data);
                 if pushed < data.len() {
-                    // real-time thread: never block/log-and-block, just drop
+                    capture_dropped.fetch_add((data.len() - pushed) as u64, Ordering::Relaxed);
                 }
             }),
         )?;
@@ -82,10 +90,25 @@ impl AudioSender {
             let mut frame_accum: Vec<f32> = Vec::with_capacity(frame_len * 2);
             let mut seq: u32 = 0;
             let started = Instant::now();
+            let mut reported_drops = 0u64;
+            let mut last_drop_report = Instant::now();
 
             loop {
                 if encode_stop_rx.try_recv().is_ok() {
                     break;
+                }
+                // a capture ring that keeps overflowing means the encode
+                // thread is falling behind — invisible before this
+                if last_drop_report.elapsed() >= DROP_REPORT_INTERVAL {
+                    let dropped = dropped_samples.load(Ordering::Relaxed);
+                    if dropped > reported_drops {
+                        log::warn!(
+                            "audio capture ring overflowed: dropped {} samples ({dropped} total)",
+                            dropped - reported_drops
+                        );
+                        reported_drops = dropped;
+                    }
+                    last_drop_report = Instant::now();
                 }
                 let popped = consumer.pop_slice(&mut pull_buf);
                 if popped == 0 {

@@ -1,19 +1,16 @@
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use cpal::DeviceId;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use ringbuf::HeapRb;
-use ringbuf::traits::{Consumer, Producer, Split};
 
 use crate::{AudioDevice, AudioError, AudioFormat};
 
-/// generous vs. the ~80ms jitter buffer upstream (§3.6 of the audio
-/// plan) — this ring only has to absorb scheduling jitter between the
-/// decode thread and the cpal output callback, not network jitter.
-const RING_CAPACITY_SECONDS: f64 = 0.5;
+/// input frames pulled per top-up in the resampling fallback path
+const RESAMPLER_PULL_SAMPLES: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Backend {
@@ -34,46 +31,46 @@ pub trait AudioPlayback: Send {
     fn devices(&self) -> Result<Vec<AudioDevice>, AudioError>;
 
     /// open an output stream at `format` on `device` (`None` = system
-    /// default) and return a sink to push decoded samples into. The
-    /// sink is lock-free and safe to push from any thread; on underrun
-    /// the stream plays silence rather than blocking.
+    /// default) and let it pull its audio from `source`.
     fn start(
         &mut self,
         device: Option<&str>,
         format: AudioFormat,
-    ) -> Result<Box<dyn AudioSink>, AudioError>;
+        source: Box<dyn AudioSource>,
+    ) -> Result<(), AudioError>;
 
     /// stop the stream, if running. Safe to call when not started.
     fn stop(&mut self);
+
+    /// true once the backend reported a stream error it cannot recover
+    /// from on its own. The owner is expected to tear the stream down
+    /// and open a new one — a dead cpal stream otherwise stays silent
+    /// forever with everything upstream looking healthy.
+    fn failed(&self) -> bool {
+        false
+    }
 }
 
-pub trait AudioSink: Send {
-    /// enqueue interleaved samples for playback. Never blocks; excess
-    /// samples beyond the ring capacity are dropped.
-    fn push(&mut self, samples: &[f32]);
+/// audio the output device pulls, on the device's own clock.
+///
+/// The device is the only accurate clock in the pipeline: a producer
+/// thread ticking on `thread::sleep` always runs slightly slow, so a
+/// push model drains whatever buffer sits in between until playback is
+/// permanently silent. Pulling removes that buffer entirely.
+pub trait AudioSource: Send {
+    /// fill `out` with the next interleaved samples in the stream's
+    /// format. Runs on the device's realtime callback: it must never
+    /// block, and it must always fill the whole buffer — silence when
+    /// there is nothing to play.
+    fn fill(&mut self, out: &mut [f32]);
 }
 
-struct RingSink {
-    producer: ringbuf::HeapProd<f32>,
-    /// number of pushes that couldn't fit everything; rate-limits the
-    /// overflow log (overflows fire per playback tick when the decode
-    /// thread outpaces the output)
-    overflow_count: u64,
-}
+/// an [`AudioSource`] that only ever plays silence
+pub struct SilentSource;
 
-impl AudioSink for RingSink {
-    fn push(&mut self, samples: &[f32]) {
-        let pushed = self.producer.push_slice(samples);
-        if pushed < samples.len() {
-            self.overflow_count += 1;
-            if self.overflow_count == 1 || self.overflow_count.is_multiple_of(100) {
-                log::debug!(
-                    "playback ring full, dropped {} samples ({} overflows so far)",
-                    samples.len() - pushed,
-                    self.overflow_count
-                );
-            }
-        }
+impl AudioSource for SilentSource {
+    fn fill(&mut self, out: &mut [f32]) {
+        out.fill(0.0);
     }
 }
 
@@ -82,6 +79,8 @@ impl AudioSink for RingSink {
 pub struct CpalPlayback {
     stop_tx: Option<mpsc::Sender<()>>,
     join: Option<JoinHandle<()>>,
+    /// set from the cpal error callback; see [`AudioPlayback::failed`]
+    failed: Arc<AtomicBool>,
 }
 
 impl CpalPlayback {
@@ -89,6 +88,7 @@ impl CpalPlayback {
         Self {
             stop_tx: None,
             join: None,
+            failed: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -133,7 +133,8 @@ fn fallback_config(device: &cpal::Device) -> Option<cpal::StreamConfig> {
 /// linear-interpolating resampler between the wire format and the
 /// device's actual output config — only used when the device can't run
 /// at the wire format directly (see [`fallback_config`]). Runs inside
-/// the cpal callback, so it never blocks; on underrun it emits silence.
+/// the cpal callback, pulling its input from the same [`AudioSource`]
+/// the primary path uses, so it never blocks.
 /// Extra output channels replicate the last input channel; extra input
 /// channels are dropped. Good enough for a fallback path — the primary
 /// path does no resampling at all.
@@ -159,25 +160,17 @@ impl LinearResampler {
         }
     }
 
-    fn fill(&mut self, consumer: &mut ringbuf::HeapCons<f32>, out: &mut [f32]) {
+    fn fill(&mut self, source: &mut dyn AudioSource, out: &mut [f32]) {
         let mut filled = 0;
         while filled + self.out_channels <= out.len() {
             // interpolation reads input frames floor(pos) and
             // floor(pos)+1 — top up until both are available
             while (self.buf.len() / self.in_channels) as f64 <= self.pos + 1.0 {
-                let mut tmp = [0f32; 8192];
-                // the ring only ever holds whole input frames
-                let pulled = consumer.pop_slice(&mut tmp);
-                if pulled == 0 {
-                    // underrun: keep the buffered samples for the next
-                    // callback (they're the next in sequence, not stale)
-                    // and play silence for now
-                    for sample in &mut out[filled..] {
-                        *sample = 0.0;
-                    }
-                    return;
-                }
-                self.buf.extend(&tmp[..pulled]);
+                let mut tmp = [0f32; RESAMPLER_PULL_SAMPLES];
+                // pull whole input frames only
+                let pull = (RESAMPLER_PULL_SAMPLES / self.in_channels) * self.in_channels;
+                source.fill(&mut tmp[..pull]);
+                self.buf.extend(&tmp[..pull]);
             }
             let base = self.pos as usize * self.in_channels;
             let frac = (self.pos - self.pos.floor()) as f32;
@@ -235,17 +228,15 @@ impl AudioPlayback for CpalPlayback {
         &mut self,
         device: Option<&str>,
         format: AudioFormat,
-    ) -> Result<Box<dyn AudioSink>, AudioError> {
+        mut source: Box<dyn AudioSource>,
+    ) -> Result<(), AudioError> {
         self.stop();
-
-        let capacity =
-            (format.sample_rate as f64 * format.channels as f64 * RING_CAPACITY_SECONDS) as usize;
-        let ring = HeapRb::<f32>::new(capacity.max(1));
-        let (producer, mut consumer) = ring.split();
+        self.failed.store(false, Ordering::Relaxed);
 
         let device_id = device.map(str::to_owned);
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), AudioError>>();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let failed = self.failed.clone();
 
         let join = thread::spawn(move || {
             let host = cpal::default_host();
@@ -296,18 +287,19 @@ impl AudioPlayback for CpalPlayback {
                 }
             };
 
-            let err_fn = |e| log::error!("audio playback stream error: {e}");
+            // a stream error is terminal for this stream: cpal will not
+            // call the data callback again, so record it for `failed()`
+            // instead of leaving the pipeline silently dead
+            let err_fn = move |e| {
+                log::error!("audio playback stream error: {e}");
+                failed.store(true, Ordering::Relaxed);
+            };
 
             let stream =
                 if config.channels == format.channels && config.sample_rate == format.sample_rate {
                     device.build_output_stream(
                         config,
-                        move |data: &mut [f32], _| {
-                            let filled = consumer.pop_slice(data);
-                            for sample in &mut data[filled..] {
-                                *sample = 0.0;
-                            }
-                        },
+                        move |data: &mut [f32], _| source.fill(data),
                         err_fn,
                         None,
                     )
@@ -320,7 +312,7 @@ impl AudioPlayback for CpalPlayback {
                     );
                     device.build_output_stream(
                         config,
-                        move |data: &mut [f32], _| resampler.fill(&mut consumer, data),
+                        move |data: &mut [f32], _| resampler.fill(source.as_mut(), data),
                         err_fn,
                         None,
                     )
@@ -346,10 +338,7 @@ impl AudioPlayback for CpalPlayback {
         ready_rx.recv().map_err(|_| AudioError::BackendClosed)??;
         self.stop_tx = Some(stop_tx);
         self.join = Some(join);
-        Ok(Box::new(RingSink {
-            producer,
-            overflow_count: 0,
-        }))
+        Ok(())
     }
 
     fn stop(&mut self) {
@@ -360,16 +349,21 @@ impl AudioPlayback for CpalPlayback {
             let _ = join.join();
         }
     }
+
+    fn failed(&self) -> bool {
+        self.failed.load(Ordering::Relaxed)
+    }
 }
 
-/// discards pushed samples; used in tests and as a last-resort fallback
-/// with no audio hardware. Same role as `capture::dummy::DummyCapture`.
+/// discards the audio it plays; used in tests and as a last-resort
+/// fallback with no audio hardware. Same role as
+/// `capture::dummy::DummyCapture`.
 ///
-/// A clock thread drains the virtual playback buffer at the format's
-/// nominal rate, like a real output device would: tests can detect a
-/// starving pipeline (e.g. pops returning fewer samples than the tick
-/// consumes) via [`DummyMetrics::underrun_ticks`] instead of only
-/// counting what was pushed.
+/// A clock thread pulls from the source at the format's nominal rate,
+/// like a real output device would, and records how much it pulled and
+/// how many of those blocks came back fully silent — which is what
+/// "played the first seconds, then went quiet" looks like from the
+/// device's side.
 pub struct DummyPlayback {
     metrics: DummyMetrics,
     clock_stop_tx: Option<mpsc::Sender<()>>,
@@ -380,12 +374,10 @@ pub struct DummyPlayback {
 /// all clones point at the same counters.
 #[derive(Clone, Default)]
 pub struct DummyMetrics {
+    /// samples the virtual device has pulled so far
     samples_received: Arc<Mutex<usize>>,
-    /// samples pushed but not yet "played" by the virtual clock
-    queued_samples: Arc<std::sync::atomic::AtomicUsize>,
-    /// clock ticks that found the virtual buffer empty (playback would
-    /// have output silence here on real hardware)
-    underrun_ticks: Arc<std::sync::atomic::AtomicU64>,
+    /// clock ticks whose block came back fully silent
+    silent_ticks: Arc<std::sync::atomic::AtomicU64>,
     /// total clock ticks so far
     clock_ticks: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -395,9 +387,8 @@ impl DummyMetrics {
         self.samples_received.clone()
     }
 
-    pub fn underrun_ticks(&self) -> u64 {
-        self.underrun_ticks
-            .load(std::sync::atomic::Ordering::Relaxed)
+    pub fn silent_ticks(&self) -> u64 {
+        self.silent_ticks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn clock_ticks(&self) -> u64 {
@@ -446,23 +437,24 @@ impl AudioPlayback for DummyPlayback {
         &mut self,
         _device: Option<&str>,
         format: AudioFormat,
-    ) -> Result<Box<dyn AudioSink>, AudioError> {
+        mut source: Box<dyn AudioSource>,
+    ) -> Result<(), AudioError> {
         self.stop();
 
         // fresh stream: reset the clock counters (samples_received
         // stays cumulative — tests hold that handle across restarts)
         use std::sync::atomic::Ordering::Relaxed;
-        self.metrics.queued_samples.store(0, Relaxed);
-        self.metrics.underrun_ticks.store(0, Relaxed);
+        self.metrics.silent_ticks.store(0, Relaxed);
         self.metrics.clock_ticks.store(0, Relaxed);
 
-        // virtual output device clock: drains the queue at the nominal
-        // rate and records every tick that would have underrun
+        // virtual output device clock: pulls at the nominal rate and
+        // records the blocks that came back silent
         let samples_per_tick =
             (format.sample_rate as u64 * DUMMY_CLOCK_MS / 1000) as usize * format.channels as usize;
         let metrics = self.metrics.clone();
         let (stop_tx, stop_rx) = mpsc::channel();
         let join = thread::spawn(move || {
+            let mut block = vec![0.0f32; samples_per_tick];
             loop {
                 if stop_rx
                     .recv_timeout(std::time::Duration::from_millis(DUMMY_CLOCK_MS))
@@ -470,33 +462,18 @@ impl AudioPlayback for DummyPlayback {
                 {
                     return;
                 }
-                let queued = metrics
-                    .queued_samples
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                if queued >= samples_per_tick {
-                    metrics.queued_samples.store(
-                        queued - samples_per_tick,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                } else {
-                    metrics
-                        .queued_samples
-                        .store(0, std::sync::atomic::Ordering::Relaxed);
-                    metrics
-                        .underrun_ticks
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                source.fill(&mut block);
+                *metrics.samples_received.lock().expect("lock") += block.len();
+                if block.iter().all(|sample| *sample == 0.0) {
+                    metrics.silent_ticks.fetch_add(1, Relaxed);
                 }
-                metrics
-                    .clock_ticks
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                metrics.clock_ticks.fetch_add(1, Relaxed);
             }
         });
         self.clock_stop_tx = Some(stop_tx);
         self.clock_thread = Some(join);
 
-        Ok(Box::new(DummySink {
-            metrics: self.metrics.clone(),
-        }))
+        Ok(())
     }
 
     fn stop(&mut self) {
@@ -515,103 +492,125 @@ impl Drop for DummyPlayback {
     }
 }
 
-struct DummySink {
-    metrics: DummyMetrics,
-}
-
-impl AudioSink for DummySink {
-    fn push(&mut self, samples: &[f32]) {
-        *self.metrics.samples_received.lock().expect("lock") += samples.len();
-        self.metrics
-            .queued_samples
-            .fetch_add(samples.len(), std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
 
+    /// plays back a fixed slice, then silence
+    struct SliceSource {
+        data: Vec<f32>,
+        at: usize,
+    }
+
+    impl SliceSource {
+        fn new(data: &[f32]) -> Self {
+            Self {
+                data: data.to_vec(),
+                at: 0,
+            }
+        }
+    }
+
+    impl AudioSource for SliceSource {
+        fn fill(&mut self, out: &mut [f32]) {
+            for sample in out.iter_mut() {
+                *sample = self.data.get(self.at).copied().unwrap_or(0.0);
+                self.at += 1;
+            }
+        }
+    }
+
+    /// never runs out of audio
+    struct ToneSource;
+
+    impl AudioSource for ToneSource {
+        fn fill(&mut self, out: &mut [f32]) {
+            out.fill(0.25);
+        }
+    }
+
     #[test]
-    fn dummy_playback_counts_underruns_when_starved() {
+    fn dummy_playback_pulls_on_its_own_clock() {
         let mut playback = DummyPlayback::new();
         let metrics = playback.metrics();
-        let mut sink = playback
+        let samples = metrics.samples_received();
+        playback
             .start(
                 None,
                 AudioFormat {
                     sample_rate: 48_000,
                     channels: 1,
                 },
+                Box::new(ToneSource),
             )
             .expect("start");
-        // feed less than the clock consumes: 10ms of audio every ~30ms
-        for _ in 0..5 {
-            sink.push(&[0.0f32; 480]);
-            std::thread::sleep(std::time::Duration::from_millis(30));
-        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
         playback.stop();
-        assert!(metrics.clock_ticks() >= 3);
-        assert!(
-            metrics.underrun_ticks() > 0,
-            "a starved sink must record underruns"
+
+        let ticks = metrics.clock_ticks();
+        assert!(ticks >= 3, "clock should have ticked, got {ticks}");
+        assert_eq!(
+            *samples.lock().expect("lock"),
+            ticks as usize * 480,
+            "the device pulls a full block on every tick"
+        );
+        assert_eq!(
+            metrics.silent_ticks(),
+            0,
+            "a source with audio must not read as silent"
         );
     }
 
     #[test]
-    fn dummy_playback_keeps_up_when_fed() {
+    fn dummy_playback_records_silent_blocks() {
         let mut playback = DummyPlayback::new();
         let metrics = playback.metrics();
-        let mut sink = playback
+        playback
             .start(
                 None,
                 AudioFormat {
                     sample_rate: 48_000,
                     channels: 1,
                 },
+                Box::new(SilentSource),
             )
             .expect("start");
-        // prebuffer, then feed exactly the consumed rate (20ms of
-        // audio every 20ms, like the receiver's tick thread)
-        sink.push(&[0.0f32; 480 * 8]);
-        for _ in 0..10 {
-            sink.push(&[0.0f32; 960]);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
         playback.stop();
-        assert_eq!(metrics.underrun_ticks(), 0, "a fed sink must not underrun");
+
+        assert!(metrics.clock_ticks() >= 3);
+        assert_eq!(
+            metrics.silent_ticks(),
+            metrics.clock_ticks(),
+            "a silent source must read as silent on every tick"
+        );
     }
 
     #[test]
     fn linear_resampler_interpolates_when_upsampling() {
-        let ring = HeapRb::<f32>::new(64);
-        let (mut producer, mut consumer) = ring.split();
-        producer.push_slice(&[0.0, 0.5, 1.0, 0.5]);
+        let mut source = SliceSource::new(&[0.0, 0.5, 1.0, 0.5]);
         // step = 0.5 input frames per output frame
         let mut resampler = LinearResampler::new(48_000, 1, 96_000, 1);
         let mut out = [0f32; 5];
-        resampler.fill(&mut consumer, &mut out);
+        resampler.fill(&mut source, &mut out);
         assert_eq!(out, [0.0, 0.25, 0.5, 0.75, 1.0]);
     }
 
     #[test]
     fn linear_resampler_replicates_mono_into_stereo() {
-        let ring = HeapRb::<f32>::new(64);
-        let (mut producer, mut consumer) = ring.split();
-        producer.push_slice(&[1.0, 2.0, 3.0]);
+        let mut source = SliceSource::new(&[1.0, 2.0, 3.0]);
         let mut resampler = LinearResampler::new(48_000, 1, 48_000, 2);
         let mut out = [0f32; 4];
-        resampler.fill(&mut consumer, &mut out);
+        resampler.fill(&mut source, &mut out);
         assert_eq!(out, [1.0, 1.0, 2.0, 2.0]);
     }
 
     #[test]
-    fn linear_resampler_plays_silence_on_underrun() {
-        let ring = HeapRb::<f32>::new(64);
-        let (_producer, mut consumer) = ring.split();
+    fn linear_resampler_passes_silence_through() {
+        let mut source = SilentSource;
         let mut resampler = LinearResampler::new(48_000, 2, 48_000, 2);
         let mut out = [1f32; 8];
-        resampler.fill(&mut consumer, &mut out);
+        resampler.fill(&mut source, &mut out);
         assert!(out.iter().all(|sample| *sample == 0.0));
     }
 }

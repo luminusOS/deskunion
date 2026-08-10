@@ -6,11 +6,12 @@
 //!
 //! The whole pipeline minus the OS capture/playback backends runs here:
 //! encode thread -> bounded queue -> batching -> wire encode -> wire
-//! decode -> jitter buffer -> tick thread -> playback sink. The dummy
-//! sink's virtual device clock is what lets the harness detect the
-//! "played the first seconds, then went silent" field failure: pops
-//! that return fewer samples than the playback tick consumes show up
-//! as underrun ticks.
+//! decode -> jitter buffer -> playback callback. The dummy playback's
+//! virtual device clock pulls the jitter buffer exactly like a real
+//! output device does, which is what lets the harness see the "played
+//! the first seconds, then went silent" field failure: a device pulling
+//! faster than frames arrive drains the buffer and starts concealing
+//! frames that were never lost.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -186,7 +187,7 @@ async fn audio_keeps_flowing_through_the_whole_pipeline() {
             let mut sample_tick = tokio::time::interval(Duration::from_millis(250));
             sample_tick.tick().await; // consume the immediate first tick
             let mut occupancy_samples = Vec::new();
-            let mut mid_underruns = None;
+            let mut mid_lost = None;
             let mut mid_ticks = None;
             loop {
                 tokio::select! {
@@ -217,8 +218,8 @@ async fn audio_keeps_flowing_through_the_whole_pipeline() {
                     _ = sample_tick.tick() => {
                         let receiver = rx_state.receiver.as_ref().expect("receiver");
                         occupancy_samples.push(receiver.occupancy());
-                        if mid_underruns.is_none() && started.elapsed() >= RUN_DURATION / 2 {
-                            mid_underruns = Some(metrics.underrun_ticks());
+                        if mid_lost.is_none() && started.elapsed() >= RUN_DURATION / 2 {
+                            mid_lost = Some(receiver.stats().packets_lost);
                             mid_ticks = Some(metrics.clock_ticks());
                         }
                     }
@@ -252,17 +253,27 @@ async fn audio_keeps_flowing_through_the_whole_pipeline() {
                 "occupancy must stay bounded near the 4-frame target, peaked at {max_late}"
             );
 
-            // the actual field failure: playback starves when pops
-            // return fewer samples than the output device consumes.
-            // The dummy sink's virtual clock records those underruns;
-            // startup/prebuffer underruns are excluded by measuring
-            // only the second half of the run.
-            let underruns = metrics.underrun_ticks() - mid_underruns.expect("mid sample");
+            // the actual field failure: playback going quiet while the
+            // link stays healthy. With the device pulling, that shows up
+            // as concealment of frames that were never lost — measured
+            // over the second half so startup/prebuffer is excluded.
             let ticks = metrics.clock_ticks() - mid_ticks.expect("mid sample");
-            assert!(ticks > 0);
-            assert!(
-                underruns * 100 <= ticks * 5,
-                "playback starved: {underruns}/{ticks} playback ticks underran in the second half"
+            assert!(ticks > 0, "the virtual device must keep pulling");
+            assert_eq!(
+                stats.packets_lost,
+                mid_lost.expect("mid sample"),
+                "playback starved: frames were concealed in the second half of the run"
+            );
+
+            // and the device must have pulled real audio for the whole
+            // run, not stopped part-way
+            let pulled = *metrics.samples_received().lock().expect("lock");
+            let expected_samples = metrics.clock_ticks() as usize * 480;
+            assert_eq!(
+                pulled,
+                expected_samples,
+                "the device pulled {pulled} samples over {} ticks",
+                metrics.clock_ticks()
             );
         })
         .await;
