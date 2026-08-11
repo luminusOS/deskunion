@@ -36,6 +36,12 @@ const EVENT_TIMEOUT_MS: u32 = 100;
 /// how long to wait before reopening the endpoint after the capture
 /// stream broke, doubling up to this ceiling
 const MAX_REOPEN_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
+/// the first reopen delay, and what the backoff returns to after a run
+/// that held up long enough not to count as part of a failure burst
+const INITIAL_REOPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+/// a capture run at least this long is treated as recovered, so the next
+/// unrelated interruption starts over at [`INITIAL_REOPEN_BACKOFF`]
+const STABLE_RUN_RESETS_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// why [`run_capture`] returned
 enum CaptureRun {
@@ -126,8 +132,9 @@ impl AudioCapture for WasapiCapture {
             // ring and audio stopped while the connection stayed up.
             // Reopen instead.
             let mut announced = false;
-            let mut backoff = std::time::Duration::from_millis(200);
+            let mut backoff = INITIAL_REOPEN_BACKOFF;
             loop {
+                let ran_since = std::time::Instant::now();
                 match run_capture(
                     device_id.as_deref(),
                     &mut on_data,
@@ -148,6 +155,15 @@ impl AudioCapture for WasapiCapture {
                         }
                         log::error!("wasapi loopback capture failed: {e}; reopening the endpoint");
                     }
+                }
+                // a run that streamed for a while was not part of the
+                // burst this backoff is pacing. Without this the delay
+                // only ever grows, so after a handful of unrelated
+                // endpoint changes over a session (default-device switch,
+                // format change) every later interruption costs the full
+                // MAX_REOPEN_BACKOFF of silence instead of 200 ms.
+                if ran_since.elapsed() >= STABLE_RUN_RESETS_BACKOFF {
+                    backoff = INITIAL_REOPEN_BACKOFF;
                 }
                 if stop_rx.recv_timeout(backoff).is_ok() {
                     break;
