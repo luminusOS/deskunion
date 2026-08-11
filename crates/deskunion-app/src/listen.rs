@@ -515,7 +515,7 @@ impl AudioRxState {
     /// tear down a playback stream the backend reported as failed, so a
     /// later `Start` or frame rebuilds it. `lazy_failed` is cleared too:
     /// this is a new failure, not the one that latched it.
-    pub(crate) fn drop_if_failed(&mut self, addr: SocketAddr) {
+    pub(crate) fn drop_if_failed(&mut self, tx: &Sender<ListenEvent>, addr: SocketAddr) {
         let failed = self
             .receiver
             .as_ref()
@@ -526,6 +526,16 @@ impl AudioRxState {
             );
             self.receiver = None;
             self.lazy_failed = false;
+            // without this the stats block below stops emitting and the
+            // frontend's stream row stays frozen on the last active
+            // reading until a later `Start` happens to rebuild a receiver
+            let _ = tx.send(ListenEvent::AudioStream {
+                addr,
+                active: false,
+                latency_ms: 0,
+                packets_lost: 0,
+                level: 0.0,
+            });
         }
     }
 
@@ -621,7 +631,7 @@ async fn read_loop(
             // frame builds a fresh one. Without this the connection,
             // the jitter buffer and the stats all stay healthy while
             // nothing is audible.
-            audio_rx.drop_if_failed(addr);
+            audio_rx.drop_if_failed(&dtls_tx, addr);
             if let Some(receiver) = &audio_rx.receiver {
                 let stats = receiver.stats();
                 dtls_tx
@@ -640,15 +650,17 @@ async fn read_loop(
     #[cfg(feature = "audio")]
     {
         if audio_rx.receiver.is_some() {
-            dtls_tx
-                .send(ListenEvent::AudioStream {
-                    addr,
-                    active: false,
-                    latency_ms: 0,
-                    packets_lost: 0,
-                    level: 0.0,
-                })
-                .expect("channel closed");
+            // teardown path: `terminate()` closes the connections and then
+            // the channel, so this loop can legitimately outlive the
+            // receiver. Panicking here aborts the process (release builds
+            // are `panic = "abort"`) on an ordinary Server -> Client switch.
+            let _ = dtls_tx.send(ListenEvent::AudioStream {
+                addr,
+                active: false,
+                latency_ms: 0,
+                packets_lost: 0,
+                level: 0.0,
+            });
         }
         log::info!(
             "dtls client disconnected {addr} after {} audio frames",
@@ -667,9 +679,7 @@ async fn read_loop(
         conns.remove(index);
     }
     drop(conns);
-    dtls_tx
-        .send(ListenEvent::Disconnected { addr })
-        .expect("channel closed");
+    let _ = dtls_tx.send(ListenEvent::Disconnected { addr });
 }
 
 #[cfg(test)]
@@ -769,6 +779,42 @@ mod test {
                     sends_at_exit, sends_later,
                     "pinger kept pinging after its connection died"
                 );
+            })
+            .await;
+    }
+
+    /// `terminate()` closes the connections and then the event channel,
+    /// but never aborts the per-connection `read_loop` tasks. Those loops
+    /// then run their teardown sends into an already-closed channel — a
+    /// panic, and with `panic = "abort"` in the release profile a process
+    /// abort, on an ordinary Server -> Client switch in the UI.
+    #[tokio::test]
+    async fn read_loop_survives_a_channel_closed_by_terminate() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let addr: SocketAddr = "127.0.0.1:4242".parse().expect("addr");
+                let conn: ArcConn = Arc::new(DeadReadConn::default());
+                let conns: Rc<AsyncMutex<Vec<(SocketAddr, ArcConn)>>> = Default::default();
+                conns.lock().await.push((addr, conn.clone()));
+                let (mut tx, rx) = channel();
+                let ping_response: Rc<RefCell<HashSet<SocketAddr>>> = Default::default();
+
+                // what `terminate()` does to the channel, before the loop
+                // reaches its teardown sends
+                tx.close();
+                drop(rx);
+
+                let pinger = spawn_local(ping_pong(addr, conn.clone(), ping_response.clone()));
+                let read = spawn_local(read_loop(
+                    conns,
+                    addr,
+                    conn,
+                    tx,
+                    ping_response,
+                    pinger,
+                    test_audio_settings(),
+                ));
+                read.await.expect("read_loop panicked on a closed channel");
             })
             .await;
     }
