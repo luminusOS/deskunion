@@ -459,9 +459,16 @@ impl Service {
                 }
             }
             EmulationEvent::Disconnected { addr } => {
-                if let Some(addr) = self.remove_incoming(addr) {
-                    self.notify_frontend(FrontendEvent::IncomingDisconnected(addr));
-                }
+                // `remove_incoming` only knows devices whose pointer
+                // actually entered (`add_incoming` runs from `Entered`),
+                // but the frontend's "Connected to <server>" comes from
+                // `DeviceConnected`, which fires on the dial alone. Gating
+                // the notification on the removal left a client that never
+                // got entered showing a live connection after the session
+                // dropped. Both events track the same dial, so both are
+                // reported unconditionally.
+                self.remove_incoming(addr);
+                self.notify_frontend(FrontendEvent::IncomingDisconnected(addr));
             }
             EmulationEvent::ConnectionTested { request_id, error } => {
                 self.notify_frontend(FrontendEvent::ConnectionTested { request_id, error });
