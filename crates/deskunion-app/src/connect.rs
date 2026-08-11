@@ -491,18 +491,21 @@ pub(crate) async fn recv_audio_frame(
 /// expensive DTLS send without changing the codec's 20 ms frame size
 pub(crate) const AUDIO_BATCH_FRAMES: usize = 3;
 
-/// how long to wait for follow-up frames while gathering a batch —
-/// bounded so a batch never adds more than this per extra frame to the
-/// stream's latency
-const AUDIO_BATCH_GATHER_TIMEOUT: Duration = Duration::from_millis(25);
-
 /// send one batch of audio frames to the peer: takes the frame that
-/// just arrived, gathers up to [`AUDIO_BATCH_FRAMES`] - 1 queued
-/// follow-ups (bounded by two short waits so a live stream sends ~3
-/// frames = 60 ms of audio per datagram), and encodes them as one
-/// `AudioBatch`, falling back to single-frame datagrams when the batch
-/// overflows the datagram budget. Extracted from `server_loop` so the
-/// loopback harness can exercise the real batching logic.
+/// just arrived, drains up to [`AUDIO_BATCH_FRAMES`] - 1 follow-ups that
+/// are *already queued*, and encodes them as one `AudioBatch`, falling
+/// back to single-frame datagrams when the batch overflows the datagram
+/// budget. Extracted from `server_loop` so the loopback harness can
+/// exercise the real batching logic.
+///
+/// Draining, never waiting: this runs inside `server_loop`'s `select!`,
+/// so every millisecond spent here is a millisecond `conn.recv()` is not
+/// polled and an incoming mouse/keyboard event sits unhandled. Waiting
+/// for follow-ups cost up to 50 ms of cursor lag on every batch — and
+/// delayed the audio just as much, since the frame that triggered the
+/// batch was held back for the same wait. The queue is empty at rest and
+/// only fills when sends fall behind, which is exactly when amortizing
+/// the DTLS send is worth anything.
 pub(crate) async fn send_audio_batch(
     conn: &ArcConn,
     addr: SocketAddr,
@@ -513,9 +516,9 @@ pub(crate) async fn send_audio_batch(
     let mut batch = vec![first];
     if let Some(rx) = audio_rx {
         while batch.len() < AUDIO_BATCH_FRAMES {
-            match tokio::time::timeout(AUDIO_BATCH_GATHER_TIMEOUT, rx.recv()).await {
-                Ok(Some(frame)) => batch.push(frame),
-                _ => break,
+            match rx.try_recv() {
+                Ok(frame) => batch.push(frame),
+                Err(_) => break,
             }
         }
     }
@@ -716,5 +719,66 @@ mod test {
         let v6 = local_bind_addr("[::1]:4242".parse().expect("addr"));
         assert!(v6.is_ipv6(), "{v6} should be IPv6");
         assert_eq!(v6.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+
+    /// a connection that accepts every send and never receives
+    #[derive(Default)]
+    struct SinkConn;
+
+    #[async_trait::async_trait]
+    impl Conn for SinkConn {
+        async fn connect(&self, _addr: SocketAddr) -> webrtc_util::Result<()> {
+            Ok(())
+        }
+        async fn recv(&self, _buf: &mut [u8]) -> webrtc_util::Result<usize> {
+            Err(webrtc_util::Error::ErrUseClosedNetworkConn)
+        }
+        async fn recv_from(&self, _buf: &mut [u8]) -> webrtc_util::Result<(usize, SocketAddr)> {
+            Err(webrtc_util::Error::ErrUseClosedNetworkConn)
+        }
+        async fn send(&self, buf: &[u8]) -> webrtc_util::Result<usize> {
+            Ok(buf.len())
+        }
+        async fn send_to(&self, buf: &[u8], _target: SocketAddr) -> webrtc_util::Result<usize> {
+            self.send(buf).await
+        }
+        fn local_addr(&self) -> webrtc_util::Result<SocketAddr> {
+            Ok("127.0.0.1:9".parse().expect("addr"))
+        }
+        fn remote_addr(&self) -> Option<SocketAddr> {
+            None
+        }
+        async fn close(&self) -> webrtc_util::Result<()> {
+            Ok(())
+        }
+        fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+            self
+        }
+    }
+
+    /// batching runs inside `server_loop`'s `select!`, so it must never
+    /// wait: while it does, `conn.recv()` is not polled and remote input
+    /// events sit unhandled. Gathering used to block on two 25 ms
+    /// timeouts, adding up to 50 ms of cursor lag to every batch.
+    #[tokio::test]
+    async fn batching_drains_the_queue_without_waiting_for_more() {
+        let addr: SocketAddr = "127.0.0.1:4242".parse().expect("addr");
+        let conn: ArcConn = Arc::new(SinkConn);
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        // one follow-up already queued, so a full batch of
+        // AUDIO_BATCH_FRAMES is never reachable without waiting
+        tx.send((1, 20, vec![0u8; 40])).await.expect("queue frame");
+        let mut audio_rx = Some(rx);
+        let mut sent = 0u64;
+
+        let started = std::time::Instant::now();
+        send_audio_batch(&conn, addr, &mut audio_rx, (0, 0, vec![0u8; 40]), &mut sent).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(sent, 2, "the queued follow-up should have been drained");
+        assert!(
+            elapsed < Duration::from_millis(10),
+            "batching waited {elapsed:?} for frames that had not arrived"
+        );
     }
 }
