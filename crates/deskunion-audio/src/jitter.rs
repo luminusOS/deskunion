@@ -231,18 +231,23 @@ impl JitterBuffer {
             }
         }
 
+        // the flag excuses *this* pop, whatever it turns out to be, and
+        // is spent either way: a `Stretch` rewinds onto the slot just
+        // popped, and a duplicate of that frame arriving before the next
+        // tick (`forward == 0`, so `push` accepts it) is popped here
+        // instead. Leaving the flag set would then excuse the next
+        // genuine loss, hiding it from `packets_lost` and -- worse --
+        // from `consecutive_plc`, which drives the catch-up re-anchor.
+        let stretch_hold = std::mem::take(&mut self.stretch_pending);
         match self.packets.remove(&next) {
             Some(payload) => {
                 self.consecutive_plc = 0;
                 self.decoder.decode_frame_into(&payload, out)?;
             }
             None => {
-                if self.stretch_pending {
-                    // intentional hold from a `Stretch` correction —
-                    // concealed below like any missing frame, but it is
-                    // not a network loss
-                    self.stretch_pending = false;
-                } else {
+                // an intentional hold is concealed like any missing
+                // frame, but it is not a network loss
+                if !stretch_hold {
                     self.consecutive_plc += 1;
                     self.packets_lost += 1;
                 }
@@ -648,6 +653,42 @@ mod test {
         let out = jb.pop().expect("stretch pop");
         assert_eq!(out.len(), FRAME_SAMPLES);
         assert_eq!(jb.packets_lost(), lost_before, "stretch PLC is not a loss");
+    }
+
+    /// a `Stretch` rewinds onto the slot just popped, so a duplicate of
+    /// that frame is inside the accept window (`forward == 0`) and gets
+    /// popped instead of the expected concealment. The pending flag is
+    /// spent on that pop either way — left set, it silently excuses the
+    /// next genuine loss.
+    #[test]
+    fn stretch_flag_does_not_leak_onto_the_next_real_loss() {
+        let frames = encode_frames(1, 8);
+        let mut jb = JitterBuffer::new(1, DEFAULT_TARGET_MS).expect("jitter buffer");
+        for (seq, payload) in frames.iter().enumerate() {
+            jb.push(seq as u32, payload);
+        }
+        for _ in 0..8 {
+            jb.pop().expect("pop");
+        }
+        // apply exactly what pop() applies on a Stretch sample
+        let next = jb.next_seq.expect("started");
+        let replayed = next.wrapping_sub(1);
+        jb.next_seq = Some(replayed);
+        jb.stretch_pending = true;
+
+        // ... but the frame turns up again before the next tick, so the
+        // stretch pops a real packet rather than concealing
+        jb.push(replayed, &frames[replayed as usize]);
+        jb.pop().expect("stretch pop found a duplicate");
+
+        // the very next frame is genuinely missing
+        let lost_before = jb.packets_lost();
+        jb.pop().expect("pop");
+        assert_eq!(
+            jb.packets_lost(),
+            lost_before + 1,
+            "a real loss was excused by a stale stretch flag"
+        );
     }
 
     #[test]
