@@ -1,23 +1,13 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/flatpak/flatpak-builder/refs/heads/main/data/flatpak-manifest.schema.json
 app-id: io.github.luminusos.DeskUnion
 runtime: org.gnome.Platform
-runtime-version: "48"
+runtime-version: "50"
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-  - org.freedesktop.Sdk.Extension.llvm20
 command: /app/bin/deskunion
 build-options:
-  append-path: "/usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm20/bin"
-  env:
-    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "clang"
-    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS": "-C link-arg=-fuse-ld=/usr/lib/sdk/rust-stable/bin/mold"
-    "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER": "clang"
-    "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS": "-C link-arg=-fuse-ld=/usr/lib/sdk/rust-stable/bin/mold"
-    build-args:
-      "--share=network"
-    prepend-ld-library-path:
-      "/usr/lib/sdk/llvm19/lib"
+  append-path: "/usr/lib/sdk/rust-stable/bin"
 
 finish-args:
   - "--socket=wayland"

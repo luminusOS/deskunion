@@ -63,7 +63,7 @@ jobs:
           scripts/makeicns.sh
 
           cargo build --release --locked
-          cargo bundle --release
+          cargo bundle --release --package deskunion-app
 
           app_bundle="target/release/bundle/osx/Deskunion.app"
           if [ ! -d "$app_bundle" ]; then

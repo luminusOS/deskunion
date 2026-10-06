@@ -21,6 +21,7 @@ jobs:
         run: |
           dnf install -y \
             clang \
+            alsa-lib-devel \
             clang-devel \
             cmake \
             curl \
