@@ -93,6 +93,8 @@ rdp_emulation = ["input-emulation/remote_desktop_portal"]
 # PNG is rendered from the SVG by the AppImage workflow.
 icon = "../../target/io.github.luminusos.DeskUnion.png"
 desktop_entry = "../../io.github.luminusos.DeskUnion.desktop"
+# The desktop file's Icon= must resolve to a file in the AppDir root.
+assets = ["../../target/io.github.luminusos.DeskUnion.png"]
 auto_link = true
 auto_link_exclude_list = [
   "ld-linux*.so*",

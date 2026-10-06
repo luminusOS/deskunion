@@ -53,19 +53,19 @@ jobs:
             zip
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnullvm
+        run: rustup toolchain install stable-x86_64-pc-windows-gnullvm --profile minimal
 
       - name: Build Windows executable
         run: |
           set -euo pipefail
-          export PKG_CONFIG_ALLOW_CROSS=1
+          # gnullvm host too: build scripts (glib-build-tools) must link against MSYS2 GLib, not MSVC.
+          export RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnullvm
           export PKG_CONFIG_PATH="/clang64/lib/pkgconfig"
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER="clang"
+          export PKG_CONFIG_ALLOW_CROSS=1
           export OPUS_LIB_DIR="$(cygpath -m /clang64)"
           export CMAKE_POLICY_VERSION_MINIMUM=3.5
-          cargo build --release --locked --target x86_64-pc-windows-gnullvm --bin deskunion
+          cargo build --release --locked --bin deskunion
 
       - name: Bundle Windows runtime
         run: |
@@ -74,7 +74,7 @@ jobs:
           rm -rf "$bundle"
           mkdir -p "$bundle/bin" "$bundle/share" "$bundle/lib" dist
 
-          cp target/x86_64-pc-windows-gnullvm/release/deskunion.exe "$bundle/bin/deskunion.exe"
+          cp target/release/deskunion.exe "$bundle/bin/deskunion.exe"
 
           copy_deps() {
             local binary="$1"
