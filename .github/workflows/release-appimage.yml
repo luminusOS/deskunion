@@ -1,0 +1,115 @@
+name: Release AppImage
+
+on:
+  workflow_call:
+
+jobs:
+  appimage:
+    name: Build AppImage (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    container:
+      image: fedora:latest
+    steps:
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            clang \
+            clang-devel \
+            cmake \
+            curl \
+            desktop-file-utils \
+            file \
+            findutils \
+            gcc \
+            gcc-c++ \
+            git \
+            gtk4-devel \
+            libX11-devel \
+            libXtst-devel \
+            libadwaita-devel \
+            libxkbcommon-devel \
+            make \
+            opus-devel \
+            patchelf \
+            pipewire-devel \
+            pkgconf-pkg-config \
+            librsvg2-tools \
+            wayland-devel
+
+      - name: Check out sources
+        uses: actions/checkout@v6
+
+      - name: Read release metadata
+        id: names
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BASE_VERSION="${VERSION%%-*}"
+          APP_VERSION="$(
+            python3 -c 'import pathlib, tomllib; data = tomllib.loads(pathlib.Path("crates/deskunion-app/Cargo.toml").read_text()); print(data["package"]["version"])'
+          )"
+
+          if [ "$BASE_VERSION" != "$APP_VERSION" ]; then
+            echo "Tag ${TAG} does not match deskunion-app version ${APP_VERSION}." >&2
+            exit 1
+          fi
+
+          echo "appimage_name=deskunion-${VERSION}-${{ matrix.arch }}.AppImage" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install AppImage tooling
+        run: |
+          set -euo pipefail
+          cargo install cargo-appimage
+          mkdir -p /usr/local/share/appimagetool
+          curl -fL \
+            "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-${{ matrix.arch }}.AppImage" \
+            -o /usr/local/bin/appimagetool-bin
+          curl -fL \
+            "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${{ matrix.arch }}" \
+            -o /usr/local/share/appimagetool/runtime-${{ matrix.arch }}
+          chmod +x /usr/local/bin/appimagetool-bin /usr/local/share/appimagetool/runtime-${{ matrix.arch }}
+          tee /usr/local/bin/appimagetool >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec /usr/local/bin/appimagetool-bin --runtime-file /usr/local/share/appimagetool/runtime-${{ matrix.arch }} "$@"
+          EOF
+          chmod +x /usr/local/bin/appimagetool
+
+      - name: Build AppImage
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          rsvg-convert -w 256 -h 256 \
+            crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg \
+            -o target/appimage-icon.png
+          (
+            cd crates/deskunion-app
+            APPIMAGE_EXTRACT_AND_RUN=1 cargo appimage --locked
+          )
+          mkdir -p dist
+          generated="$(find . -type f -name '*.AppImage' ! -path './dist/*' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)"
+          if [ -z "${generated}" ]; then
+            echo "cargo-appimage did not produce an AppImage." >&2
+            exit 1
+          fi
+          mv "${generated}" "dist/${{ steps.names.outputs.appimage_name }}"
+          chmod +x "dist/${{ steps.names.outputs.appimage_name }}"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage-${{ matrix.arch }}
+          path: dist/${{ steps.names.outputs.appimage_name }}
+          retention-days: 1

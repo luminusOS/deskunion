@@ -1,0 +1,69 @@
+name: Release Flatpak
+
+on:
+  workflow_call:
+
+jobs:
+  flatpak:
+    name: Build Flatpak (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v6
+
+      - name: Read release metadata
+        id: names
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BASE_VERSION="${VERSION%%-*}"
+          APP_VERSION="$(
+            python3 -c 'import pathlib, tomllib; data = tomllib.loads(pathlib.Path("crates/deskunion-app/Cargo.toml").read_text()); print(data["package"]["version"])'
+          )"
+
+          if [ "$BASE_VERSION" != "$APP_VERSION" ]; then
+            echo "Tag ${TAG} does not match deskunion-app version ${APP_VERSION}." >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          echo "bundle_name=deskunion-${VERSION}-linux-${{ matrix.arch }}.flatpak" >> "$GITHUB_OUTPUT"
+
+      - name: Install Flatpak builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Build Flatpak
+        run: |
+          set -euo pipefail
+          flatpak-builder \
+            --user \
+            --force-clean \
+            --disable-rofiles-fuse \
+            --install-deps-from=flathub \
+            --repo=target/flatpak/repo \
+            target/flatpak/build \
+            build-aux/io.github.luminusos.DeskUnion.yml
+          flatpak build-bundle \
+            target/flatpak/repo \
+            "dist/${{ steps.names.outputs.bundle_name }}" \
+            io.github.luminusos.DeskUnion \
+            master
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-${{ matrix.arch }}
+          path: dist/${{ steps.names.outputs.bundle_name }}
+          retention-days: 1

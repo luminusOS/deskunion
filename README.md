@@ -309,7 +309,7 @@ nix develop
 <details>
     <summary>Windows</summary>
 
-Download and run `DeskUnion-<version>-Windows-x86_64-Setup.exe` from the
+Download and run `deskunion-<version>-windows-x86_64-setup.exe` from the
 [releases page](https://github.com/luminusOS/deskunion/releases). The installer
 includes GTK, libadwaita, icons, and schemas, then installs DeskUnion under
 `Program Files` with Start Menu and optional desktop shortcuts.

@@ -1,0 +1,136 @@
+name: Release Windows
+
+on:
+  workflow_call:
+
+jobs:
+  windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v6
+
+      - name: Read release metadata
+        id: names
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BASE_VERSION="${VERSION%%-*}"
+          APP_VERSION="$(
+            python -c 'import pathlib, tomllib; data = tomllib.loads(pathlib.Path("crates/deskunion-app/Cargo.toml").read_text()); print(data["package"]["version"])'
+          )"
+
+          if [ "$BASE_VERSION" != "$APP_VERSION" ]; then
+            echo "Tag ${TAG} does not match deskunion-app version ${APP_VERSION}." >&2
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "windows_name=deskunion-${VERSION}-windows-x86_64.zip" >> "$GITHUB_OUTPUT"
+          echo "setup_name=deskunion-${VERSION}-windows-x86_64-setup.exe" >> "$GITHUB_OUTPUT"
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          path-type: inherit
+          update: true
+          install: >-
+            git
+            mingw-w64-clang-x86_64-gtk4
+            mingw-w64-clang-x86_64-libadwaita
+            mingw-w64-clang-x86_64-librsvg
+            mingw-w64-clang-x86_64-opus
+            mingw-w64-clang-x86_64-pkg-config
+            mingw-w64-clang-x86_64-toolchain
+            zip
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnullvm
+
+      - name: Build Windows executable
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_PATH="/clang64/lib/pkgconfig"
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER="clang"
+          cargo build --release --locked --target x86_64-pc-windows-gnullvm --bin deskunion
+
+      - name: Bundle Windows runtime
+        run: |
+          set -euo pipefail
+          bundle="target/windows/deskunion"
+          rm -rf "$bundle"
+          mkdir -p "$bundle/bin" "$bundle/share" "$bundle/lib" dist
+
+          cp target/x86_64-pc-windows-gnullvm/release/deskunion.exe "$bundle/bin/deskunion.exe"
+
+          copy_deps() {
+            local binary="$1"
+            ldd "$binary" \
+              | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\/clang64\//) print $i }' \
+              | sort -u \
+              | while read -r dep; do
+                  local dest="$bundle/bin/$(basename "$dep")"
+                  if [ ! -f "$dest" ]; then
+                    cp "$dep" "$dest"
+                    copy_deps "$dest"
+                  fi
+                done
+          }
+
+          copy_deps "$bundle/bin/deskunion.exe"
+
+          cp -r /clang64/share/glib-2.0 "$bundle/share/" || true
+          cp -r /clang64/share/icons "$bundle/share/" || true
+          cp -r /clang64/share/themes "$bundle/share/" || true
+          cp -r /clang64/lib/gdk-pixbuf-2.0 "$bundle/lib/" || true
+          cp -r /clang64/lib/gio "$bundle/lib/" || true
+          cp scripts/windows-firewall.ps1 "$bundle/"
+          glib-compile-schemas "$bundle/share/glib-2.0/schemas"
+
+          (
+            cd target/windows
+            zip -r "../../dist/${{ steps.names.outputs.windows_name }}" deskunion
+          )
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build Windows setup
+        run: |
+          set -euo pipefail
+          source_dir="$(cygpath -w "$(pwd)/target/windows/deskunion")"
+          output_dir="$(cygpath -w "$(pwd)/dist")"
+          setup_icon_file="$(cygpath -w "$(pwd)/crates/deskunion-gtk/resources/deskunion.ico")"
+          inno_script="$(cygpath -w "$(pwd)/build-aux/inno/deskunion.iss")"
+
+          MSYS2_ARG_CONV_EXCL='*' iscc \
+            "/DAppVersion=${{ steps.names.outputs.version }}" \
+            "/DSourceDir=${source_dir}" \
+            "/DOutputDir=${output_dir}" \
+            "/DSetupIconFile=${setup_icon_file}" \
+            "${inno_script}"
+
+          mv dist/deskunion-setup.exe "dist/${{ steps.names.outputs.setup_name }}"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundle
+          path: |
+            dist/${{ steps.names.outputs.windows_name }}
+            dist/${{ steps.names.outputs.setup_name }}
+          retention-days: 1

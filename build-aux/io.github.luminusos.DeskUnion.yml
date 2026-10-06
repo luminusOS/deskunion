@@ -25,6 +25,7 @@ finish-args:
   - "--device=dri"
   - "--socket=session-bus"
   - "--share=network"
+  - "--socket=pulseaudio"
   - "--filesystem=xdg-config"
   - "--env=RUST_BACKTRACE=1"
   - "--env=RUST_LOG=deskunion=debug"
@@ -41,8 +42,8 @@ modules:
         CARGO_HOME: /run/build/deskunion/cargo
     build-commands:
       - cargo fetch --manifest-path Cargo.toml --verbose
-      - cargo build
-      - install -Dm0755 target/debug/deskunion /app/bin/deskunion
+      - cargo build --release --locked
+      - install -Dm0755 target/release/deskunion /app/bin/deskunion
       - install -Dm0644 crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
       - install -Dm0644 crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion-symbolic.svg ${FLATPAK_DEST}/share/icons/hicolor/symbolic/apps/${FLATPAK_ID}-symbolic.svg
       - install -Dm0644 io.github.luminusos.DeskUnion.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop

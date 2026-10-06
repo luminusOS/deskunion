@@ -2,10 +2,14 @@
 
 ## Release 0.1.0
 
-- Windows releases include an Inno Setup installer with DeskUnion, GTK,
-  libadwaita, schemas, icons, Start Menu entry, and optional desktop shortcut.
-- The release also includes a portable ZIP and `SHA256SUMS.txt` for integrity
-  verification.
+Pushing a `v<version>` tag runs `release.yml`, which calls one reusable
+workflow per platform and publishes every artifact (the tag must match the
+`deskunion-app` version):
+
+- Windows x86_64: Inno Setup installer (`*-setup.exe`) and portable ZIP.
+- macOS: one DMG per architecture (`aarch64`, `x86_64`).
+- Linux: Flatpak bundle and AppImage, each for `x86_64` and `aarch64`.
+- `SHA256SUMS.txt` covering all of the above.
 
 ## Operation modes
 
