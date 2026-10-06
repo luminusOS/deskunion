@@ -206,7 +206,9 @@ jobs:
 
   release:
     name: "Release"
-    needs: [windows-release-build, linux-release-build, linux-arm64-release-build, macos-release-build, macos-arm64-release-build]
+    # Windows is release-critical for 0.1.0. Other platform builds remain
+    # visible in Actions, but cannot delay a tested Windows installer.
+    needs: [windows-release-build]
     runs-on: "ubuntu-latest"
     steps:
     - name: Download build artifacts
