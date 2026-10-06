@@ -1,5 +1,12 @@
 # General Software Architecture
 
+## Release 0.1.0
+
+- Windows releases include an Inno Setup installer with DeskUnion, GTK,
+  libadwaita, schemas, icons, Start Menu entry, and optional desktop shortcut.
+- The release also includes a portable ZIP and `SHA256SUMS.txt` for integrity
+  verification.
+
 ## Operation modes
 
 Each instance has one explicit operation mode, persisted in `config.toml` and
@@ -16,6 +23,117 @@ Backends are started lazily from this mode so the OS is asked only for relevant
 permissions. A fresh installation starts unconfigured and requests nothing
 until the first explicit selection. In client mode, capture can be enabled later, after a remote
 pointer enters, solely to detect the edge handoff back to the server.
+
+## GTK interface and verification
+
+The frontend retains its Rust/Relm4 architecture and four sections: Screens,
+Audio, Logs, and Settings. A fresh installation presents an `AdwStatusPage`
+with explicit Server/Client actions. An `AdwBreakpoint` at 860sp changes the
+existing `AdwOverlaySplitView` to an overlay; it does not replace the page model.
+The supported minimum window size is 480×360, with scrolling for shorter views.
+The sidebar has its own scroller below a fixed native header, so its controls
+remain reachable when the window height is reduced.
+Navigation uses explicit row activation (click or Enter). Restoring sidebar
+focus during reflow does not activate a different page.
+
+Server connection checks disable repeated submissions and show persistent
+inline failures without clearing the entered address. Listening-port edits
+accept 1–65535, use 4242 for blank input, and display invalid values instead of
+silently substituting the default. A shared signal guard suppresses programmatic
+entry resets before a Relm4 message is queued, preserving apply/cancel state.
+
+GNOME design references: `libadwaita/doc/adaptive-layouts.md`,
+`libadwaita/doc/style-classes.md`, and the workspace `gnome-ui-ux` skill's
+patterns reference (2026-10-03). Decisions use components available within the
+existing GTK 4.14 / libadwaita 1.5 API floors; dependencies were not upgraded.
+
+Checks from the repository root:
+
+```sh
+cargo fmt --all --check
+cargo test -p deskunion-gtk --locked
+cargo clippy -p deskunion-gtk --all-targets --all-features --locked -- -D warnings
+
+# Linux graphical display; local fake IPC, no real input capture or peers.
+cargo test -p deskunion-gtk --features ui-tests --locked -- --test-threads=1
+
+# Optional PNG captures into an existing directory and high-contrast check.
+DESKUNION_UI_CAPTURE_DIR=/tmp/your-existing-directory \
+  ADW_DEBUG_HIGH_CONTRAST=1 \
+  cargo test -p deskunion-gtk --features ui-tests --locked \
+  app::ui_tests -- --test-threads=1
+```
+
+Verification on 2026-10-06 used Fedora Toolbox 45, GTK 4.24.1 and libadwaita
+1.10.0. Six GTK-crate tests passed, including role selection, Enter activation,
+duplicate checks, obsolete replies, persistent errors, port apply/cancel,
+navigation across the breakpoint, 480px layouts, and enlarged text. The same
+graphical flow passed with high contrast enabled. Native GTK renders in
+`screenshots/ui-*.png` use synthetic data: 1100×750 desktop and 480×750 compact
+layouts, 1× capture scale, light/dark themes. `ui-first-run-before.png` records
+the former empty initial view for comparison.
+
+Linux CI runs the existing `--all-features` test command under a private D-Bus
+session and Xvfb, using the Cairo renderer for CPU-only runs. The graphical IPC
+harness is Linux-only; platform-independent
+unit tests still run on Windows and macOS. The GitHub workflow itself was not
+dispatched during this task.
+
+The graphical flow also passed locally with X11/Cairo and high contrast.
+GDK frame-timing warnings were observed in that environment. The initial X11 attempt with
+the default renderer could not start because the container lacks
+`libGLESv2.so.2`; GPU-renderer validation remains pending.
+
+Scoped Clippy with warnings denied and an application build using
+`--no-default-features --features gtk` passed. Workspace-wide validation is
+blocked by missing `xtst.pc` and an Opus fallback build incompatible with the
+installed CMake version. Flatpak's GNOME 48 runtime, minimum library versions,
+Windows/macOS UI execution, exhaustive keyboard navigation, and Orca were not
+tested. Independent human UX/accessibility review remains pending.
+
+## Windows endpoint-security diagnosis
+
+DeskUnion legitimately observes keyboard/mouse input using low-level Win32
+hooks (`SetWindowsHookExW`, `WH_KEYBOARD_LL`, `WH_MOUSE_LL`) and replays input
+using `SendInput`. These functions are part of its software-KVM behavior;
+their presence alone neither proves malware nor explains a particular EDR
+alert. Server mode also listens on DTLS/UDP, and opt-in audio sharing can
+capture system output. Frontend IPC is a local named pipe, not a TCP listener.
+
+For a CrowdStrike/Falcon detection, collect:
+
+- The release URL/tag, exact executable or DLL named in the alert, and SHA-256.
+- Detection name/ID, timestamp, action taken, and whether it occurred during
+  download/extraction, launch, role selection, or sharing with a peer.
+- From the administrator's Falcon event: the triggered rule/IOA, process tree,
+  command line, signer verdict, and relevant network/input activity.
+- DeskUnion log lines around that timestamp. This source tree writes Windows
+  logs to `%LOCALAPPDATA%\deskunion\deskunion.log`.
+
+Read-only checks in PowerShell:
+
+```powershell
+$exe = 'C:\path\to\deskunion.exe'
+Get-FileHash -Algorithm SHA256 -LiteralPath $exe
+Get-AuthenticodeSignature -LiteralPath $exe |
+    Select-Object Status, StatusMessage, SignerCertificate
+(Get-Item -LiteralPath $exe).VersionInfo |
+    Select-Object FileVersion, ProductVersion, CompanyName
+```
+
+On 2026-10-06 the local artifact in
+`dist/deskunion-windows-x86_64/bin/deskunion.exe` had no embedded Authenticode
+certificate table and no `VERSIONINFO` resource. Its import table contains
+the input APIs above. The configured GitHub repository returned no releases,
+so this artifact has not been matched to the user's reported latest release.
+Windows catalog signatures/trust chains and Falcon sensor telemetry were not
+available. These findings are triage evidence, not a confirmed root cause.
+
+Publisher signing, consistent Windows version metadata, and traceable release
+artifacts improve identification and support review. They do not guarantee
+that a behavioral rule or organizational policy will permit the application.
+If the alert proves to be a false positive, provide the verified artifact and
+legitimate KVM behavior to the organization's security team and vendor support.
 
 ## Events
 

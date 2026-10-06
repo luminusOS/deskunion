@@ -109,6 +109,8 @@ jobs:
         Move-Item "C:\Program Files\Git\usr\notbin" "C:\Program Files\Git\usr\bin"
         Move-Item "C:\Program Files\Git\notbin" "C:\Program Files\Git\bin"
     - uses: actions/checkout@v6
+    - name: Install Inno Setup
+      run: choco install -y innosetup
     - name: Release Build
       run: cargo build --release
     - name: Create Archive
@@ -122,13 +124,23 @@ jobs:
         Copy-Item -Recurse -Force -ErrorAction SilentlyContinue "$runtime\share\themes" "deskunion-windows\share\"
         Copy-Item -Recurse -Force -ErrorAction SilentlyContinue "$runtime\lib\gdk-pixbuf-2.0" "deskunion-windows\lib\"
         Copy-Item -Recurse -Force -ErrorAction SilentlyContinue "$runtime\lib\gio" "deskunion-windows\lib\"
+        Copy-Item scripts\windows-firewall.ps1 "deskunion-windows\"
         & "$runtime\bin\glib-compile-schemas.exe" "deskunion-windows\share\glib-2.0\schemas"
         Compress-Archive -Path "deskunion-windows" -DestinationPath deskunion-windows-x86_64.zip
+    - name: Create installer and checksums
+      shell: pwsh
+      run: |
+        $env:DESKUNION_VERSION = "${{ github.ref_name }}".TrimStart('v')
+        & iscc scripts\windows-installer.iss
+        Get-FileHash deskunion-windows-x86_64.zip, dist\*.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content SHA256SUMS.txt
     - name: Upload build artifact
       uses: actions/upload-artifact@v6
       with:
         name: deskunion-windows-x86_64
-        path: deskunion-windows-x86_64.zip
+        path: |
+          deskunion-windows-x86_64.zip
+          dist/DeskUnion-*-Windows-x86_64-Setup.exe
+          SHA256SUMS.txt
 
   macos-release-build:
     runs-on: macos-15-intel
@@ -219,6 +231,8 @@ jobs:
           deskunion-macos-intel/deskunion-macos-intel.zip
           deskunion-macos-arm64/deskunion-macos-arm64.zip
           deskunion-windows-x86_64/deskunion-windows-x86_64.zip
+          deskunion-windows-x86_64/dist/DeskUnion-*-Windows-x86_64-Setup.exe
+          deskunion-windows-x86_64/SHA256SUMS.txt
     - name: Create Tagged Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
@@ -236,3 +250,5 @@ jobs:
           deskunion-macos-intel/deskunion-macos-intel.zip
           deskunion-macos-arm64/deskunion-macos-arm64.zip
           deskunion-windows-x86_64/deskunion-windows-x86_64.zip
+          deskunion-windows-x86_64/dist/DeskUnion-*-Windows-x86_64-Setup.exe
+          deskunion-windows-x86_64/SHA256SUMS.txt

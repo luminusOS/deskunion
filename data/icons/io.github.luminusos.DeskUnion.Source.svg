@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="192" height="152" viewBox="0 0 192 152">
+  <title>DeskUnion icon source</title>
+  <desc>Editable full-color and symbolic artwork. Export hicolor at 128 by 128 and symbolic at 16 by 16, excluding guides.</desc>
+  <g id="guides" inkscape:groupmode="layer" inkscape:label="Guides (hidden for export)" display="none" fill="none" stroke="#c0bfbc" stroke-width="1">
+    <rect x="0.5" y="0.5" width="127" height="127"/>
+    <rect x="12.5" y="12.5" width="103" height="103"/>
+    <path d="M0 117H128"/>
+    <rect x="160.5" y="16.5" width="15" height="15"/>
+  </g>
+  <g id="hicolor" inkscape:groupmode="layer" inkscape:label="Full-color · 128px">
+    <g id="green-link">
+      <path fill="#26a269" fill-rule="evenodd" d="M44 40H114V84C114 102 100 116 82 116H76C58 116 44 102 44 84ZM58 54V84C58 94 66 102 76 102H82C92 102 100 94 100 84V54Z"/>
+      <path fill="#57e389" fill-rule="evenodd" d="M44 36H114V80C114 98 100 112 82 112H76C58 112 44 98 44 80ZM58 50V80C58 90 66 98 76 98H82C92 98 100 90 100 80V50Z"/>
+    </g>
+    <g id="blue-link">
+      <path fill="#1a5fb4" fill-rule="evenodd" d="M14 16H80V56C80 76 64 92 44 92H14ZM28 30V78H44C56 78 66 68 66 56V30Z"/>
+      <path fill="#3584e4" fill-rule="evenodd" d="M14 12H80V52C80 72 64 88 44 88H14ZM28 26V74H44C56 74 66 64 66 52V26Z"/>
+    </g>
+    <g id="front-crossing">
+      <path fill="#26a269" d="M44 40H58V84C58 94 66 102 76 102V116C58 116 44 102 44 84Z"/>
+      <path fill="#57e389" d="M44 36H58V80C58 90 66 98 76 98V112C58 112 44 98 44 80Z"/>
+    </g>
+  </g>
+  <g id="symbolic" inkscape:groupmode="layer" inkscape:label="Symbolic · 16px" transform="translate(160 16)" fill="#2e3436">
+    <path fill-rule="evenodd" d="M1 1H10V7C10 9.76 7.76 12 5 12H1ZM3 3V10H5C6.66 10 8 8.66 8 7V3Z"/>
+    <path d="M11 5H15V11C15 13.21 13.21 15 11 15H10C7.79 15 6 13.21 6 11V5H7V7H8V11C8 12.1 8.9 13 10 13H11C12.1 13 13 12.1 13 11V7H11Z"/>
+  </g>
+</svg>

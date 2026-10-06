@@ -1,6 +1,6 @@
 .status-led {
     border-radius: 999px;
-    background-color: @warning_color;
+    background-color: alpha(@window_fg_color, 0.3);
 }
 
 .status-led.success {
@@ -11,44 +11,9 @@
     background-color: @warning_color;
 }
 
-/* sidebar section captions — wide tracking like the prototype */
-.section-caption {
-    letter-spacing: 0.12em;
-}
-
 /* operation-mode card: inner padding on top of libadwaita's .card */
 .mode-card {
     padding: 12px;
-}
-
-/* segmented Server/Client control — prototype style: light inset
-   container, dark raised chip for the active segment */
-.operation-mode-switch {
-    padding: 4px;
-    border-radius: 10px;
-    background-color: alpha(@window_fg_color, 0.07);
-    border: 1px solid alpha(@window_fg_color, 0.06);
-}
-
-.operation-mode-switch button {
-    min-height: 26px;
-    padding: 2px 14px;
-    border-radius: 7px;
-    border: 1px solid transparent;
-    background: none;
-    box-shadow: none;
-    color: alpha(@window_fg_color, 0.6);
-}
-
-.operation-mode-switch button:hover:not(:checked) {
-    color: @window_fg_color;
-}
-
-.operation-mode-switch button:checked {
-    background-color: alpha(black, 0.30);
-    border-color: alpha(@window_fg_color, 0.10);
-    color: @window_fg_color;
-    font-weight: 600;
 }
 
 /* prototype-style "Connected" badge on connected client rows */
@@ -75,11 +40,4 @@
 .joined-list-bottom {
     border-top-left-radius: 0;
     border-top-right-radius: 0;
-}
-
-/* headerbar Start/Stop button — pill-shaped like the prototype's */
-.service-toggle {
-    border-radius: 999px;
-    padding: 4px 16px;
-    font-weight: 600;
 }

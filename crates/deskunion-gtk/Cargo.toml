@@ -6,6 +6,10 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/luminusOS/deskunion"
 
+[features]
+# Requires a graphical display; run separately from headless unit tests.
+ui-tests = []
+
 [dependencies]
 gtk = { package = "gtk4", version = "0.11.4", features = ["v4_14"] }
 adw = { package = "libadwaita", version = "0.9.2", features = ["v1_5"] }

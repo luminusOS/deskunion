@@ -45,6 +45,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install libx11-dev libxtst-dev libadwaita-1-dev libgtk-4-dev
+      - name: Install Linux test display
+        if: runner.os == 'Linux' && matrix.job == 'test'
+        run: sudo apt-get install -y xvfb dbus-x11
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install gtk4 libadwaita imagemagick
@@ -92,8 +95,15 @@ jobs:
         if: matrix.job == 'check'
         run: cargo check --workspace --all-targets --all-features
 
+      - name: cargo test (Linux graphical display)
+        if: matrix.job == 'test' && runner.os == 'Linux'
+        env:
+          GDK_BACKEND: x11
+          GSK_RENDERER: cairo
+        run: dbus-run-session -- xvfb-run -a cargo test --workspace --all-features
+
       - name: cargo test
-        if: matrix.job == 'test'
+        if: matrix.job == 'test' && runner.os != 'Linux'
         run: cargo test --workspace --all-features
 
       - name: cargo clippy

@@ -25,9 +25,9 @@ Focus lies on performance, ease of use and a maintainable implementation that ca
 - _Now with audio streaming (client → server)_
 
 <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="/screenshots/dark.png?raw=true">
-    <source media="(prefers-color-scheme: light)" srcset="/screenshots/light.png?raw=true">
-    <img alt="Screenshot of Deskunion" srcset="/screenshots/dark.png">
+    <source media="(prefers-color-scheme: dark)" srcset="/screenshots/ui-server-dark.png?raw=true">
+    <source media="(prefers-color-scheme: light)" srcset="/screenshots/ui-server-light.png?raw=true">
+    <img alt="DeskUnion Screens page with no paired clients" src="/screenshots/ui-server-dark.png">
 </picture>
 
 
@@ -158,6 +158,10 @@ sudo cp path/to/deskunion /usr/local/bin/
 # install app icon
 sudo mkdir -p /usr/local/share/icons/hicolor/scalable/apps
 sudo cp crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg /usr/local/share/icons/hicolor/scalable/apps
+
+# install the symbolic app icon
+sudo mkdir -p /usr/local/share/icons/hicolor/symbolic/apps
+sudo cp crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion-symbolic.svg /usr/local/share/icons/hicolor/symbolic/apps
 
 # update icon cache
 gtk-update-icon-cache /usr/local/share/icons/hicolor/
@@ -305,10 +309,15 @@ nix develop
 <details>
     <summary>Windows</summary>
 
-The release ZIP is self-contained. Extract the complete `deskunion` directory
+Download and run `DeskUnion-<version>-Windows-x86_64-Setup.exe` from the
+[releases page](https://github.com/luminusOS/deskunion/releases). The installer
+includes GTK, libadwaita, icons, and schemas, then installs DeskUnion under
+`Program Files` with Start Menu and optional desktop shortcuts.
+
+The portable ZIP remains available. Extract its complete `deskunion` directory
 and run `deskunion\bin\deskunion.exe`; do not copy the executable away from its
-`bin`, `share`, and `lib` directories, because GTK loads its icon theme and
-runtime data from that layout.
+`bin` and `share` directories, because GTK loads its icon theme and runtime data
+from that layout.
 
 DeskUnion talks to its own daemon over a named pipe and, in client mode, only
 dials out — it opens no listening port. Windows Defender may still show the
@@ -381,6 +390,11 @@ the gtk frontend (see conditional compilation).
 
 By default the gtk frontend will open when running `deskunion`.
 
+On a fresh, unconfigured installation, choose **Use as Server** or **Use as
+Client** before input sharing starts. Existing configurations retain their
+operation mode. The sidebar becomes an overlay in narrow windows; reopen it
+with the navigation button in the header bar.
+
 The machine whose mouse and keyboard you want to share runs in **server** mode
 (`Operation mode` selector in the sidebar): it listens for incoming connections
 on UDP port `4242` (configurable). Each machine you want to control runs in
@@ -391,7 +405,7 @@ and needs no firewall changes.
 
 When a client connects for the first time, an authorization dialog pops up on
 the **server** showing the client's certificate fingerprint (also visible on
-the client under the general section, of the form "aa:bb:cc:..."). Authorize
+the client under **Settings → Identity**, of the form "aa:bb:cc:..."). Authorize
 it — the device is then paired automatically and placed on the first free
 screen edge, preferring the right one (right, then left, top, bottom). This
 persists the fingerprint binding in the configuration file (see

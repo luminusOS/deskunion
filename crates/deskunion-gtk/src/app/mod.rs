@@ -6,9 +6,15 @@
 
 mod audio;
 mod logs;
+#[cfg(test)]
+mod tests;
+#[cfg(all(test, target_os = "linux", feature = "ui-tests"))]
+mod ui_tests;
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::str::FromStr;
 
 use adw::prelude::*;
@@ -38,6 +44,14 @@ use audio::{AUDIO_BITRATES, audio_bitrate_index, audio_device_model, selected_au
 pub use logs::LogCategory;
 use logs::LogState;
 
+fn parse_listening_port(text: &str) -> Option<u16> {
+    let text = text.trim();
+    if text.is_empty() {
+        Some(DEFAULT_PORT)
+    } else {
+        text.parse::<u16>().ok().filter(|port| *port != 0)
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Screens,
@@ -71,6 +85,15 @@ impl Page {
             1 => Page::Audio,
             2 => Page::Logs,
             _ => Page::Settings,
+        }
+    }
+
+    fn nav_index(self) -> i32 {
+        match self {
+            Self::Screens => 0,
+            Self::Audio => 1,
+            Self::Logs => 2,
+            Self::Settings => 3,
         }
     }
 }
@@ -133,7 +156,7 @@ pub struct AppModel {
     writer: FrontendRequestWriter,
     root: adw::ApplicationWindow,
     toast_overlay: adw::ToastOverlay,
-    current_page: Page,
+    current_page: Rc<Cell<Page>>,
     operation_mode: OperationMode,
 
     hostname: String,
@@ -143,9 +166,10 @@ pub struct AppModel {
     /// instead of a `#[watch]` binding.
     port_draft: String,
     port_editing: bool,
-    /// suppresses `PortEntryChanged` reacting to our own programmatic
-    /// `set_text` (see `handle_frontend_event`'s `PortChanged` arm)
-    updating_port_entry: bool,
+    port_error: Option<String>,
+    /// Checked in the signal handler before enqueueing a Relm4 message;
+    /// checking only in `update` would run after the reset has finished.
+    updating_port_entry: Rc<Cell<bool>>,
     port_entry: gtk::Entry,
     pk_fingerprint: String,
 
@@ -185,6 +209,7 @@ pub struct AppModel {
     /// in-flight `TestConnection` for the client-mode connect flow
     pending_server_test: Option<(u64, String, u16)>,
     next_test_id: u64,
+    server_connection_error: Option<String>,
 
     /// suppresses audio-page change handlers while an incoming
     /// `AudioStatus`/`AudioDevices` event is being applied to the
@@ -236,9 +261,13 @@ impl AppModel {
             OperationMode::Server if self.capture_active => {
                 format!("Listening on port {}", self.port)
             }
-            OperationMode::Server => "Capture disabled".to_string(),
+            OperationMode::Server if self.service_wanted_running => "Capture disabled".to_string(),
+            OperationMode::Server => "Sharing stopped".to_string(),
             OperationMode::Client if self.emulation_active => "Client running".to_string(),
-            OperationMode::Client => "Emulation disabled".to_string(),
+            OperationMode::Client if self.service_wanted_running => {
+                "Emulation disabled".to_string()
+            }
+            OperationMode::Client => "Sharing stopped".to_string(),
         }
     }
 
@@ -282,7 +311,13 @@ impl AppModel {
             OperationMode::Server => self.capture_active,
             OperationMode::Client => self.emulation_active,
         };
-        if active { "success" } else { "warning" }
+        if active {
+            "success"
+        } else if self.backend_attention_required() {
+            "warning"
+        } else {
+            "inactive"
+        }
     }
 
     // The view!{} macro's DSL doesn't support #[cfg(...)] attributes
@@ -483,8 +518,7 @@ impl AppModel {
                 }
                 match error {
                     Some(error) => {
-                        self.toast_overlay
-                            .add_toast(adw::Toast::new(&format!("Could not connect: {error}")));
+                        self.server_connection_error = Some(error);
                     }
                     None => {
                         // the dial-out test succeeded — persist the endpoint;
@@ -517,12 +551,12 @@ impl AppModel {
             }
             FrontendEvent::PortChanged(port, msg) => {
                 self.port = port;
-                self.port_editing = false;
-                self.updating_port_entry = true;
-                self.port_entry.set_text(&self.port_entry_text());
-                self.updating_port_entry = false;
-                if let Some(msg) = msg {
-                    self.toast_overlay.add_toast(adw::Toast::new(&msg));
+                self.port_error = msg;
+                if self.port_error.is_none() {
+                    self.port_editing = false;
+                    self.updating_port_entry.set(true);
+                    self.port_entry.set_text(&self.port_entry_text());
+                    self.updating_port_entry.set(false);
                 }
             }
             FrontendEvent::Enumerate(clients) => {
@@ -546,10 +580,9 @@ impl AppModel {
                 }
             }
             FrontendEvent::OperationMode(mode) => {
-                // first run comes up Unconfigured; the UI has no
-                // mode-picker gate anymore, so default straight to Server
-                if mode == OperationMode::Unconfigured {
-                    self.request(FrontendRequest::SetOperationMode(OperationMode::Server));
+                if self.operation_mode != mode {
+                    self.pending_server_test = None;
+                    self.server_connection_error = None;
                 }
                 self.operation_mode = mode;
             }
@@ -787,8 +820,8 @@ impl SimpleComponent for AppModel {
         #[name(root)]
         adw::ApplicationWindow {
             set_application: Some(&init.app),
-            set_width_request: 720,
-            set_height_request: 560,
+            set_width_request: 480,
+            set_height_request: 360,
             set_default_width: 1100,
             set_default_height: 750,
             set_title: Some("DeskUnion"),
@@ -803,130 +836,159 @@ impl SimpleComponent for AppModel {
                     set_max_sidebar_width: 280.0,
 
                     #[wrap(Some)]
-                    set_sidebar = &gtk::Box {
-                        set_orientation: gtk::Orientation::Vertical,
-
-                        adw::HeaderBar {
+                    set_sidebar = &adw::ToolbarView {
+                        add_top_bar = &adw::HeaderBar {
                             set_show_end_title_buttons: false,
                             add_css_class: "flat",
                         },
 
-                        #[name(nav_list)]
-                        gtk::ListBox {
-                            set_vexpand: true,
-                            set_selection_mode: gtk::SelectionMode::Browse,
-                            add_css_class: "navigation-sidebar",
+                        #[wrap(Some)]
+                        set_content = &gtk::ScrolledWindow {
+                            set_hscrollbar_policy: gtk::PolicyType::Never,
+                            #[wrap(Some)]
+                            set_child = &gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
 
-                            gtk::ListBoxRow {
-                                gtk::Box {
-                                    set_spacing: 12,
-                                    set_margin_all: 6,
-                                    gtk::Image { set_icon_name: Some("video-display-symbolic") },
-                                    gtk::Label { set_label: "Screens", set_xalign: 0.0 },
-                                },
-                            },
-                            gtk::ListBoxRow {
-                                gtk::Box {
-                                    set_spacing: 12,
-                                    set_margin_all: 6,
-                                    gtk::Image { set_icon_name: Some("audio-speakers-symbolic") },
-                                    gtk::Label { set_label: "Audio", set_xalign: 0.0 },
-                                },
-                            },
-                            gtk::ListBoxRow {
-                                gtk::Box {
-                                    set_spacing: 12,
-                                    set_margin_all: 6,
-                                    gtk::Image { set_icon_name: Some("view-list-symbolic") },
-                                    gtk::Label { set_label: "Logs", set_xalign: 0.0 },
-                                },
-                            },
-                            gtk::ListBoxRow {
-                                gtk::Box {
-                                    set_spacing: 12,
-                                    set_margin_all: 6,
-                                    gtk::Image { set_icon_name: Some("emblem-system-symbolic") },
-                                    gtk::Label { set_label: "Settings", set_xalign: 0.0 },
-                                },
-                            },
-
-                            connect_row_selected[sender] => move |_, row| {
-                                if let Some(row) = row {
-                                    sender.input(AppMsg::NavigateTo(Page::from_nav_index(row.index())));
-                                }
-                            },
-                        },
-
-                        gtk::Box {
-                            set_orientation: gtk::Orientation::Horizontal,
-                            set_spacing: 8,
-                            set_margin_start: 12,
-                            set_margin_end: 12,
-                            set_margin_top: 10,
-
-                            gtk::Box {
-                                set_width_request: 10,
-                                set_height_request: 10,
-                                set_valign: gtk::Align::Center,
-                                #[watch]
-                                set_css_classes: &["status-led", model.status_led_css()],
-                            },
-
-                            gtk::Label {
-                                set_xalign: 0.0,
-                                set_hexpand: true,
-                                set_ellipsize: gtk::pango::EllipsizeMode::End,
-                                add_css_class: "dim-label",
-                                add_css_class: "caption",
-                                #[watch]
-                                set_label: &model.status_text(),
-                            },
-
-                        },
-
-                        gtk::Box {
-                            set_orientation: gtk::Orientation::Vertical,
-                            set_spacing: 8,
-                            set_margin_start: 12,
-                            set_margin_end: 12,
-                            set_margin_top: 8,
-                            set_margin_bottom: 12,
-                            add_css_class: "card",
-                            add_css_class: "mode-card",
-
-                            gtk::Label {
-                                set_label: "OPERATION MODE",
-                                set_xalign: 0.0,
-                                add_css_class: "caption",
-                                add_css_class: "dim-label",
-                                add_css_class: "section-caption",
-                            },
-
-                            gtk::Box {
-                                add_css_class: "operation-mode-switch",
-                                set_homogeneous: true,
-
-                                #[name(server_mode_button)]
-                                gtk::ToggleButton {
-                                    set_label: "Server",
+                                #[name(nav_list)]
+                                gtk::ListBox {
+                                    set_vexpand: true,
+                                    set_selection_mode: gtk::SelectionMode::Browse,
+                                    add_css_class: "navigation-sidebar",
                                     #[watch]
-                                    set_active: model.operation_mode == OperationMode::Server,
-                                    connect_toggled[sender] => move |button| {
-                                        if button.is_active() {
-                                            sender.input(AppMsg::SetOperationMode(OperationMode::Server));
+                                    select_row: nav_list.row_at_index(model.current_page.get().nav_index()).as_ref(),
+
+                                    gtk::ListBoxRow {
+                                        gtk::Box {
+                                            set_spacing: 12,
+                                            set_margin_all: 6,
+                                            gtk::Image { set_icon_name: Some("video-display-symbolic") },
+                                            gtk::Label { set_label: "Screens", set_xalign: 0.0 },
+                                        },
+                                    },
+                                    gtk::ListBoxRow {
+                                        gtk::Box {
+                                            set_spacing: 12,
+                                            set_margin_all: 6,
+                                            gtk::Image { set_icon_name: Some("audio-speakers-symbolic") },
+                                            gtk::Label { set_label: "Audio", set_xalign: 0.0 },
+                                        },
+                                    },
+                                    gtk::ListBoxRow {
+                                        gtk::Box {
+                                            set_spacing: 12,
+                                            set_margin_all: 6,
+                                            gtk::Image { set_icon_name: Some("view-list-symbolic") },
+                                            gtk::Label { set_label: "Logs", set_xalign: 0.0 },
+                                        },
+                                    },
+                                    gtk::ListBoxRow {
+                                        gtk::Box {
+                                            set_spacing: 12,
+                                            set_margin_all: 6,
+                                            gtk::Image { set_icon_name: Some("emblem-system-symbolic") },
+                                            gtk::Label { set_label: "Settings", set_xalign: 0.0 },
+                                        },
+                                    },
+
+                                    connect_row_selected[current_page] => move |nav, row| {
+                                        // GTK can select a row while restoring focus after
+                                        // reflow. Keep selection tied to the active page;
+                                        // only explicit row activation changes navigation.
+                                        let index = current_page.get().nav_index();
+                                        if row.map(|row| row.index()) != Some(index) {
+                                            nav.select_row(nav.row_at_index(index).as_ref());
+                                        }
+                                    },
+                                    connect_row_activated[sender, split_view] => move |_, row| {
+                                        sender.input(AppMsg::NavigateTo(Page::from_nav_index(row.index())));
+                                        if split_view.is_collapsed() {
+                                            split_view.set_show_sidebar(false);
                                         }
                                     },
                                 },
 
-                                gtk::ToggleButton {
-                                    set_label: "Client",
-                                    set_group: Some(&server_mode_button),
-                                    #[watch]
-                                    set_active: model.operation_mode == OperationMode::Client,
-                                    connect_toggled[sender] => move |button| {
-                                        if button.is_active() {
-                                            sender.input(AppMsg::SetOperationMode(OperationMode::Client));
-                                        }
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+                                    set_margin_start: 12,
+                                    set_margin_end: 12,
+                                    set_margin_top: 10,
+
+                                    gtk::Box {
+                                        set_width_request: 10,
+                                        set_height_request: 10,
+                                        set_valign: gtk::Align::Center,
+                                        #[watch]
+                                        set_css_classes: &["status-led", model.status_led_css()],
+                                    },
+
+                                    gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                        set_ellipsize: gtk::pango::EllipsizeMode::End,
+                                        add_css_class: "dim-label",
+                                        add_css_class: "caption",
+                                        #[watch]
+                                        set_label: &model.status_text(),
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    set_spacing: 8,
+                                    set_margin_start: 12,
+                                    set_margin_end: 12,
+                                    set_margin_top: 8,
+                                    set_margin_bottom: 12,
+                                    add_css_class: "card",
+                                    add_css_class: "mode-card",
+
+                                    gtk::Label {
+                                        set_label: "Operation Mode",
+                                        set_xalign: 0.0,
+                                        add_css_class: "caption-heading",
+                                    },
+
+                                    gtk::Box {
+                                        add_css_class: "linked",
+                                        set_homogeneous: true,
+
+                                        #[name(server_mode_button)]
+                                        gtk::ToggleButton {
+                                            set_label: "Server",
+                                            #[watch]
+                                            set_active: model.operation_mode == OperationMode::Server,
+                                            connect_toggled[sender] => move |button| {
+                                                if button.is_active() {
+                                                    sender.input(AppMsg::SetOperationMode(OperationMode::Server));
+                                                }
+                                            },
+                                        },
+
+                                        gtk::ToggleButton {
+                                            set_label: "Client",
+                                            set_group: Some(&server_mode_button),
+                                            #[watch]
+                                            set_active: model.operation_mode == OperationMode::Client,
+                                            connect_toggled[sender] => move |button| {
+                                                if button.is_active() {
+                                                    sender.input(AppMsg::SetOperationMode(OperationMode::Client));
+                                                }
+                                            },
+                                        },
+                                    },
+
+                                    gtk::Label {
+                                        set_xalign: 0.0,
+                                        set_wrap: true,
+                                        add_css_class: "caption",
+                                        add_css_class: "dim-label",
+                                        #[watch]
+                                        set_label: match model.operation_mode {
+                                            OperationMode::Unconfigured => "Choose how this computer will share input.",
+                                            OperationMode::Server => "Shares this computer's keyboard and mouse.",
+                                            OperationMode::Client => "Receives keyboard and mouse input from a server.",
+                                        },
                                     },
                                 },
                             },
@@ -940,13 +1002,16 @@ impl SimpleComponent for AppModel {
                         adw::HeaderBar {
                             #[wrap(Some)]
                             set_title_widget = &adw::WindowTitle {
-                                set_title: "DeskUnion",
+                                #[watch]
+                                set_title: model.current_page.get().title(),
                                 #[watch]
                                 set_subtitle: &model.header_subtitle(),
                             },
                             #[name(sidebar_toggle)]
                             pack_start = &gtk::ToggleButton {
                                 set_icon_name: "sidebar-show-symbolic",
+                                set_tooltip_text: Some("Show or hide navigation"),
+                                update_property: &[gtk::accessible::Property::Label("Show or hide navigation")],
                                 // app opens with the sidebar visible
                                 set_active: true,
                             },
@@ -954,12 +1019,7 @@ impl SimpleComponent for AppModel {
                                 set_margin_end: 6,
                                 #[watch]
                                 set_visible: model.operation_mode != OperationMode::Unconfigured,
-                                #[watch]
-                                set_css_classes: if model.service_running() {
-                                    &["destructive-action", "service-toggle"][..]
-                                } else {
-                                    &["suggested-action", "service-toggle"][..]
-                                },
+                                set_tooltip_text: Some("Start or stop input sharing"),
                                 connect_clicked => AppMsg::ToggleServiceRunning,
 
                                 #[wrap(Some)]
@@ -995,6 +1055,32 @@ impl SimpleComponent for AppModel {
                                         set_orientation: gtk::Orientation::Vertical,
                                         set_spacing: 12,
 
+                                        adw::StatusPage {
+                                            set_icon_name: Some("io.github.luminusos.DeskUnion"),
+                                            set_title: "Share Your Keyboard and Mouse",
+                                            set_description: Some("Choose a role for this computer. A server shares its keyboard and mouse; a client receives input from that server."),
+                                            #[watch]
+                                            set_visible: model.operation_mode == OperationMode::Unconfigured,
+
+                                            #[wrap(Some)]
+                                            set_child = &gtk::Box {
+                                                set_orientation: gtk::Orientation::Vertical,
+                                                set_spacing: 12,
+                                                set_halign: gtk::Align::Center,
+
+                                                gtk::Button {
+                                                    set_label: "Use as Server",
+                                                    add_css_class: "pill",
+                                                    connect_clicked => AppMsg::SetOperationMode(OperationMode::Server),
+                                                },
+                                                gtk::Button {
+                                                    set_label: "Use as Client",
+                                                    add_css_class: "pill",
+                                                    connect_clicked => AppMsg::SetOperationMode(OperationMode::Client),
+                                                },
+                                            },
+                                        },
+
                                         gtk::Label {
                                             set_label: "Screen arrangement",
                                             set_xalign: 0.0,
@@ -1004,7 +1090,7 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         gtk::Label {
-                                            set_label: "Drag the screens to define where the cursor passes between devices.",
+                                            set_label: "Drag a screen to an edge of this computer, or choose its position in the client list.",
                                             set_xalign: 0.0,
                                             set_wrap: true,
                                             add_css_class: "dim-label",
@@ -1026,16 +1112,6 @@ impl SimpleComponent for AppModel {
                                             },
                                         },
 
-                                        gtk::Label {
-                                            set_label: "Tip: position one screen partially above or below the other to create \"dead corners\".",
-                                            set_xalign: 0.5,
-                                            set_wrap: true,
-                                            add_css_class: "caption",
-                                            add_css_class: "dim-label",
-                                            #[watch]
-                                            set_visible: model.operation_mode == OperationMode::Server,
-                                        },
-
                                         adw::PreferencesGroup {
                                             set_title: "Server",
                                             #[watch]
@@ -1045,6 +1121,9 @@ impl SimpleComponent for AppModel {
                                             adw::EntryRow {
                                                 set_title: "Hostname or IP address",
                                                 set_enable_undo: true,
+                                                #[watch]
+                                                set_sensitive: model.pending_server_test.is_none(),
+                                                connect_entry_activated => AppMsg::ServerConnect,
                                                 connect_changed[sender] => move |entry| {
                                                     sender.input(AppMsg::ServerHostChanged(entry.text().to_string()));
                                                 },
@@ -1062,6 +1141,8 @@ impl SimpleComponent for AppModel {
                                                     0.0,
                                                 )),
                                                 set_numeric: true,
+                                                #[watch]
+                                                set_sensitive: model.pending_server_test.is_none(),
                                                 connect_value_notify[sender] => move |row| {
                                                     sender.input(AppMsg::ServerPortChanged(row.value() as u16));
                                                 },
@@ -1069,15 +1150,31 @@ impl SimpleComponent for AppModel {
 
                                             adw::ActionRow {
                                                 set_title: "Connect",
-                                                set_subtitle: "test the connection, then save this server",
+                                                set_subtitle: "Verify the server before saving its address",
 
+                                                #[name(server_connect_button)]
                                                 add_suffix = &gtk::Button {
-                                                    set_label: "Connect",
+                                                    #[watch]
+                                                    set_label: if model.pending_server_test.is_some() { "Checking…" } else { "Connect" },
+                                                    #[watch]
+                                                    set_sensitive: model.pending_server_test.is_none() && !model.server_host_draft.trim().is_empty(),
                                                     set_valign: gtk::Align::Center,
                                                     add_css_class: "pill",
                                                     add_css_class: "suggested-action",
                                                     connect_clicked => AppMsg::ServerConnect,
                                                 },
+                                            },
+
+                                            #[name(server_connection_error_row)]
+                                            adw::ActionRow {
+                                                set_title: "Connection Test Failed",
+                                                set_use_markup: false,
+                                                set_subtitle_lines: 0,
+                                                set_icon_name: Some("dialog-warning-symbolic"),
+                                                #[watch]
+                                                set_visible: model.server_connection_error.is_some(),
+                                                #[watch]
+                                                set_subtitle: model.server_connection_error.as_deref().unwrap_or(""),
                                             },
 
                                             adw::ActionRow {
@@ -1142,9 +1239,9 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         adw::PreferencesGroup {
-                                            set_title: "Devices awaiting a position",
+                                            set_title: "Devices Awaiting a Position",
                                             #[watch]
-                                            set_visible: model.operation_mode == OperationMode::Server,
+                                            set_visible: model.operation_mode == OperationMode::Server && !model.parked_device_rows.is_empty(),
                                             #[local_ref]
                                             parked_device_list -> gtk::ListBox {
                                                 set_selection_mode: gtk::SelectionMode::None,
@@ -1215,7 +1312,7 @@ impl SimpleComponent for AppModel {
                                     #[wrap(Some)]
                                     set_child = &gtk::Box {
                                         set_orientation: gtk::Orientation::Vertical,
-                                        set_spacing: 12,
+                                        set_spacing: 24,
 
                                         adw::Banner {
                                             set_title: "System audio capture requires macOS 14.6 or later. Only microphone input is available.",
@@ -1327,43 +1424,20 @@ impl SimpleComponent for AppModel {
                                     gtk::Box {
                                         set_hexpand: true,
                                         set_spacing: 6,
-                                        add_css_class: "linked",
 
-                                        #[name(log_filter_all)]
-                                        gtk::ToggleButton {
-                                            set_label: "All",
-                                            set_active: true,
-                                            connect_toggled[sender] => move |btn| {
-                                                if btn.is_active() {
-                                                    sender.input(AppMsg::LogFilterChanged(None));
-                                                }
-                                            },
-                                        },
-                                        gtk::ToggleButton {
-                                            set_label: "Connections",
-                                            set_group: Some(&log_filter_all),
-                                            connect_toggled[sender] => move |btn| {
-                                                if btn.is_active() {
-                                                    sender.input(AppMsg::LogFilterChanged(Some(LogCategory::Connections)));
-                                                }
-                                            },
-                                        },
-                                        gtk::ToggleButton {
-                                            set_label: "Audio",
-                                            set_group: Some(&log_filter_all),
-                                            connect_toggled[sender] => move |btn| {
-                                                if btn.is_active() {
-                                                    sender.input(AppMsg::LogFilterChanged(Some(LogCategory::Audio)));
-                                                }
-                                            },
-                                        },
-                                        gtk::ToggleButton {
-                                            set_label: "Errors",
-                                            set_group: Some(&log_filter_all),
-                                            connect_toggled[sender] => move |btn| {
-                                                if btn.is_active() {
-                                                    sender.input(AppMsg::LogFilterChanged(Some(LogCategory::Errors)));
-                                                }
+                                        #[name(log_filter)]
+                                        gtk::DropDown {
+                                            set_model: Some(&gtk::StringList::new(&["All Events", "Connections", "Audio", "Errors"])),
+                                            set_tooltip_text: Some("Filter log events"),
+                                            update_property: &[gtk::accessible::Property::Label("Filter log events")],
+                                            connect_selected_notify[sender] => move |dropdown| {
+                                                let filter = match dropdown.selected() {
+                                                    1 => Some(LogCategory::Connections),
+                                                    2 => Some(LogCategory::Audio),
+                                                    3 => Some(LogCategory::Errors),
+                                                    _ => None,
+                                                };
+                                                sender.input(AppMsg::LogFilterChanged(filter));
                                             },
                                         },
                                     },
@@ -1371,6 +1445,7 @@ impl SimpleComponent for AppModel {
                                     gtk::Button {
                                         set_icon_name: "edit-copy-symbolic",
                                         set_tooltip_text: Some("Copy visible log lines"),
+                                        update_property: &[gtk::accessible::Property::Label("Copy visible log lines")],
                                         set_valign: gtk::Align::Center,
                                         add_css_class: "flat",
                                         connect_clicked => AppMsg::LogCopy,
@@ -1378,6 +1453,7 @@ impl SimpleComponent for AppModel {
                                     gtk::Button {
                                         set_icon_name: "user-trash-symbolic",
                                         set_tooltip_text: Some("Clear log"),
+                                        update_property: &[gtk::accessible::Property::Label("Clear log")],
                                         set_valign: gtk::Align::Center,
                                         add_css_class: "flat",
                                         connect_clicked => AppMsg::LogClear,
@@ -1409,27 +1485,32 @@ impl SimpleComponent for AppModel {
                                     #[wrap(Some)]
                                     set_child = &gtk::Box {
                                         set_orientation: gtk::Orientation::Vertical,
-                                        set_spacing: 12,
+                                        set_spacing: 24,
 
                                         adw::PreferencesGroup {
                                             set_title: "Identity",
 
                                             adw::ActionRow {
-                                                set_title: "hostname &amp; port",
+                                                set_title: "Hostname",
+                                                set_subtitle: &model.hostname,
+                                                set_use_markup: false,
+                                                set_subtitle_lines: 0,
 
                                                 add_suffix = &gtk::Button {
                                                     set_valign: gtk::Align::Center,
+                                                    set_icon_name: "edit-copy-symbolic",
+                                                    set_tooltip_text: Some("Copy hostname"),
+                                                    update_property: &[gtk::accessible::Property::Label("Copy hostname")],
                                                     connect_clicked => AppMsg::CopyHostname,
-                                                    #[wrap(Some)]
-                                                    set_child = &gtk::Box {
-                                                        set_spacing: 30,
-                                                        gtk::Label {
-                                                            set_label: &model.hostname,
-                                                            set_valign: gtk::Align::Center,
-                                                        },
-                                                        gtk::Image { set_icon_name: Some("edit-copy-symbolic") },
-                                                    },
                                                 },
+                                            },
+
+                                            adw::ActionRow {
+                                                set_title: "Listening Port",
+                                                set_use_markup: false,
+                                                set_subtitle_lines: 0,
+                                                #[watch]
+                                                set_subtitle: model.port_error.as_deref().unwrap_or("UDP port used in server mode; leave blank for 4242"),
 
                                                 #[name(port_entry)]
                                                 add_suffix = &gtk::Entry {
@@ -1439,6 +1520,9 @@ impl SimpleComponent for AppModel {
                                                     set_property: ("xalign", 0.5f32),
                                                     set_placeholder_text: Some("4242"),
                                                     set_input_purpose: gtk::InputPurpose::Digits,
+                                                    update_property: &[gtk::accessible::Property::Label("Listening port")],
+                                                    #[watch]
+                                                    set_css_classes: if model.port_error.is_some() { &["error"][..] } else { &[][..] },
                                                     // deliberately NOT #[watch] — this entry lives
                                                     // on AppModel (re-renders on *every* message,
                                                     // unlike factory-scoped rows), so a #[watch]
@@ -1451,8 +1535,10 @@ impl SimpleComponent for AppModel {
                                                     // convention is an empty field (see
                                                     // `AppModel::port_entry_text`)
                                                     set_text: "",
-                                                    connect_changed[sender] => move |entry| {
-                                                        sender.input(AppMsg::PortEntryChanged(entry.text().to_string()));
+                                                    connect_changed[sender, updating_port_entry] => move |entry| {
+                                                        if !updating_port_entry.get() {
+                                                            sender.input(AppMsg::PortEntryChanged(entry.text().to_string()));
+                                                        }
                                                     },
                                                     connect_activate => AppMsg::PortEditApply,
                                                 },
@@ -1460,7 +1546,8 @@ impl SimpleComponent for AppModel {
                                                 add_suffix = &gtk::Button {
                                                     set_valign: gtk::Align::Center,
                                                     set_icon_name: "object-select-symbolic",
-                                                    add_css_class: "success",
+                                                    set_tooltip_text: Some("Apply listening port"),
+                                                    update_property: &[gtk::accessible::Property::Label("Apply listening port")],
                                                     #[watch]
                                                     set_visible: model.port_editing,
                                                     connect_clicked => AppMsg::PortEditApply,
@@ -1468,7 +1555,8 @@ impl SimpleComponent for AppModel {
                                                 add_suffix = &gtk::Button {
                                                     set_valign: gtk::Align::Center,
                                                     set_icon_name: "process-stop-symbolic",
-                                                    add_css_class: "error",
+                                                    set_tooltip_text: Some("Cancel port changes"),
+                                                    update_property: &[gtk::accessible::Property::Label("Cancel port changes")],
                                                     #[watch]
                                                     set_visible: model.port_editing,
                                                     connect_clicked => AppMsg::PortEditCancel,
@@ -1476,7 +1564,9 @@ impl SimpleComponent for AppModel {
                                             },
 
                                             adw::ActionRow {
-                                                set_title: "certificate fingerprint",
+                                                set_title: "Certificate Fingerprint",
+                                                set_use_markup: false,
+                                                set_subtitle_lines: 0,
                                                 set_icon_name: Some("auth-fingerprint-symbolic"),
                                                 #[watch]
                                                 set_subtitle: &model.pk_fingerprint,
@@ -1484,6 +1574,8 @@ impl SimpleComponent for AppModel {
                                                 add_suffix = &gtk::Button {
                                                     set_valign: gtk::Align::Center,
                                                     set_icon_name: "edit-copy-symbolic",
+                                                    set_tooltip_text: Some("Copy certificate fingerprint"),
+                                                    update_property: &[gtk::accessible::Property::Label("Copy certificate fingerprint")],
                                                     connect_clicked => AppMsg::CopyFingerprint,
                                                 },
                                             },
@@ -1512,12 +1604,14 @@ impl SimpleComponent for AppModel {
                                         adw::PreferencesGroup {
                                             set_title: "Behavior",
                                             adw::ActionRow {
-                                                set_title: "release keys",
-                                                set_subtitle: "Ctrl + Shift + Meta + Alt (default, not yet user-configurable from this page)",
+                                                set_title: "Release Shortcut",
+                                                set_subtitle: "Default: Ctrl + Shift + Meta + Alt — return control to this computer",
+                                                set_subtitle_lines: 0,
                                             },
                                             adw::ActionRow {
-                                                set_title: "enter hook",
-                                                set_subtitle: "configured per-client — see the Screens page's client row",
+                                                set_title: "Connection Command",
+                                                set_subtitle: "Configure enter_hook in config.toml to run a command when entering a client's screen",
+                                                set_subtitle_lines: 0,
                                             },
                                         },
                                     },
@@ -1528,7 +1622,7 @@ impl SimpleComponent for AppModel {
                             },
 
                             #[watch]
-                            set_visible_child_name: model.current_page.name(),
+                            set_visible_child_name: model.current_page.get().name(),
                         },
                     },
                 },
@@ -1547,8 +1641,8 @@ impl SimpleComponent for AppModel {
             .build();
         client_list.set_placeholder(Some(
             &adw::ActionRow::builder()
-                .title("No connections!")
-                .subtitle("add a new client via the + button")
+                .title("No Paired Clients")
+                .subtitle("Choose Add Client to pair another computer")
                 .build(),
         ));
         let client_rows = FactoryVecDeque::<ClientRowModel>::builder()
@@ -1561,8 +1655,8 @@ impl SimpleComponent for AppModel {
             .build();
         authorized_list.set_placeholder(Some(
             &adw::ActionRow::builder()
-                .title("no devices registered!")
-                .subtitle("authorize a new device via the \"Authorize\" button")
+                .title("No Authorized Devices")
+                .subtitle("Authorize a device using its certificate fingerprint")
                 .build(),
         ));
         let authorized_rows = FactoryVecDeque::<KeyRowModel>::builder()
@@ -1575,8 +1669,8 @@ impl SimpleComponent for AppModel {
             .build();
         incoming_device_list.set_placeholder(Some(
             &adw::ActionRow::builder()
-                .title("no devices connected")
-                .subtitle("devices entering this screen will show up here")
+                .title("No Devices Controlling This Computer")
+                .subtitle("Paired devices appear here when they send input")
                 .build(),
         ));
         let incoming_device_rows = FactoryVecDeque::<IncomingDeviceRowModel>::builder()
@@ -1605,7 +1699,8 @@ impl SimpleComponent for AppModel {
             .build();
         audio_stream_list.set_placeholder(Some(
             &adw::ActionRow::builder()
-                .title("no active audio streams")
+                .title("No Active Audio Streams")
+                .subtitle("Enable audio sharing on the sending and receiving computers")
                 .build(),
         ));
         let audio_stream_rows = FactoryVecDeque::<AudioStreamRowModel>::builder()
@@ -1625,17 +1720,20 @@ impl SimpleComponent for AppModel {
             .and_then(|h| h.into_string().ok())
             .unwrap_or_default();
 
+        let updating_port_entry = Rc::new(Cell::new(false));
+        let current_page = Rc::new(Cell::new(Page::Screens));
         let mut model = AppModel {
             writer: init.writer,
             root: root.clone(),
             toast_overlay: adw::ToastOverlay::new(), // throwaway, overwritten below
-            current_page: Page::Screens,
+            current_page: current_page.clone(),
             operation_mode: OperationMode::default(),
             hostname,
             port: DEFAULT_PORT,
             port_draft: String::new(),
             port_editing: false,
-            updating_port_entry: false,
+            port_error: None,
+            updating_port_entry: updating_port_entry.clone(),
             port_entry: gtk::Entry::new(), // throwaway, overwritten below once `widgets` exists
             pk_fingerprint: String::new(),
             capture_active: false,
@@ -1658,6 +1756,7 @@ impl SimpleComponent for AppModel {
             server_connected_addr: None,
             pending_server_test: None,
             next_test_id: 0,
+            server_connection_error: None,
             updating_audio_ui: false,
             audio_send: false,
             audio_receive: false,
@@ -1705,6 +1804,18 @@ impl SimpleComponent for AppModel {
             .bidirectional()
             .build();
 
+        // Keep the same navigation and page state when the sidebar becomes
+        // an overlay. The toggle remains reachable in the content header.
+        let breakpoint = adw::Breakpoint::new(
+            adw::BreakpointCondition::parse("max-width: 860sp").expect("valid breakpoint"),
+        );
+        breakpoint.add_setter(&widgets.split_view, "collapsed", Some(&true.to_value()));
+        // `collapsed` already manages sidebar visibility.
+        model.root.add_breakpoint(breakpoint);
+        widgets
+            .nav_list
+            .select_row(widgets.nav_list.row_at_index(0).as_ref());
+
         model.request(FrontendRequest::EnumerateAudioDevices);
 
         ComponentParts { model, widgets }
@@ -1716,9 +1827,11 @@ impl SimpleComponent for AppModel {
                 self.log.log_event(&event);
                 self.handle_frontend_event(event, &sender);
             }
-            AppMsg::NavigateTo(page) => self.current_page = page,
+            AppMsg::NavigateTo(page) => self.current_page.set(page),
             AppMsg::SetOperationMode(mode) => {
                 if self.operation_mode != mode {
+                    self.pending_server_test = None;
+                    self.server_connection_error = None;
                     self.operation_mode = mode;
                     self.request(FrontendRequest::SetOperationMode(mode));
                 }
@@ -1740,13 +1853,24 @@ impl SimpleComponent for AppModel {
                     dialog.widget().force_close();
                 }
             }
-            AppMsg::ServerHostChanged(text) => self.server_host_draft = text,
-            AppMsg::ServerPortChanged(port) => self.server_port_draft = port,
+            AppMsg::ServerHostChanged(text) => {
+                self.server_host_draft = text;
+                self.server_connection_error = None;
+            }
+            AppMsg::ServerPortChanged(port) => {
+                self.server_port_draft = port;
+                self.server_connection_error = None;
+            }
             AppMsg::ServerConnect => {
+                if self.pending_server_test.is_some() {
+                    return;
+                }
+                self.server_connection_error = None;
                 let hostname = self.server_host_draft.trim().to_string();
                 if hostname.is_empty() {
-                    self.toast_overlay
-                        .add_toast(adw::Toast::new("Enter the server's hostname or IP address"));
+                    self.server_connection_error =
+                        Some("Enter the server's hostname or IP address".to_string());
+                    self.server_host_entry.grab_focus();
                 } else {
                     let port = self.server_port_draft;
                     let request_id = self.next_test_id;
@@ -1757,8 +1881,6 @@ impl SimpleComponent for AppModel {
                         hostname,
                         port,
                     });
-                    self.toast_overlay
-                        .add_toast(adw::Toast::new("Testing connection…"));
                 }
             }
             AppMsg::CopyHostname => {
@@ -1772,20 +1894,22 @@ impl SimpleComponent for AppModel {
                 }
             }
             AppMsg::PortEntryChanged(text) => {
-                if !self.updating_port_entry {
+                if !self.updating_port_entry.get() {
                     self.port_draft = text;
                     self.port_editing = true;
+                    self.port_error = None;
                 }
             }
-            AppMsg::PortEditApply => {
-                let port = self.port_draft.parse::<u16>().unwrap_or(DEFAULT_PORT);
-                self.request(FrontendRequest::ChangePort(port));
-            }
+            AppMsg::PortEditApply => match parse_listening_port(&self.port_draft) {
+                Some(port) => self.request(FrontendRequest::ChangePort(port)),
+                None => self.port_error = Some("Enter a port between 1 and 65535".to_string()),
+            },
             AppMsg::PortEditCancel => {
                 self.port_editing = false;
-                self.updating_port_entry = true;
+                self.port_error = None;
+                self.updating_port_entry.set(true);
                 self.port_entry.set_text(&self.port_entry_text());
-                self.updating_port_entry = false;
+                self.updating_port_entry.set(false);
             }
             AppMsg::ScreenPositionChanged(handle, position) => {
                 if let Ok(position) = Position::from_str(&position) {

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>DeskUnion</title>
+  <desc>Two interlocking links form a D and a U.</desc>
+  <g fill="#2e3436">
+    <path fill-rule="evenodd" d="M1 1H10V7C10 9.76 7.76 12 5 12H1ZM3 3V10H5C6.66 10 8 8.66 8 7V3Z"/>
+    <path d="M11 5H15V11C15 13.21 13.21 15 11 15H10C7.79 15 6 13.21 6 11V5H7V7H8V11C8 12.1 8.9 13 10 13H11C12.1 13 13 12.1 13 11V7H11Z"/>
+  </g>
+</svg>
