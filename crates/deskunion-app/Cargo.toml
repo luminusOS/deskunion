@@ -91,7 +91,7 @@ rdp_emulation = ["input-emulation/remote_desktop_portal"]
 
 [package.metadata.appimage]
 # PNG is rendered from the SVG by the AppImage workflow.
-icon = "../../target/appimage-icon.png"
+icon = "../../target/io.github.luminusos.DeskUnion.png"
 desktop_entry = "../../io.github.luminusos.DeskUnion.desktop"
 auto_link = true
 auto_link_exclude_list = [
@@ -117,5 +117,4 @@ name = "Deskunion"
 icon = ["../../target/icon.icns", "../deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"]
 identifier = "io.github.luminusos.DeskUnion"
 deb_depends = ["libadwaita-1-0"]
-osx_info_plist_exts = ["../../build-aux/macos-lsui-element.plist"]
 resources = ["../../target/menubar-template.png"]

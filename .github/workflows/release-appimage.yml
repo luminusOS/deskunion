@@ -8,6 +8,7 @@ jobs:
     name: Build AppImage (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: x86_64
@@ -94,7 +95,7 @@ jobs:
           mkdir -p target
           rsvg-convert -w 256 -h 256 \
             crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg \
-            -o target/appimage-icon.png
+            -o target/io.github.luminusos.DeskUnion.png
           (
             cd crates/deskunion-app
             APPIMAGE_EXTRACT_AND_RUN=1 cargo appimage --locked

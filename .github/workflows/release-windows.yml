@@ -63,7 +63,7 @@ jobs:
           export PKG_CONFIG_ALLOW_CROSS=1
           export PKG_CONFIG_PATH="/clang64/lib/pkgconfig"
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER="clang"
-          export OPUS_LIB_DIR="$(cygpath -m /clang64/lib)"
+          export OPUS_LIB_DIR="$(cygpath -m /clang64)"
           export CMAKE_POLICY_VERSION_MINIMUM=3.5
           cargo build --release --locked --target x86_64-pc-windows-gnullvm --bin deskunion
 

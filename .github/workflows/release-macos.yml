@@ -8,6 +8,7 @@ jobs:
     name: Build macOS DMG (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: aarch64
@@ -70,6 +71,14 @@ jobs:
             echo "cargo-bundle did not produce Deskunion.app." >&2
             exit 1
           fi
+
+          # Menu bar app: cargo-bundle cannot merge extra Info.plist keys.
+          plist="$app_bundle/Contents/Info.plist"
+          pb=/usr/libexec/PlistBuddy
+          $pb -c "Add :LSUIElement bool true" "$plist"
+          $pb -c "Add :NSAppSleepDisabled bool true" "$plist"
+          $pb -c "Add :NSInputMonitoringUsageDescription string 'DeskUnion needs Input Monitoring access to capture keyboard and mouse input and forward it to remote machines on your network.'" "$plist"
+          $pb -c "Add :NSAppleEventsUsageDescription string 'DeskUnion uses Apple Events to deliver synthesized keyboard and mouse events to the system.'" "$plist"
 
           scripts/copy-macos-dylib.sh "$app_bundle/Contents/MacOS/deskunion"
 
