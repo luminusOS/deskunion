@@ -7,7 +7,7 @@ workflow per platform and publishes every artifact (the tag must match the
 `deskunion-app` version):
 
 - Windows x86_64: Inno Setup installer (`*-setup.exe`) and portable ZIP.
-- macOS: one DMG per architecture (`aarch64`, `x86_64`).
+- macOS: DMG for `aarch64` (Intel is disabled: Homebrew has no x86_64 bottles for GTK4).
 - Linux: Flatpak bundle and AppImage, each for `x86_64` and `aarch64`.
 - `SHA256SUMS.txt` covering all of the above.
 

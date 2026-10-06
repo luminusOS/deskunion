@@ -13,8 +13,9 @@ jobs:
         include:
           - arch: aarch64
             runner: macos-15
-          - arch: x86_64
-            runner: macos-15-intel
+          # x86_64 (macos-15-intel) disabled: Homebrew ships no Intel bottles for
+          # gtk4/libadwaita/librsvg, so brew compiles llvm/rust/python from source
+          # and the job runs for hours. Re-enable once bottles or a cache exist.
     steps:
       - name: Check out sources
         uses: actions/checkout@v6
