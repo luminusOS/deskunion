@@ -243,14 +243,16 @@ impl AppModel {
     fn home_page_title(&self) -> &'static str {
         match self.operation_mode {
             OperationMode::Client => "Connection",
-            _ => Page::Screens.title(),
+            OperationMode::Unconfigured => "Welcome",
+            OperationMode::Server => Page::Screens.title(),
         }
     }
 
     fn home_page_icon(&self) -> &'static str {
         match self.operation_mode {
-            OperationMode::Client => "network-workgroup-symbolic",
-            _ => "video-display-symbolic",
+            OperationMode::Client => "network-server-symbolic",
+            OperationMode::Unconfigured => "go-home-symbolic",
+            OperationMode::Server => "video-display-symbolic",
         }
     }
 
@@ -1555,6 +1557,7 @@ impl SimpleComponent for AppModel {
                                                 add_suffix = &gtk::Button {
                                                     set_valign: gtk::Align::Center,
                                                     set_icon_name: "edit-copy-symbolic",
+                                                    add_css_class: "flat",
                                                     set_tooltip_text: Some("Copy hostname"),
                                                     update_property: &[gtk::accessible::Property::Label("Copy hostname")],
                                                     connect_clicked => AppMsg::CopyHostname,
@@ -1632,6 +1635,7 @@ impl SimpleComponent for AppModel {
                                                 add_suffix = &gtk::Button {
                                                     set_valign: gtk::Align::Center,
                                                     set_icon_name: "edit-copy-symbolic",
+                                                    add_css_class: "flat",
                                                     set_tooltip_text: Some("Copy certificate fingerprint"),
                                                     update_property: &[gtk::accessible::Property::Label("Copy certificate fingerprint")],
                                                     connect_clicked => AppMsg::CopyFingerprint,
