@@ -238,6 +238,29 @@ impl AppModel {
         }
     }
 
+    /// Only the server arranges screens; a client's first page is about
+    /// its connection to that server, so it must not be called "Screens".
+    fn home_page_title(&self) -> &'static str {
+        match self.operation_mode {
+            OperationMode::Client => "Connection",
+            _ => Page::Screens.title(),
+        }
+    }
+
+    fn home_page_icon(&self) -> &'static str {
+        match self.operation_mode {
+            OperationMode::Client => "network-workgroup-symbolic",
+            _ => "video-display-symbolic",
+        }
+    }
+
+    fn page_title(&self) -> &'static str {
+        match self.current_page.get() {
+            Page::Screens => self.home_page_title(),
+            page => page.title(),
+        }
+    }
+
     fn screen_items(&self) -> Vec<ScreenItem> {
         self.client_rows
             .iter()
@@ -866,8 +889,15 @@ impl SimpleComponent for AppModel {
                                         gtk::Box {
                                             set_spacing: 12,
                                             set_margin_all: 6,
-                                            gtk::Image { set_icon_name: Some("video-display-symbolic") },
-                                            gtk::Label { set_label: "Screens", set_xalign: 0.0 },
+                                            gtk::Image {
+                                                #[watch]
+                                                set_icon_name: Some(model.home_page_icon()),
+                                            },
+                                            gtk::Label {
+                                                #[watch]
+                                                set_label: model.home_page_title(),
+                                                set_xalign: 0.0,
+                                            },
                                         },
                                     },
                                     gtk::ListBoxRow {
@@ -1008,7 +1038,7 @@ impl SimpleComponent for AppModel {
                             #[wrap(Some)]
                             set_title_widget = &adw::WindowTitle {
                                 #[watch]
-                                set_title: model.current_page.get().title(),
+                                set_title: model.page_title(),
                                 #[watch]
                                 set_subtitle: &model.header_subtitle(),
                             },
