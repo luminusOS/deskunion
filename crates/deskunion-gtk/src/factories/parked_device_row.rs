@@ -71,7 +71,6 @@ impl FactoryComponent for ParkedDeviceRowModel {
                 set_label: "Assign",
                 set_valign: gtk::Align::Center,
                 add_css_class: "pill",
-                add_css_class: "suggested-action",
                 connect_clicked[sender, index] => move |_| {
                     sender.output(ParkedDeviceRowOutput::Assign(index.clone())).unwrap();
                 },

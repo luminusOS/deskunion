@@ -1054,9 +1054,9 @@ impl SimpleComponent for AppModel {
                                 set_margin_end: 6,
                                 #[watch]
                                 set_visible: model.operation_mode != OperationMode::Unconfigured,
-                                // "Start" uses the theme's accent colour
-                                #[watch]
-                                set_class_active: ("suggested-action", !model.service_running()),
+                                // the one highlighted action of the window: follows
+                                // the system accent colour for both Start and Stop
+                                add_css_class: "suggested-action",
                                 set_tooltip_text: Some("Start or stop input sharing"),
                                 connect_clicked => AppMsg::ToggleServiceRunning,
 
@@ -1198,7 +1198,6 @@ impl SimpleComponent for AppModel {
                                                     set_sensitive: model.pending_server_test.is_none() && !model.server_host_draft.trim().is_empty(),
                                                     set_valign: gtk::Align::Center,
                                                     add_css_class: "pill",
-                                                    add_css_class: "suggested-action",
                                                     connect_clicked => AppMsg::ServerConnect,
                                                 },
                                             },
