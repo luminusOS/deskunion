@@ -30,7 +30,9 @@ pub(crate) enum DeskunionConnectionError {
     Webrtc(#[from] webrtc_util::Error),
     #[error("not connected")]
     NotConnected,
-    #[error("Connection timed out")]
+    #[error(
+        "No reply from the server. Check the address and that UDP (not TCP) on the server's port is allowed in its firewall"
+    )]
     Timeout,
     #[error(
         "the remote server rejected this certificate; authorize this computer in DeskUnion on the remote machine, then try again"
