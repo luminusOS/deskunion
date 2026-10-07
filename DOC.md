@@ -1,6 +1,6 @@
 # General Software Architecture
 
-## Release 0.1.0
+## Release 0.1.1
 
 Pushing a `v<version>` tag runs `release.yml`, which calls one reusable
 workflow per platform and publishes every artifact (the tag must match the
