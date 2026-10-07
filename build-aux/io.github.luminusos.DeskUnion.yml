@@ -40,6 +40,7 @@ modules:
       - install -Dm0644 crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
       - install -Dm0644 crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion-symbolic.svg ${FLATPAK_DEST}/share/icons/hicolor/symbolic/apps/${FLATPAK_ID}-symbolic.svg
       - install -Dm0644 io.github.luminusos.DeskUnion.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm0644 io.github.luminusos.DeskUnion.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
     sources:
       - type: dir
         path: ..

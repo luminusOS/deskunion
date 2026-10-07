@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.luminusos.DeskUnion</id>
+  <name>DeskUnion</name>
+  <summary>Mouse and keyboard sharing via LAN</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <url type="homepage">https://github.com/luminusOS/deskunion</url>
+  <url type="bugtracker">https://github.com/luminusOS/deskunion/issues</url>
+  <developer_name>LuminusOS</developer_name>
+  <description>
+    <p>Share one mouse and keyboard between computers on the same network.</p>
+  </description>
+  <launchable type="desktop-id">io.github.luminusos.DeskUnion.desktop</launchable>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.2" date="2026-10-07">
+      <description>
+        <p>Ship the version in the Flatpak metadata so software centers detect updates.</p>
+      </description>
+    </release>
+    <release version="0.1.1" date="2026-10-07">
+      <description>
+        <p>Fix the Windows interface freezing when a connection attempt times out, and add a per-user Windows installer option.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-10-06" />
+  </releases>
+</component>

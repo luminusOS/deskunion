@@ -36,6 +36,11 @@ jobs:
             exit 1
           fi
 
+          if ! grep -q "<release version=\"${APP_VERSION}\"" io.github.luminusos.DeskUnion.metainfo.xml; then
+            echo "io.github.luminusos.DeskUnion.metainfo.xml has no <release> for ${APP_VERSION}." >&2
+            exit 1
+          fi
+
           mkdir -p dist
           echo "bundle_name=deskunion-${VERSION}-linux-${{ matrix.arch }}.flatpak" >> "$GITHUB_OUTPUT"
 
