@@ -530,8 +530,13 @@ impl AppModel {
                             ips: ip.into_iter().collect(),
                             port,
                         });
+                        // Connect is the user's intent to start: without
+                        // this the saved server is never dialed until they
+                        // also find and press Start
+                        self.service_wanted_running = true;
+                        self.request(FrontendRequest::SetServiceRunning(true));
                         self.toast_overlay
-                            .add_toast(adw::Toast::new("Server verified and saved"));
+                            .add_toast(adw::Toast::new("Server verified, connecting…"));
                     }
                 }
             }

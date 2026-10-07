@@ -32,11 +32,12 @@ impl SimpleComponent for AuthorizationDialogModel {
     view! {
         #[name(root)]
         adw::AlertDialog {
-            set_heading: Some("Unauthorized Device"),
-            set_body: "An unauthorized Device is trying to connect. Do you want to authorize this Device?",
-            add_response: ("cancel", "Cancel"),
-            add_response: ("authorize", "Authorize"),
-            set_response_appearance: ("authorize", adw::ResponseAppearance::Destructive),
+            set_heading: Some("Allow This Computer?"),
+            set_body: "A computer is asking to use this computer's keyboard and mouse. Allow it only if the fingerprint below matches the one shown on that computer.",
+            add_response: ("cancel", "Don't Allow"),
+            add_response: ("authorize", "Allow"),
+            set_response_appearance: ("authorize", adw::ResponseAppearance::Suggested),
+            set_default_response: Some("authorize"),
             set_close_response: "cancel",
 
             #[wrap(Some)]
