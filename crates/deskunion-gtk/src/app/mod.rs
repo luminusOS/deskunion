@@ -1019,6 +1019,9 @@ impl SimpleComponent for AppModel {
                                 set_margin_end: 6,
                                 #[watch]
                                 set_visible: model.operation_mode != OperationMode::Unconfigured,
+                                // "Start" uses the theme's accent colour
+                                #[watch]
+                                set_class_active: ("suggested-action", !model.service_running()),
                                 set_tooltip_text: Some("Start or stop input sharing"),
                                 connect_clicked => AppMsg::ToggleServiceRunning,
 
