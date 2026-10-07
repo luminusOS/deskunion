@@ -323,6 +323,12 @@ impl AppModel {
                 )
             }
             OperationMode::Server => "Server · stopped".to_string(),
+            OperationMode::Client if self.server_connected_addr.is_some() => {
+                "Client · connected".to_string()
+            }
+            OperationMode::Client if self.emulation_active && self.server_hostname.is_some() => {
+                "Client · connecting…".to_string()
+            }
             OperationMode::Client if self.emulation_active => "Client · running".to_string(),
             OperationMode::Client => "Client · stopped".to_string(),
         }
@@ -448,12 +454,14 @@ impl AppModel {
             return format!("Connected to {addr}");
         }
         match &self.server_hostname {
-            Some(hostname) => {
-                format!(
-                    "Saved server: {hostname}:{} — not connected",
-                    self.server_port
-                )
-            }
+            Some(hostname) if self.service_wanted_running => format!(
+                "Connecting to {hostname}:{}… If this keeps failing, allow UDP port {} in the server's firewall",
+                self.server_port, self.server_port
+            ),
+            Some(hostname) => format!(
+                "{hostname}:{} is saved. Press Start to connect",
+                self.server_port
+            ),
             None => "No server configured".to_string(),
         }
     }
@@ -776,8 +784,15 @@ impl AppModel {
                 };
                 self.toast_overlay.add_toast(adw::Toast::new(&msg));
             }
-            FrontendEvent::ServerEndpoint { hostname, port, .. } => {
-                self.server_hostname = hostname;
+            FrontendEvent::ServerEndpoint {
+                hostname,
+                ips,
+                port,
+            } => {
+                // a server entered as a bare IP is saved with no hostname;
+                // fall back to that IP so the field and status keep showing it
+                self.server_hostname =
+                    hostname.or_else(|| ips.first().map(std::string::ToString::to_string));
                 self.server_port = port;
                 self.server_host_draft = self.server_hostname.clone().unwrap_or_default();
                 self.server_port_draft = port;
@@ -1218,6 +1233,31 @@ impl SimpleComponent for AppModel {
                                                 set_title: "Status",
                                                 #[watch]
                                                 set_subtitle: &model.server_status_text(),
+                                            },
+                                        },
+
+                                        adw::PreferencesGroup {
+                                            set_title: "This Computer",
+                                            set_description: Some("The server asks you to confirm this fingerprint before it allows this computer."),
+                                            #[watch]
+                                            set_visible: model.operation_mode == OperationMode::Client,
+
+                                            adw::ActionRow {
+                                                set_title: "Certificate Fingerprint",
+                                                set_use_markup: false,
+                                                set_subtitle_lines: 0,
+                                                set_icon_name: Some("auth-fingerprint-symbolic"),
+                                                #[watch]
+                                                set_subtitle: &model.pk_fingerprint,
+
+                                                add_suffix = &gtk::Button {
+                                                    set_valign: gtk::Align::Center,
+                                                    set_icon_name: "edit-copy-symbolic",
+                                                    add_css_class: "flat",
+                                                    set_tooltip_text: Some("Copy certificate fingerprint"),
+                                                    update_property: &[gtk::accessible::Property::Label("Copy certificate fingerprint")],
+                                                    connect_clicked => AppMsg::CopyFingerprint,
+                                                },
                                             },
                                         },
 
