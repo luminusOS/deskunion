@@ -62,7 +62,7 @@ impl SimpleComponent for AddClientDialogModel {
         #[name(root)]
         adw::AlertDialog {
             set_heading: Some("Add a Client"),
-            set_body: "Pair an authorized device by its certificate fingerprint. The device shows its fingerprint on its own Settings page.",
+            set_body: "Pair an authorized device by its certificate fingerprint. A client shows its fingerprint on its Connection page.",
             add_response: ("cancel", "Cancel"),
             add_response: ("add", "Add"),
             set_response_appearance: ("add", adw::ResponseAppearance::Suggested),

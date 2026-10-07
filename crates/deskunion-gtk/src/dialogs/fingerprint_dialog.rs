@@ -32,7 +32,7 @@ impl SimpleComponent for FingerprintDialogModel {
         #[name(root)]
         adw::AlertDialog {
             set_heading: Some("Add Certificate Fingerprint"),
-            set_body: "The certificate fingerprint serves as a unique identifier for your device.\nYou can find it under the `General` section of the device you want to connect",
+            set_body: "The certificate fingerprint serves as a unique identifier for your device.\nA client shows it on its Connection page.",
             add_response: ("confirm", "Confirm"),
             set_response_appearance: ("confirm", adw::ResponseAppearance::Suggested),
             set_default_response: Some("confirm"),

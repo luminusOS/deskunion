@@ -261,6 +261,13 @@ impl AppModel {
         }
     }
 
+    /// a server with nobody paired yet needs to be told how clients reach it
+    fn show_connect_hint(&self) -> bool {
+        self.operation_mode == OperationMode::Server
+            && self.client_rows.is_empty()
+            && self.parked_device_rows.is_empty()
+    }
+
     fn screen_items(&self) -> Vec<ScreenItem> {
         self.client_rows
             .iter()
@@ -1134,34 +1141,38 @@ impl SimpleComponent for AppModel {
                                             },
                                         },
 
-                                        gtk::Label {
-                                            set_label: "Screen arrangement",
-                                            set_xalign: 0.0,
-                                            add_css_class: "title-2",
+                                        adw::PreferencesGroup {
+                                            set_title: "Screen Arrangement",
+                                            set_description: Some("Drag a screen to an edge of this computer, or choose its position in the client list."),
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Server,
+
+                                            gtk::Frame {
+                                                add_css_class: "card",
+                                                #[wrap(Some)]
+                                                set_child: screen_arrangement = &ScreenArrangement {
+                                                    set_height_request: 320,
+                                                    set_margin_all: 12,
+                                                    set_host_label: &model.hostname,
+                                                    #[watch]
+                                                    set_items: model.screen_items(),
+                                                },
+                                            },
                                         },
 
-                                        gtk::Label {
-                                            set_label: "Drag a screen to an edge of this computer, or choose its position in the client list.",
-                                            set_xalign: 0.0,
-                                            set_wrap: true,
-                                            add_css_class: "dim-label",
+                                        adw::PreferencesGroup {
+                                            set_title: "Connect a Client",
+                                            set_description: Some("On the other computer choose Client, enter this computer's address and press Connect. Then allow it here."),
                                             #[watch]
-                                            set_visible: model.operation_mode == OperationMode::Server,
-                                        },
+                                            set_visible: model.show_connect_hint(),
 
-                                        gtk::Frame {
-                                            add_css_class: "card",
-                                            #[watch]
-                                            set_visible: model.operation_mode == OperationMode::Server,
-                                            #[wrap(Some)]
-                                            set_child: screen_arrangement = &ScreenArrangement {
-                                                set_height_request: 320,
-                                                set_margin_all: 12,
-                                                set_host_label: &model.hostname,
+                                            adw::ActionRow {
+                                                set_title: "This Computer",
+                                                set_use_markup: false,
+                                                set_subtitle_lines: 0,
+                                                set_icon_name: Some("computer-symbolic"),
                                                 #[watch]
-                                                set_items: model.screen_items(),
+                                                set_subtitle: &format!("{} · UDP port {}", model.hostname, model.port),
                                             },
                                         },
 
@@ -1326,47 +1337,15 @@ impl SimpleComponent for AppModel {
                                             },
                                         },
 
-                                        gtk::Label {
-                                            set_label: "Connected clients",
-                                            set_xalign: 0.0,
-                                            add_css_class: "title-2",
+                                        adw::PreferencesGroup {
+                                            set_title: "Clients",
                                             #[watch]
-                                            set_visible: model.operation_mode == OperationMode::Server,
-                                        },
-
-                                        gtk::Box {
-                                            set_orientation: gtk::Orientation::Vertical,
-                                            set_spacing: 0,
-                                            #[watch]
-                                            set_visible: model.operation_mode == OperationMode::Server,
+                                            set_visible: model.operation_mode == OperationMode::Server && !model.client_rows.is_empty(),
 
                                             #[local_ref]
                                             client_list -> gtk::ListBox {
                                                 set_selection_mode: gtk::SelectionMode::None,
                                                 add_css_class: "boxed-list",
-                                                add_css_class: "joined-list-top",
-                                            },
-
-                                            gtk::ListBox {
-                                                set_selection_mode: gtk::SelectionMode::None,
-                                                add_css_class: "boxed-list",
-                                                add_css_class: "joined-list-bottom",
-
-                                                adw::ActionRow {
-                                                    set_title: "Add client...",
-                                                    set_subtitle: "Pair an authorized device by its fingerprint",
-                                                    set_activatable: true,
-                                                    connect_activated => AppMsg::AddClient,
-
-                                                    add_prefix = &gtk::Image {
-                                                        set_icon_name: Some("list-add-symbolic"),
-                                                    },
-
-                                                    add_suffix = &gtk::Image {
-                                                        set_icon_name: Some("go-next-symbolic"),
-                                                        add_css_class: "dim-label",
-                                                    },
-                                                },
                                             },
                                         },
                                     },
@@ -1584,6 +1563,8 @@ impl SimpleComponent for AppModel {
 
                                             adw::ActionRow {
                                                 set_title: "Listening Port",
+                                                #[watch]
+                                                set_visible: model.operation_mode != OperationMode::Client,
                                                 set_use_markup: false,
                                                 set_subtitle_lines: 0,
                                                 #[watch]
@@ -1660,6 +1641,9 @@ impl SimpleComponent for AppModel {
 
                                         adw::PreferencesGroup {
                                             set_title: "Authorized devices",
+                                            set_description: Some("Computers allowed to control this one."),
+                                            #[watch]
+                                            set_visible: model.operation_mode != OperationMode::Client,
                                             #[wrap(Some)]
                                             set_header_suffix = &gtk::Button {
                                                 add_css_class: "flat",
@@ -1679,7 +1663,32 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         adw::PreferencesGroup {
+                                            set_title: "Manual Pairing",
+                                            set_description: Some("Normally a computer appears here and you allow it. Use this to add one in advance."),
+                                            #[watch]
+                                            set_visible: model.operation_mode == OperationMode::Server,
+
+                                            adw::ActionRow {
+                                                set_title: "Add Client…",
+                                                set_subtitle: "Pair a computer by its certificate fingerprint and choose its screen position",
+                                                set_subtitle_lines: 0,
+                                                set_activatable: true,
+                                                connect_activated => AppMsg::AddClient,
+
+                                                add_prefix = &gtk::Image {
+                                                    set_icon_name: Some("list-add-symbolic"),
+                                                },
+                                                add_suffix = &gtk::Image {
+                                                    set_icon_name: Some("go-next-symbolic"),
+                                                    add_css_class: "dim-label",
+                                                },
+                                            },
+                                        },
+
+                                        adw::PreferencesGroup {
                                             set_title: "Behavior",
+                                            #[watch]
+                                            set_visible: model.operation_mode != OperationMode::Client,
                                             adw::ActionRow {
                                                 set_title: "Release Shortcut",
                                                 set_subtitle: "Default: Ctrl + Shift + Meta + Alt — return control to this computer",
