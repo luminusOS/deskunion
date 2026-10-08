@@ -48,6 +48,10 @@ pub(crate) enum SendError {
 type ArcConn = Arc<dyn Conn + Send + Sync>;
 
 pub(crate) enum ListenEvent {
+    ComputerName {
+        addr: SocketAddr,
+        name: String,
+    },
     Msg {
         event: ProtoEvent,
         addr: SocketAddr,
@@ -721,6 +725,11 @@ async fn read_loop(
         // liveness than waiting for a Pong queued behind real-time audio.
         ping_response.borrow_mut().insert(addr);
         match decode(&buf[..n]) {
+            Ok(Datagram::ComputerName(name)) => {
+                dtls_tx
+                    .send(ListenEvent::ComputerName { addr, name })
+                    .expect("channel closed");
+            }
             Ok(Datagram::Event(event)) => {
                 log::trace!("{addr} <=<=<=<=<= {event}");
                 dtls_tx
@@ -1154,6 +1163,90 @@ mod test {
                     "pinger kept pinging a dead connection: {result:?}"
                 );
 
+                listener.terminate().await;
+            })
+            .await;
+    }
+
+    /// Exercise the real dialer/session loop with audio disabled. A name
+    /// discarded while parked must be repeated after position assignment.
+    #[tokio::test]
+    async fn dialer_repeats_computer_name_for_parked_pair_without_audio() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let server_cert = Certificate::generate_self_signed(["ignored".to_owned()])
+                    .expect("server certificate");
+                let client_cert = Certificate::generate_self_signed(["ignored".to_owned()])
+                    .expect("client certificate");
+                let fingerprint = crypto::certificate_fingerprint(&client_cert);
+                let authorized = Arc::new(RwLock::new(HashMap::from([(
+                    fingerprint.clone(),
+                    "test".to_owned(),
+                )])));
+                let manager = ClientManager::default();
+                let port = ephemeral_port();
+                let mut listener = DeskunionListener::new(
+                    port,
+                    server_cert,
+                    authorized,
+                    manager.clone(),
+                    test_audio_settings(),
+                )
+                .await
+                .expect("listener");
+                let dialer =
+                    crate::connect::DeskunionConnection::new(client_cert, test_audio_settings());
+                dialer
+                    .set_server(Some(crate::connect::ServerTarget {
+                        ips: vec!["127.0.0.1".parse().unwrap()],
+                        port,
+                    }))
+                    .await;
+
+                let mut accepted_addr = None;
+                let mut handle = None;
+                tokio::time::timeout(Duration::from_secs(6), async {
+                    loop {
+                        match listener.next().await.expect("listener event") {
+                            ListenEvent::Accept {
+                                addr,
+                                fingerprint: accepted,
+                            } => {
+                                assert_eq!(accepted, fingerprint);
+                                manager.park(accepted, addr);
+                                accepted_addr = Some(addr);
+                            }
+                            ListenEvent::ComputerName { addr, name } => {
+                                assert_eq!(Some(addr), accepted_addr);
+                                assert!(deskunion_proto::valid_computer_name(&name));
+                                if let Some(handle) = handle {
+                                    assert_eq!(
+                                        manager.set_announced_name(addr, &name),
+                                        Some(handle)
+                                    );
+                                    assert_eq!(manager.get_hostname(handle), Some(name));
+                                    assert_eq!(manager.active_addr(handle), Some(addr));
+                                    break;
+                                }
+                                assert_eq!(manager.set_announced_name(addr, &name), None);
+                                let paired = manager.add_client();
+                                manager.set_config(
+                                    paired,
+                                    deskunion_ipc::ClientConfig {
+                                        fingerprint: Some(fingerprint.clone()),
+                                        ..Default::default()
+                                    },
+                                );
+                                manager.set_active_addr(paired, manager.unpark(&fingerprint));
+                                handle = Some(paired);
+                            }
+                            _ => {}
+                        }
+                    }
+                })
+                .await
+                .expect("initial and repeated computer name without audio");
+                dialer.terminate().await;
                 listener.terminate().await;
             })
             .await;

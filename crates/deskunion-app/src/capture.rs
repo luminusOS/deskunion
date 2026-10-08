@@ -45,6 +45,8 @@ pub(crate) enum ICaptureEvent {
     /// a new device entering the screen or the release bind.
     ClientEntered(u64),
     ClientStateChanged(ClientHandle),
+    /// A connected pair's previously empty display label was filled.
+    ClientNameChanged(ClientHandle),
     /// an authorized device connected in but is not paired to a
     /// client entry yet (parked) — the frontend can offer to assign
     /// it a screen position
@@ -310,6 +312,15 @@ impl CaptureTask {
                             .send(ICaptureEvent::DeviceConnected { addr, fingerprint })
                             .expect("channel closed");
                     }
+                }
+            }
+            ListenEvent::ComputerName { addr, name } => {
+                // Parked devices have no paired active_addr yet. The dialer
+                // repeats metadata so assignment later needs no cached name.
+                if let Some(handle) = self.client_manager.set_announced_name(addr, &name) {
+                    self.event_tx
+                        .send(ICaptureEvent::ClientNameChanged(handle))
+                        .expect("channel closed");
                 }
             }
             ListenEvent::Rejected { fingerprint } => {

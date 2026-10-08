@@ -582,6 +582,10 @@ impl Service {
             ICaptureEvent::ClientStateChanged(handle) => {
                 self.broadcast_client(handle);
             }
+            ICaptureEvent::ClientNameChanged(handle) => {
+                self.save_config();
+                self.broadcast_client(handle);
+            }
             ICaptureEvent::AudioStream {
                 addr,
                 active,

@@ -291,6 +291,27 @@ impl ClientManager {
         }
     }
 
+    /// Fill only an unnamed, connected pair's display label. Unlike
+    /// `set_hostname`, metadata must never invalidate connection routing.
+    pub(crate) fn set_announced_name(&self, addr: SocketAddr, name: &str) -> Option<ClientHandle> {
+        if !deskunion_proto::valid_computer_name(name) {
+            return None;
+        }
+        let mut clients = self.clients.borrow_mut();
+        let (handle, (config, _)) = clients.iter_mut().find(|(_, (c, s))| {
+            s.active_addr == Some(addr) && c.fingerprint.as_ref().is_some_and(|f| !f.is_empty())
+        })?;
+        if config
+            .hostname
+            .as_ref()
+            .is_some_and(|label| !label.is_empty())
+        {
+            return None;
+        }
+        config.hostname = Some(name.to_owned());
+        Some(handle as ClientHandle)
+    }
+
     /// update the port of the client
     pub(crate) fn set_port(&self, handle: ClientHandle, port: u16) {
         match self.clients.borrow_mut().get_mut(handle as usize) {
@@ -405,6 +426,55 @@ mod test {
             },
         );
         (manager, handle)
+    }
+
+    #[test]
+    fn announced_name_preserves_connection_and_existing_labels() {
+        let (manager, handle) = paired_manager("aa:bb");
+        let addr = "10.0.2.15:4242".parse().unwrap();
+        manager.set_active_addr(handle, Some(addr));
+        manager.set_alive(handle, true);
+        manager.set_dns_ips(handle, vec![addr.ip()]);
+        let before = manager.get_state(handle).unwrap().1;
+        assert_eq!(manager.set_announced_name(addr, "Biah"), Some(handle));
+        assert_eq!(manager.get_hostname(handle).as_deref(), Some("Biah"));
+        let after = manager.get_state(handle).unwrap().1;
+        assert_eq!(after.active_addr, before.active_addr);
+        assert_eq!(after.dns_ips, before.dns_ips);
+        assert_eq!(after.ips, before.ips);
+        assert_eq!(after.alive, before.alive);
+        assert_eq!(manager.set_announced_name(addr, "Biah"), None);
+        assert_eq!(manager.set_announced_name(addr, "Other"), None);
+        manager.set_hostname(handle, Some("My custom label".to_owned()));
+        manager.set_active_addr(handle, Some(addr));
+        assert_eq!(manager.set_announced_name(addr, "Biah"), None);
+        assert_eq!(
+            manager.get_hostname(handle).as_deref(),
+            Some("My custom label")
+        );
+        assert_eq!(manager.active_addr(handle), Some(addr));
+        manager.set_hostname(handle, Some(String::new()));
+        manager.set_active_addr(handle, Some(addr));
+        assert_eq!(manager.set_announced_name(addr, "Biah"), Some(handle));
+    }
+
+    #[test]
+    fn announced_name_requires_connected_pair_and_valid_name() {
+        let (manager, handle) = paired_manager("aa:bb");
+        let addr = "10.0.2.15:4242".parse().unwrap();
+        assert_eq!(manager.set_announced_name(addr, "Biah"), None);
+        manager.park("cc:dd".to_owned(), addr);
+        assert_eq!(manager.set_announced_name(addr, "Biah"), None);
+        manager.set_active_addr(handle, Some(addr));
+        for name in ["", "bad\n", &"x".repeat(256)] {
+            assert_eq!(manager.set_announced_name(addr, name), None);
+        }
+        let unpaired = manager.add_client();
+        let other_addr = "10.0.2.16:4242".parse().unwrap();
+        manager.set_active_addr(unpaired, Some(other_addr));
+        assert_eq!(manager.set_announced_name(other_addr, "Biah"), None);
+        manager.set_active_addr(handle, None);
+        assert_eq!(manager.set_announced_name(addr, "Biah"), None);
     }
 
     #[test]

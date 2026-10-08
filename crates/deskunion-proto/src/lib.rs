@@ -11,7 +11,8 @@ mod datagram;
 
 pub use datagram::{
     AudioControlCmd, AudioFrame, AudioFrameRef, ClipboardTextFragment, Datagram, DatagramRef,
-    MAX_CLIPBOARD_FRAGMENT_SIZE, MAX_CLIPBOARD_TEXT_SIZE, MAX_DATAGRAM_SIZE, decode, encode_into,
+    MAX_CLIPBOARD_FRAGMENT_SIZE, MAX_CLIPBOARD_TEXT_SIZE, MAX_COMPUTER_NAME_SIZE,
+    MAX_DATAGRAM_SIZE, decode, encode_into, valid_computer_name,
 };
 
 /// defines the maximum size an encoded event can take up
@@ -22,6 +23,9 @@ pub const MAX_EVENT_SIZE: usize = size_of::<u8>() + size_of::<u32>() + 2 * size_
 /// error type for protocol violations
 #[derive(Debug, Error)]
 pub enum ProtocolError {
+    /// computer name is empty, oversized, invalid UTF-8, or contains controls
+    #[error("invalid computer name")]
+    InvalidComputerName,
     /// event type does not exist
     #[error("invalid event id: `{0}`")]
     InvalidEventId(#[from] TryFromPrimitiveError<EventType>),
@@ -154,6 +158,8 @@ pub enum EventType {
     ClipboardText = 15,
     /// acknowledgement for a completely reassembled clipboard transfer
     ClipboardAck = 16,
+    /// bounded UTF-8 computer display name (separate from build metadata)
+    ComputerName = 17,
 }
 
 impl ProtoEvent {
@@ -242,7 +248,8 @@ impl TryFrom<[u8; MAX_EVENT_SIZE]> for ProtoEvent {
             | EventType::AudioControl
             | EventType::AudioBatch
             | EventType::ClipboardText
-            | EventType::ClipboardAck) => Err(ProtocolError::UnexpectedVariableEvent(variant)),
+            | EventType::ClipboardAck
+            | EventType::ComputerName) => Err(ProtocolError::UnexpectedVariableEvent(variant)),
         }
     }
 }

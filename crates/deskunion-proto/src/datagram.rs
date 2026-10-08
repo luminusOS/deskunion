@@ -33,6 +33,14 @@ pub const MAX_CLIPBOARD_TEXT_SIZE: usize = 64 * 1024;
 pub const MAX_CLIPBOARD_FRAGMENT_SIZE: usize = MAX_DATAGRAM_SIZE - CLIPBOARD_HEADER_SIZE;
 const CLIPBOARD_HEADER_SIZE: usize = 1 + 4 + 2 + 2;
 
+/// Maximum UTF-8 computer name size, in bytes (excluding the event id).
+pub const MAX_COMPUTER_NAME_SIZE: usize = 255;
+
+/// Validate display metadata without accepting control characters.
+pub fn valid_computer_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= MAX_COMPUTER_NAME_SIZE && !name.chars().any(char::is_control)
+}
+
 #[derive(Clone, Debug)]
 pub struct AudioFrame {
     pub seq: u32,
@@ -69,6 +77,8 @@ pub enum AudioControlCmd {
 /// payload is referenced by range into the caller's buffer.
 #[derive(Clone, Debug)]
 pub enum Datagram {
+    /// Validated UTF-8 computer display name, not a DNS endpoint.
+    ComputerName(String),
     /// legacy fixed-size control/input event
     Event(ProtoEvent),
     /// Opus audio frame
@@ -96,6 +106,8 @@ pub enum Datagram {
 /// by slice so encoding never allocates.
 #[derive(Clone, Copy, Debug)]
 pub enum DatagramRef<'a> {
+    /// UTF-8 computer name; wire format is type:u8 followed by 1–255 bytes.
+    ComputerName(&'a str),
     /// legacy fixed-size control/input event
     Event(ProtoEvent),
     /// Opus audio frame
@@ -126,6 +138,19 @@ pub enum DatagramRef<'a> {
 pub fn decode(buf: &[u8]) -> Result<Datagram, ProtocolError> {
     let (&event_type, _) = buf.split_first().ok_or(ProtocolError::Truncated(0))?;
     match EventType::try_from(event_type)? {
+        EventType::ComputerName => {
+            let payload = &buf[1..];
+            // Bound before decoding or allocating, even for oversized packets.
+            if payload.is_empty() || payload.len() > MAX_COMPUTER_NAME_SIZE {
+                return Err(ProtocolError::InvalidComputerName);
+            }
+            let name =
+                std::str::from_utf8(payload).map_err(|_| ProtocolError::InvalidComputerName)?;
+            if !valid_computer_name(name) {
+                return Err(ProtocolError::InvalidComputerName);
+            }
+            Ok(Datagram::ComputerName(name.to_owned()))
+        }
         EventType::Audio => {
             if buf.len() < AUDIO_HEADER_SIZE {
                 return Err(ProtocolError::Truncated(buf.len()));
@@ -252,6 +277,21 @@ pub fn decode(buf: &[u8]) -> Result<Datagram, ProtocolError> {
 /// number of bytes written.
 pub fn encode_into(dg: DatagramRef, out: &mut [u8]) -> Result<usize, ProtocolError> {
     match dg {
+        DatagramRef::ComputerName(name) => {
+            if !valid_computer_name(name) {
+                return Err(ProtocolError::InvalidComputerName);
+            }
+            let needed = 1 + name.len();
+            if out.len() < needed {
+                return Err(ProtocolError::BufferTooSmall {
+                    needed,
+                    have: out.len(),
+                });
+            }
+            out[0] = EventType::ComputerName as u8;
+            out[1..needed].copy_from_slice(name.as_bytes());
+            Ok(needed)
+        }
         DatagramRef::Event(event) => {
             let (buf, len): ([u8; MAX_EVENT_SIZE], usize) = event.into();
             if out.len() < len {
@@ -402,6 +442,64 @@ mod test {
         let mut buf = [0u8; MAX_DATAGRAM_SIZE];
         let len = encode_into(dg, &mut buf).expect("encode");
         buf[..len].to_vec()
+    }
+
+    #[test]
+    fn computer_name_round_trips() {
+        for name in ["Biah".to_owned(), "机器🦀".to_owned(), "x".repeat(255)] {
+            let encoded = encode(DatagramRef::ComputerName(&name));
+            assert_eq!(encoded[0], 17);
+            assert_eq!(&encoded[1..], name.as_bytes());
+            let Datagram::ComputerName(decoded) = decode(&encoded).expect("decode") else {
+                panic!("expected computer name");
+            };
+            assert_eq!(decoded, name);
+        }
+    }
+
+    #[test]
+    fn computer_name_rejects_malformed_payloads() {
+        for payload in [
+            vec![],
+            vec![0xff],
+            vec![b'a'; 256],
+            b"Biah\0".to_vec(),
+            b"Biah\n".to_vec(),
+            "Biah\u{0085}".as_bytes().to_vec(),
+        ] {
+            let mut packet = vec![17];
+            packet.extend(payload);
+            assert!(matches!(
+                decode(&packet),
+                Err(ProtocolError::InvalidComputerName)
+            ));
+        }
+        for name in [
+            "".to_owned(),
+            "a".repeat(256),
+            "a\t".to_owned(),
+            "é".repeat(128),
+        ] {
+            assert!(matches!(
+                encode_into(
+                    DatagramRef::ComputerName(&name),
+                    &mut [0; MAX_DATAGRAM_SIZE]
+                ),
+                Err(ProtocolError::InvalidComputerName)
+            ));
+        }
+        assert!(matches!(
+            encode_into(DatagramRef::ComputerName("Biah"), &mut [0; 4]),
+            Err(ProtocolError::BufferTooSmall { needed: 5, have: 4 })
+        ));
+        let mut fixed = [0; MAX_EVENT_SIZE];
+        fixed[0] = 17;
+        assert!(matches!(
+            ProtoEvent::try_from(fixed),
+            Err(ProtocolError::UnexpectedVariableEvent(
+                EventType::ComputerName
+            ))
+        ));
     }
 
     #[test]

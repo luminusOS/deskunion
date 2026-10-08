@@ -597,6 +597,26 @@ async fn connect_loop(
     }
 }
 
+/// Read the OS name without lossy UTF-8 conversion. Windows only falls
+/// back to COMPUTERNAME when the OS query fails or returns an empty name.
+fn local_computer_name() -> Option<String> {
+    let name = hostname::get().ok().filter(|name| !name.is_empty());
+    #[cfg(windows)]
+    let name = name.or_else(|| std::env::var_os("COMPUTERNAME"));
+    let name = name?.into_string().ok()?;
+    deskunion_proto::valid_computer_name(&name).then_some(name)
+}
+
+async fn send_computer_name(conn: &ArcConn, name: Option<&str>) {
+    let Some(name) = name else { return };
+    let mut out = [0; 1 + deskunion_proto::MAX_COMPUTER_NAME_SIZE];
+    if let Ok(len) = encode_into(DatagramRef::ComputerName(name), &mut out) {
+        if let Err(error) = conn.send(&out[..len]).await {
+            log::debug!("computer name send failed: {error}");
+        }
+    }
+}
+
 /// announce the stream format to the peer. `Start` travels over
 /// unreliable UDP, so `server_loop` retransmits it periodically while
 /// the stream is active; the receive side treats repeats as idempotent.
@@ -750,6 +770,9 @@ async fn server_loop(
 ) {
     let mut buf = [0u8; MAX_DATAGRAM_SIZE];
 
+    let computer_name = local_computer_name();
+    send_computer_name(&conn, computer_name.as_deref()).await;
+
     #[cfg(feature = "audio")]
     let (audio_sender, mut audio_rx) = match crate::audio::start_sender(&audio) {
         Some((sender, rx)) => {
@@ -761,8 +784,8 @@ async fn server_loop(
     #[cfg(not(feature = "audio"))]
     let mut audio_rx: Option<tokio::sync::mpsc::Receiver<(u32, u32, Vec<u8>)>> = None;
 
-    // retransmit `AudioControl::Start` while the stream is active —
-    // the first one may have been lost in flight (unreliable UDP)
+    // Retransmit metadata independently of audio (including parked pairs).
+    // UDP can lose the first name or AudioControl::Start announcement.
     let mut start_retransmit = tokio::time::interval(Duration::from_secs(2));
     start_retransmit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     start_retransmit.tick().await; // consume the immediate first tick
@@ -792,15 +815,12 @@ async fn server_loop(
                         tx.send(ConnectionEvent::ClipboardAck { addr, transfer_id })
                             .expect("channel closed");
                     }
-                    Ok(Datagram::Audio { .. } | Datagram::AudioBatch(_) | Datagram::AudioControl(_)) => {
-                        // audio is half-duplex in V1 (§9.7): the capture
-                        // side never sends audio to the emulation side,
-                        // so receiving one here means a peer running a
-                        // future bidirectional-audio version — skip it,
-                        // same forward-compat handling as an unknown
-                        // event type. It still proves liveness.
+                    Ok(Datagram::ComputerName(_) | Datagram::Audio { .. } | Datagram::AudioBatch(_) | Datagram::AudioControl(_)) => {
+                        // Names and audio flow client -> server only.
+                        // Unexpected reverse-direction metadata must not
+                        // reach input emulation, but still proves liveness.
                         tx.send(ConnectionEvent::PeerAlive { addr }).expect("channel closed");
-                        log::debug!("ignoring unexpected audio datagram from {addr}");
+                        log::debug!("ignoring unexpected metadata/audio datagram from {addr}");
                     }
                     Err(e) => {
                         // Skip the malformed/unknown datagram and keep
@@ -818,6 +838,7 @@ async fn server_loop(
                 }
             }
             _ = start_retransmit.tick() => {
+                send_computer_name(&conn, computer_name.as_deref()).await;
                 #[cfg(feature = "audio")]
                 if audio_sender.is_some() {
                     send_audio_start(&conn, addr).await;

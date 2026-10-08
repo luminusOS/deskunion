@@ -214,6 +214,7 @@ async fn audio_keeps_flowing_through_the_whole_pipeline() {
                             }
                             Datagram::ClipboardText(_) => {}
                             Datagram::ClipboardAck(_) => {}
+                            Datagram::ComputerName(_) => {}
                             Datagram::Event(_) => {}
                         }
                     }
