@@ -121,3 +121,6 @@ icon = ["../../target/icon.icns", "../deskunion-gtk/resources/io.github.luminuso
 identifier = "io.github.luminusos.DeskUnion"
 deb_depends = ["libadwaita-1-0"]
 resources = ["../../target/menubar-template.png"]
+
+[lints]
+workspace = true

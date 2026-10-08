@@ -54,6 +54,7 @@ fn configure_windows_runtime() {
         // cannot expose a usable native surface (common with virtual GPUs).
         // Cairo keeps the UI functional, while an explicit user setting can
         // still opt back into a hardware renderer.
+        // SAFETY: called once from `run`, before the GTK thread is spawned.
         unsafe { env::set_var("GSK_RENDERER", "cairo") };
     }
 

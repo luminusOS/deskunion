@@ -16,3 +16,6 @@ rubato = "0.16"
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.23"
+
+[lints]
+workspace = true

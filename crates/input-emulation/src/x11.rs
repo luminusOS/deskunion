@@ -17,10 +17,14 @@ pub(crate) struct X11Emulation {
     display: *mut xlib::Display,
 }
 
+// SAFETY: `display` is a private connection owned exclusively by this value and is
+// never copied out. The type is not `Sync`, so Xlib calls on it are never concurrent;
+// moving it between threads only hands the connection to one thread at a time.
 unsafe impl Send for X11Emulation {}
 
 impl X11Emulation {
     pub(crate) fn new() -> Result<Self, X11EmulationCreationError> {
+        // SAFETY: a null name asks Xlib to use $DISPLAY; a null return is handled below.
         let display = unsafe {
             match xlib::XOpenDisplay(ptr::null()) {
                 d if std::ptr::eq(d, ptr::null_mut::<xlib::Display>()) => {
@@ -33,12 +37,14 @@ impl X11Emulation {
     }
 
     fn relative_motion(&self, dx: i32, dy: i32) {
+        // SAFETY: `self.display` is non-null (checked in `new`) and open until `drop`.
         unsafe {
             xtest::XTestFakeRelativeMotionEvent(self.display, dx, dy, 0, 0);
         }
     }
 
     fn emulate_mouse_button(&self, button: u32, state: u32) {
+        // SAFETY: `self.display` is non-null (checked in `new`) and open until `drop`.
         unsafe {
             let x11_button = match button {
                 BTN_RIGHT => 3,
@@ -75,6 +81,7 @@ impl X11Emulation {
             }
         };
 
+        // SAFETY: `self.display` is non-null (checked in `new`) and open until `drop`.
         unsafe {
             xtest::XTestFakeButtonEvent(self.display, direction, 1, 0);
             xtest::XTestFakeButtonEvent(self.display, direction, 0, 0);
@@ -84,6 +91,7 @@ impl X11Emulation {
     #[allow(dead_code)]
     fn emulate_key(&self, key: u32, state: u8) {
         let key = key + 8; // xorg keycodes are shifted by 8
+        // SAFETY: `self.display` is non-null (checked in `new`) and open until `drop`.
         unsafe {
             xtest::XTestFakeKeyEvent(self.display, key, state as i32, 0);
         }
@@ -92,6 +100,7 @@ impl X11Emulation {
 
 impl Drop for X11Emulation {
     fn drop(&mut self) {
+        // SAFETY: `display` was opened by `XOpenDisplay` in `new` and is closed only here.
         unsafe {
             XCloseDisplay(self.display);
         }
@@ -133,6 +142,7 @@ impl Emulation for X11Emulation {
             }
             _ => {}
         }
+        // SAFETY: `self.display` is non-null (checked in `new`) and open until `drop`.
         unsafe {
             xlib::XFlush(self.display);
         }

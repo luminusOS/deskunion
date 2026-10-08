@@ -22,3 +22,6 @@ thiserror = "2.0.0"
 
 [build-dependencies]
 glib-build-tools = { version = "0.20.0" }
+
+[lints]
+workspace = true

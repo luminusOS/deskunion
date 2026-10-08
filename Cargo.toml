@@ -18,3 +18,8 @@ codegen-units = 1
 lto = "fat"
 strip = true
 panic = "abort"
+
+[workspace.lints.clippy]
+all = "warn"
+undocumented_unsafe_blocks = "warn"
+missing_safety_doc = "warn"

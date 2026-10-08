@@ -77,3 +77,6 @@ layer_shell = [
 ]
 x11 = ["dep:x11"]
 libei = ["dep:reis", "dep:ashpd"]
+
+[lints]
+workspace = true

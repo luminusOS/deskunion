@@ -353,6 +353,8 @@ impl LibeiInputCapture {
     ) -> std::result::Result<Self, LibeiCaptureCreationError> {
         let input_capture = Box::pin(InputCapture::new().await?);
         let input_capture_ptr = input_capture.as_ref().get_ref() as *const InputCapture;
+        // SAFETY: the pointer targets the pinned box held in `input_capture`, which is
+        // alive and not moved for the duration of this call.
         let first_session =
             Some(create_session(unsafe { &*input_capture_ptr }, clipboard_enabled).await?);
 
@@ -405,7 +407,8 @@ async fn do_capture(
     mut clipboard: ClipboardCapture,
     cancellation_token: CancellationToken,
 ) -> Result<(), CaptureError> {
-    /* safety: libei_task does not outlive Self */
+    // SAFETY: the pointer targets the pinned box in `LibeiInputCapture::input_capture`.
+    // This task is awaited in `terminate` or aborted in `Drop` before that box is freed.
     let input_capture = unsafe { &*input_capture };
     let mut active_clients: Vec<Position> = vec![];
     let mut next_barrier_id = NonZeroU32::new(1).expect("id must be non-zero");
@@ -1112,8 +1115,11 @@ impl DeskunionInputCapture for LibeiInputCapture {
 impl Drop for LibeiInputCapture {
     fn drop(&mut self) {
         if !self.terminated {
-            /* this workaround is needed until async drop is stabilized */
-            panic!("LibeiInputCapture dropped without being terminated!");
+            // The capture task holds a raw pointer into `input_capture`; abort it
+            // before the box is freed. Panicking here would unwind with the task
+            // still alive (or abort the process), so only log.
+            self.capture_task.abort();
+            log::error!("LibeiInputCapture dropped without being terminated!");
         }
     }
 }
