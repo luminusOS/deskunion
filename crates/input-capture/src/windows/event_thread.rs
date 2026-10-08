@@ -78,6 +78,8 @@ impl EventThread {
 
     fn signal(&self, event_type: RequestType) {
         let id = self.thread_id;
+        // SAFETY: plain Win32 call with by-value arguments; a stale thread id makes it
+        // return an error, which is logged below.
         if let Err(error) =
             unsafe { PostThreadMessageW(id, WM_USER, WPARAM(event_type as usize), LPARAM(0)) }
         {
@@ -130,6 +132,8 @@ thread_local! {
 }
 
 fn get_msg() -> Option<MSG> {
+    // SAFETY: `msg` is zero-initialised, which is a valid `MSG`, and `addr_of_mut!` gives
+    // `GetMessageW` a valid out-pointer for the duration of the call.
     unsafe {
         let mut msg = std::mem::zeroed();
         let ret = GetMessageW(addr_of_mut!(msg), None, 0, 0);
@@ -173,6 +177,7 @@ fn start_routine(
     // function. Create it before publishing the thread id; otherwise the
     // immediate ClientUpdate can race startup and PostThreadMessageW fails
     // with ERROR_INVALID_THREAD_ID.
+    // SAFETY: zeroed `MSG` is valid, and the pointer is valid for the call.
     unsafe {
         let mut msg = std::mem::zeroed();
         let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
@@ -181,6 +186,7 @@ fn start_routine(
     {
         let (cnd, mtx) = &*ready;
         let mut ready = mtx.lock().unwrap();
+        // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
         *ready = Some(unsafe { GetCurrentThreadId() });
         cnd.notify_one();
     }
@@ -190,6 +196,8 @@ fn start_routine(
     let window_proc: WNDPROC = Some(window_proc);
 
     /* register hooks */
+    // SAFETY: `mouse_proc` has the `HOOKPROC` signature and a null module with thread id 0
+    // is valid for low-level hooks; the hook is removed before this function returns.
     let mouse_hook = match unsafe { SetWindowsHookExW(WH_MOUSE_LL, mouse_proc, None, 0) } {
         Ok(hook) => hook,
         Err(error) => {
@@ -197,15 +205,19 @@ fn start_routine(
             return;
         }
     };
+    // SAFETY: same as the mouse hook above, with `kybrd_proc`.
     let keyboard_hook = match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, kybrd_proc, None, 0) } {
         Ok(hook) => hook,
         Err(error) => {
             log::error!("failed to install Windows keyboard hook: {error}");
+            // SAFETY: `mouse_hook` was returned by `SetWindowsHookExW` above and is
+            // unhooked once.
             let _ = unsafe { UnhookWindowsHookEx(mouse_hook) };
             return;
         }
     };
 
+    // SAFETY: a null module name asks for the handle of the current executable.
     let instance = unsafe { GetModuleHandleW(None).unwrap() };
     let instance = instance.into();
     let window_class: WNDCLASSW = WNDCLASSW {
@@ -221,6 +233,7 @@ fn start_routine(
         .is_ok()
     {
         /* register window class if not yet done so */
+        // SAFETY: `window_class` is fully initialised and its class name is a static string.
         unsafe {
             let ret = RegisterClassW(&window_class);
             if ret == 0 {
@@ -230,6 +243,7 @@ fn start_routine(
     }
 
     /* window is used ro receive WM_DISPLAYCHANGE messages */
+    // SAFETY: the class was registered above and `instance` is this module's handle.
     unsafe {
         CreateWindowExW(
             Default::default(),
@@ -276,6 +290,7 @@ fn start_routine(
             }
         } else {
             /* other messages for window_procs */
+            // SAFETY: `msg` was filled in by `GetMessageW` on this thread.
             unsafe {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -283,7 +298,9 @@ fn start_routine(
         }
     }
 
+    // SAFETY: both hooks were installed above and are unhooked once, after the loop.
     let _ = unsafe { UnhookWindowsHookEx(mouse_hook) };
+    // SAFETY: as above.
     let _ = unsafe { UnhookWindowsHookEx(keyboard_hook) };
 }
 
@@ -291,6 +308,8 @@ fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
     if wparam.0 != WM_MOUSEMOVE as usize {
         return ACTIVE_CLIENT.get().is_some();
     }
+    // SAFETY: only reached from `mouse_proc` with `ncode >= 0`, where `lparam` is a pointer
+    // to a valid `MSLLHOOKSTRUCT` for the duration of the hook call.
     let mouse_low_level: MSLLHOOKSTRUCT = unsafe { *(lparam.0 as *const MSLLHOOKSTRUCT) };
     let curr_pos = (mouse_low_level.pt.x, mouse_low_level.pt.y);
     let prev_pos = PREV_POS.get().unwrap_or(curr_pos);
@@ -423,6 +442,8 @@ fn update_display_regions(displays: &mut Vec<RECT>, generation: &mut i32) {
 
 fn enumerate_displays(display_rects: &mut Vec<RECT>) {
     display_rects.clear();
+    // SAFETY: the zeroed `DISPLAY_DEVICEW`/`DEVMODEW` are valid, their size fields are set
+    // before use, and `device` is a NUL-terminated name buffer filled in by the OS.
     unsafe {
         let mut devices = vec![];
         for i in 0.. {
@@ -482,6 +503,8 @@ fn update_clients(request: ClientUpdate) {
 }
 
 fn to_key_event(wparam: WPARAM, lparam: LPARAM) -> Option<KeyboardEvent> {
+    // SAFETY: only reached from `kybrd_proc` with `ncode >= 0`, where `lparam` is a pointer
+    // to a valid `KBDLLHOOKSTRUCT` for the duration of the hook call.
     let kybrdllhookstruct: KBDLLHOOKSTRUCT = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
     let mut scan_code = kybrdllhookstruct.scanCode;
     log::trace!("scan_code: {scan_code}");
@@ -525,6 +548,8 @@ fn to_key_event(wparam: WPARAM, lparam: LPARAM) -> Option<KeyboardEvent> {
 }
 
 fn to_mouse_event(wparam: WPARAM, lparam: LPARAM) -> Option<PointerEvent> {
+    // SAFETY: only reached from `mouse_proc` with `ncode >= 0`, where `lparam` points to a
+    // valid `MSLLHOOKSTRUCT` for the duration of the hook call.
     let mouse_low_level: MSLLHOOKSTRUCT = unsafe { *(lparam.0 as *const MSLLHOOKSTRUCT) };
     match wparam {
         WPARAM(p) if p == WM_LBUTTONDOWN as usize => Some(PointerEvent::Button {

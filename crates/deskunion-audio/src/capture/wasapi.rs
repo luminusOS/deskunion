@@ -96,7 +96,7 @@ fn windows_version() -> Result<(u32, u32), AudioError> {
         platform_id: 0,
         service_pack: [0; 128],
     };
-    // RtlGetVersion writes into the caller-provided, correctly sized struct.
+    // SAFETY: RtlGetVersion writes into the caller-provided, correctly sized struct.
     let status = unsafe { RtlGetVersion(&mut version) };
     if status < 0 {
         return Err(AudioError::WindowsVersion(format!(
