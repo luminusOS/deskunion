@@ -63,16 +63,16 @@ both ends — sending and receiving are toggled independently.
 ## Clipboard Sharing
 
 Plain-text clipboard sharing is available between a Windows client and a GNOME
-Wayland server. It is disabled by default because clipboard contents can include
-sensitive text. Enable it on both devices from **Audio → Clipboard** (or in
-`config.toml`) and restart DeskUnion:
+Wayland server. It is enabled by default. To opt out, turn it off on a device
+from **Audio → Clipboard** (or in `config.toml`) and restart DeskUnion:
 
 ```toml
 [clipboard]
-enabled = true
+enabled = false
 ```
 
-On GNOME, clipboard access requires an InputCapture portal that supports the v2
+On GNOME, the clipboard permission is requested from the same portal prompt as
+input capture. It requires an InputCapture portal that supports the v2
 session and grants clipboard permission. Older portals keep input sharing
 available but do not provide clipboard sync. Transfers are UTF-8 text only and
 limited to 64 KiB; images and files are not shared.
@@ -434,6 +434,14 @@ any time from the Screens page.
 Only when all four edges are already taken does the device show up under
 "Devices awaiting a position" on the server's Screens page and wait for you to
 pick an edge by hand.
+
+Paired clients announce their OS computer name over the authenticated connection
+(for example, `Biah` on Windows). The server fills and saves an empty display
+label automatically, including existing unnamed pairs, and preserves any
+nonempty label you set. Announcements repeat every two seconds even with audio
+disabled, so a device awaiting a position gets its name after assignment.
+Older peers ignore this optional metadata; `Hello` build identification is
+unchanged.
 
 If the device still can not be entered, make sure UDP port `4242`
 (or the selected port) is open in the **server's** firewall. The client opens

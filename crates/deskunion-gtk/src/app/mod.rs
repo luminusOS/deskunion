@@ -63,7 +63,7 @@ pub enum Page {
 impl Page {
     fn title(self) -> &'static str {
         match self {
-            Page::Screens => "Screens",
+            Page::Screens => "Connections",
             Page::Audio => "Audio",
             Page::Logs => "Logs",
             Page::Settings => "Settings",
@@ -1164,7 +1164,7 @@ impl SimpleComponent for AppModel {
 
                                         adw::PreferencesGroup {
                                             set_title: "Screen Arrangement",
-                                            set_description: Some("Drag a screen to an edge of this computer, or choose its position in the client list."),
+                                            set_description: Some("Drag a device to the edge of this computer where its screen sits, or select it and use the arrow keys."),
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Server,
 
@@ -1484,7 +1484,7 @@ impl SimpleComponent for AppModel {
                                             set_description: Some(if model.clipboard_restart_required {
                                                 "Restart this DeskUnion instance to apply. Enable sharing on both devices."
                                             } else {
-                                                "Share plain text with the active computer. Enable on both devices; GNOME may ask for portal permission."
+                                                "Share plain text with the active computer. GNOME asks for permission together with input capture."
                                             }),
 
                                             #[name(clipboard_switch)]
@@ -1898,7 +1898,7 @@ impl SimpleComponent for AppModel {
             audio_loopback_supported: true,
             audio_capture_devices: Vec::new(),
             audio_playback_devices: Vec::new(),
-            clipboard_enabled: false,
+            clipboard_enabled: true,
             clipboard_restart_required: false,
             log: LogState::new(log_list_box.clone()),
             authorization_dialog: None,

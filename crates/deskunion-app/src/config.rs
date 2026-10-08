@@ -71,7 +71,7 @@ struct ConfigToml {
     clients: Option<Vec<TomlClient>>,
     authorized_fingerprints: Option<HashMap<String, String>>,
     audio: Option<AudioConfigToml>,
-    /// `[clipboard] enabled = true` opts in to bidirectional plain-text sync.
+    /// `[clipboard] enabled = false` opts out of bidirectional plain-text sync.
     clipboard: Option<ClipboardConfigToml>,
     /// server this device dials in client mode (emulation side
     /// connects out to the capture side)
@@ -130,7 +130,7 @@ impl ConfigToml {
         self.clipboard
             .as_ref()
             .and_then(|clipboard| clipboard.enabled)
-            .unwrap_or(false)
+            .unwrap_or(true)
     }
 }
 
@@ -634,11 +634,12 @@ impl Config {
         }
     }
 
-    /// Clipboard sharing is opt-in because it transfers arbitrary user text.
+    /// Clipboard sharing is on by default; the portal still asks for
+    /// permission together with input capture, and users can opt out.
     pub fn clipboard_enabled(&self) -> bool {
         self.config_toml
             .as_ref()
-            .is_some_and(ConfigToml::clipboard_enabled)
+            .is_none_or(ConfigToml::clipboard_enabled)
     }
 
     pub fn set_clipboard_enabled(&mut self, enabled: bool) {
@@ -770,16 +771,16 @@ mod clipboard_config_tests {
     use super::ConfigToml;
 
     #[test]
-    fn clipboard_sync_defaults_to_opt_out_for_legacy_configs() {
+    fn clipboard_sync_defaults_to_enabled_for_legacy_configs() {
         let config: ConfigToml = toml::from_str("").expect("legacy config");
-        assert!(!config.clipboard_enabled());
+        assert!(config.clipboard_enabled());
     }
 
     #[test]
-    fn clipboard_sync_opt_in_round_trips_in_toml() {
-        let config: ConfigToml = toml::from_str("[clipboard]\nenabled = true").expect("config");
+    fn clipboard_sync_opt_out_round_trips_in_toml() {
+        let config: ConfigToml = toml::from_str("[clipboard]\nenabled = false").expect("config");
         let serialized = toml::to_string(&config).expect("serialize");
         let restored: ConfigToml = toml::from_str(&serialized).expect("deserialize");
-        assert!(restored.clipboard_enabled());
+        assert!(!restored.clipboard_enabled());
     }
 }

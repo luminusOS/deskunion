@@ -6,9 +6,9 @@ Adds opt-in text clipboard sharing between Windows and GNOME Wayland, Windows
 process-loopback audio capture that is independent of master output volume on
 supported builds, and clearer audio/clipboard controls in the GTK frontend.
 
-Clipboard sharing is disabled by default. Enable it on both devices from
+Clipboard sharing is enabled by default. Opt out on a device from
 **Audio → Clipboard** and restart DeskUnion so the platform backends start with
-the setting enabled.
+the setting disabled.
 
 ## Release workflow
 
@@ -37,6 +37,39 @@ Backends are started lazily from this mode so the OS is asked only for relevant
 permissions. A fresh installation starts unconfigured and requests nothing
 until the first explicit selection. In client mode, capture can be enabled later, after a remote
 pointer enters, solely to detect the edge handoff back to the server.
+
+## Computer-name metadata
+
+The client reads its local OS hostname using `hostname` 0.4.2. On Windows only,
+`COMPUTERNAME` is a fallback if the OS query fails or returns an empty name.
+Invalid UTF-8, empty names, names longer than 255 UTF-8 bytes, and Unicode control
+characters are rejected rather than truncated or converted lossily.
+
+`ComputerName` is variable datagram event **17**: one event-id byte followed by
+1–255 UTF-8 bytes; the DTLS datagram boundary supplies the payload length. Both
+encoding and decoding validate the name. The fixed-size `ProtoEvent::Hello`
+commit-only wire format is unchanged. Older peers skip unknown event ids.
+
+The established client session sends the name immediately and retransmits it
+on the existing two-second metadata/audio-control interval, independently of
+audio features and runtime settings. The authorized DTLS listener forwards it
+to `CaptureTask`. `ClientManager::set_announced_name` fills only an empty label
+on a fingerprint-paired client bound to that connection's `active_addr`; it
+does not call `set_hostname`, clear routing/DNS state, or overwrite a nonempty
+user label. `ICaptureEvent::ClientNameChanged` tells the service to save config
+and broadcast the updated client state. Existing unnamed pairs are filled on
+reconnect. Parked devices are ignored until position assignment binds their
+connection, then the next retransmission fills their label.
+
+Focused regression checks cover protocol round trips/malformed names, preserved
+connection state and explicit labels, and real DTLS name retransmission after
+pairing with audio disabled:
+
+```sh
+cargo test -p deskunion-proto --locked
+cargo test -p deskunion-app --no-default-features --locked
+cargo test -p deskunion-app --no-default-features --features audio --locked
+```
 
 ## GTK interface and verification
 
@@ -219,8 +252,8 @@ the server plays it back. `AudioControl::Start` is retransmitted until traffic
 flows, receivers are created lazily on the first frame, and `Stop` is sent on
 teardown.
 
-Clipboard text sharing is separately opt-in in `config.toml` with
-`[clipboard] enabled = true`. It uses bounded UTF-8 fragments over the
+Clipboard text sharing is on by default and can be opted out in `config.toml` with
+`[clipboard] enabled = false`. It uses bounded UTF-8 fragments over the
 authenticated DTLS connection and is scoped to the active peer. GNOME Wayland
 uses the active InputCapture portal session; portal v2 permission is requested
 before session start and must be granted. Windows uses Unicode text clipboard

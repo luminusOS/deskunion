@@ -11,11 +11,12 @@ use deskunion_ipc::Position;
 
 use super::ScreenItem;
 
-const HOST_W: f64 = 116.0;
-const HOST_H: f64 = 74.0;
-const SAT_W: f64 = 100.0;
-const SAT_H: f64 = 64.0;
-const GAP: f64 = 32.0;
+// 16:10 tiles, like the monitors in GNOME Settings → Displays
+const HOST_W: f64 = 136.0;
+const HOST_H: f64 = 85.0;
+const SAT_W: f64 = 120.0;
+const SAT_H: f64 = 75.0;
+const GAP: f64 = 28.0;
 const CANVAS_PADDING: f64 = 16.0;
 const MIN_DRAG_DISTANCE: f64 = 6.0;
 /// perpendicular offset applied to the 2nd, 3rd, ... screen stacked at
@@ -32,6 +33,7 @@ struct Layout {
 }
 
 struct ScreenStyle<'a> {
+    subtitle: &'a str,
     fill: &'a gdk::RGBA,
     text: &'a gdk::RGBA,
     success: &'a gdk::RGBA,
@@ -73,6 +75,22 @@ impl ObjectImpl for ScreenArrangement {
         obj.set_tooltip_text(Some(
             "Drag a device to choose the screen edge used to reach it",
         ));
+        obj.update_property(&[
+            gtk::accessible::Property::Label("Device arrangement"),
+            gtk::accessible::Property::Description(
+                "Select a device, then use the arrow keys to move it to another edge of this computer",
+            ),
+        ]);
+
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(clone!(
+            #[weak(rename_to = widget)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_keys, key, _code, _state| widget.on_key(key)
+        ));
+        obj.add_controller(keys);
 
         let gesture = gtk::GestureDrag::new();
         gesture.connect_drag_begin(clone!(
@@ -162,8 +180,6 @@ impl WidgetImpl for ScreenArrangement {
         let layout = self.layout(width, height);
         let widget: &gtk::Widget = obj.upcast_ref();
 
-        draw_grid(snapshot, width, height, &with_alpha(&fg, 0.16));
-
         if let Some(target) = self.drop_position.get() {
             for position in [
                 Position::Left,
@@ -188,11 +204,12 @@ impl WidgetImpl for ScreenArrangement {
             snapshot,
             &layout.host,
             if host_label.is_empty() {
-                "This device"
+                "This computer"
             } else {
                 &host_label
             },
             &ScreenStyle {
+                subtitle: "This computer",
                 fill: &accent,
                 text: &accent_fg,
                 success: &success,
@@ -215,7 +232,7 @@ impl WidgetImpl for ScreenArrangement {
                     .get(*index)
                     .is_some_and(|item| selected == Some(item.handle))
         });
-        for (i, position, rect) in screens {
+        for (i, _, rect) in screens {
             let rect = if dragging == Some(i) {
                 let (ox, oy) = self.drag_offset.get();
                 Rect::new(
@@ -234,7 +251,7 @@ impl WidgetImpl for ScreenArrangement {
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("client @ {position}"));
+                .unwrap_or_else(|| "Unnamed device".to_string());
 
             let color = if item.active { &active } else { &muted };
             draw_screen(
@@ -243,6 +260,13 @@ impl WidgetImpl for ScreenArrangement {
                 &rect,
                 &label,
                 &ScreenStyle {
+                    subtitle: if item.audio_active {
+                        "Streaming audio"
+                    } else if item.active {
+                        "Connected"
+                    } else {
+                        "Not connected"
+                    },
                     fill: color,
                     text: if item.active { &fg } else { &dim },
                     success: &success,
@@ -272,20 +296,6 @@ fn with_alpha(color: &gdk::RGBA, alpha: f32) -> gdk::RGBA {
     gdk::RGBA::new(color.red(), color.green(), color.blue(), alpha)
 }
 
-fn draw_grid(snapshot: &gtk::Snapshot, width: f64, height: f64, color: &gdk::RGBA) {
-    const STEP: f64 = 24.0;
-    const DOT: f32 = 1.5;
-    let mut y = STEP / 2.0;
-    while y < height {
-        let mut x = STEP / 2.0;
-        while x < width {
-            snapshot.append_color(color, &Rect::new(x as f32, y as f32, DOT, DOT));
-            x += STEP;
-        }
-        y += STEP;
-    }
-}
-
 fn draw_screen(
     widget: &gtk::Widget,
     snapshot: &gtk::Snapshot,
@@ -296,33 +306,44 @@ fn draw_screen(
     let rounded = gsk::RoundedRect::from_rect(*rect, CORNER_RADIUS);
     snapshot.push_rounded_clip(&rounded);
     snapshot.append_color(style.fill, rect);
-    snapshot.pop();
+    if style.hovered && !style.selected {
+        snapshot.push_rounded_clip(&rounded);
+        snapshot.append_color(&with_alpha(style.text, 0.08), rect);
+        snapshot.pop();
+    }
 
-    let border_width = if style.selected {
-        3.0
-    } else if style.hovered {
-        2.0
+    let (border_width, outline) = if style.selected {
+        (2.0, *style.selection)
     } else {
-        1.0
+        (1.0, with_alpha(style.text, 0.3))
     };
-    let outline = if style.selected {
-        *style.selection
-    } else {
-        *style.text
-    };
-    let border_color = [outline; 4];
-    snapshot.append_border(&rounded, &[border_width; 4], &border_color);
+    snapshot.append_border(&rounded, &[border_width; 4], &[outline; 4]);
 
-    let layout = widget.create_pango_layout(Some(label));
-    let inner_width = (rect.width() - 10.0).max(1.0);
-    layout.set_width((inner_width * gtk::pango::SCALE as f32) as i32);
-    layout.set_alignment(gtk::pango::Alignment::Center);
-    layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    let (_, text_h) = layout.pixel_size();
-    let text_y = rect.y() + (rect.height() - text_h as f32) / 2.0;
+    let inner_width = (rect.width() - 16.0).max(1.0);
+    let make_layout = |text: &str, bold: bool| {
+        let layout = widget.create_pango_layout(Some(text));
+        layout.set_width((inner_width * gtk::pango::SCALE as f32) as i32);
+        layout.set_alignment(gtk::pango::Alignment::Center);
+        layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        let attrs = gtk::pango::AttrList::new();
+        if bold {
+            attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
+        } else {
+            attrs.insert(gtk::pango::AttrFloat::new_scale(0.85));
+        }
+        layout.set_attributes(Some(&attrs));
+        layout
+    };
+    let title = make_layout(label, true);
+    let subtitle = make_layout(style.subtitle, false);
+    let (_, title_h) = title.pixel_size();
+    let (_, subtitle_h) = subtitle.pixel_size();
+    let text_y = rect.y() + (rect.height() - (title_h + subtitle_h) as f32) / 2.0;
     snapshot.save();
-    snapshot.translate(&Point::new(rect.x() + 5.0, text_y));
-    snapshot.append_layout(&layout, style.text);
+    snapshot.translate(&Point::new(rect.x() + 8.0, text_y));
+    snapshot.append_layout(&title, style.text);
+    snapshot.translate(&Point::new(0.0, title_h as f32));
+    snapshot.append_layout(&subtitle, &with_alpha(style.text, 0.75));
     snapshot.restore();
 
     if style.active {
@@ -526,6 +547,8 @@ impl ScreenArrangement {
             }
             obj.grab_focus();
             obj.set_cursor_from_name(Some("grabbing"));
+        } else {
+            self.selected.set(None);
         }
         self.drag_start.set((x, y));
         self.drag_offset.set((0.0, 0.0));
@@ -569,6 +592,10 @@ impl ScreenArrangement {
         let Some(position) = drop_position else {
             return;
         };
+        self.set_position(index, position);
+    }
+
+    fn set_position(&self, index: usize, position: Position) {
         let mut items = self.items.borrow_mut();
         let Some(item) = items.get_mut(index) else {
             return;
@@ -577,10 +604,42 @@ impl ScreenArrangement {
         let changed = item.position != position;
         item.position = position;
         drop(items);
+        let obj = self.obj();
         obj.queue_draw();
         if changed {
             obj.emit_by_name::<()>("position-changed", &[&handle, &position.to_string()]);
         }
+    }
+
+    /// arrow keys: select the first device, or move the selected one to
+    /// that edge — the keyboard equivalent of dragging
+    fn on_key(&self, key: gdk::Key) -> glib::Propagation {
+        let position = match key {
+            gdk::Key::Left => Position::Left,
+            gdk::Key::Right => Position::Right,
+            gdk::Key::Up => Position::Top,
+            gdk::Key::Down => Position::Bottom,
+            _ => return glib::Propagation::Proceed,
+        };
+        let selected = self.selected.get();
+        let index = selected.and_then(|handle| {
+            self.items
+                .borrow()
+                .iter()
+                .position(|item| item.handle == handle)
+        });
+        match index {
+            Some(index) => self.set_position(index, position),
+            None => {
+                let first = self.items.borrow().first().map(|item| item.handle);
+                if first.is_none() {
+                    return glib::Propagation::Proceed;
+                }
+                self.selected.set(first);
+                self.obj().queue_draw();
+            }
+        }
+        glib::Propagation::Stop
     }
 
     fn hit_test(&self, x: f64, y: f64) -> Option<usize> {
