@@ -6,7 +6,7 @@
 
 <h1 align="center">Deskunion</h1>
 
-[![CI](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml) [![Cachix](https://github.com/luminusOS/deskunion/actions/workflows/cachix.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/cachix.yml) [![Release](https://github.com/luminusOS/deskunion/actions/workflows/release.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/release.yml)
+[![CI](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml) [![Release](https://github.com/luminusOS/deskunion/actions/workflows/release.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/release.yml)
 
 [![crates.io](https://img.shields.io/crates/v/deskunion-app.svg)](https://crates.io/crates/deskunion-app)  [![license](https://img.shields.io/crates/l/deskunion-app.svg)](https://github.com/luminusOS/deskunion/blob/main/Cargo.toml)
 
