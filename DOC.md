@@ -1,5 +1,9 @@
 # General Software Architecture
 
+## Release 0.2.1
+
+Clipboard sharing is on by default, clients announce their computer name, and the arrangement canvas is reworked.
+
 ## Release 0.2.0
 
 Adds opt-in text clipboard sharing between Windows and GNOME Wayland, Windows
