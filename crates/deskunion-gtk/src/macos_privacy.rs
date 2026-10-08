@@ -66,6 +66,7 @@ extern "C" {
 }
 
 pub fn accessibility_granted() -> bool {
+    // SAFETY: `AXIsProcessTrusted` takes no arguments and has no preconditions.
     let raw = unsafe { AXIsProcessTrusted() };
     log::debug!("AXIsProcessTrusted() = {raw}");
     raw != 0
@@ -205,6 +206,7 @@ fn open_url(url: &str) {
 /// than once in a process (reactivation, window presentation) and we
 /// must not re-pop the TCC alert on each activation — that looks like a
 /// bug to the user.
+#[allow(dead_code)] // no caller today; keeps the prompt helpers compiled until it is wired in
 pub fn fire_initial_prompts() {
     static FIRED: Once = Once::new();
     FIRED.call_once(fire_initial_prompts_inner);
@@ -221,6 +223,9 @@ fn fire_initial_prompts_inner() {
         // check). Once the user grants Accessibility and relaunches, this
         // branch is skipped and we register the other grants cleanly below.
         log::info!("firing first-launch Accessibility prompt");
+        // SAFETY: the key, value and callback statics are CoreFoundation/ApplicationServices
+        // globals valid for the process lifetime; the dictionary is created with one
+        // key/value pair, used once, and released exactly once.
         unsafe {
             let key = kAXTrustedCheckOptionPrompt;
             let value = kCFBooleanTrue;
@@ -244,12 +249,15 @@ fn fire_initial_prompts_inner() {
     // inherit the grant but the bundle is never listed for the user to
     // toggle persistently).
     log::info!("ensuring Deskunion is listed under Input Monitoring");
+    // SAFETY: the function only calls CoreGraphics request/tap-create APIs with a valid
+    // callback and a null `user_info`, and releases the tap it creates.
     unsafe {
         ensure_listed_in_input_monitoring();
     }
     // Same for Post Event: now that Accessibility is present, this call is
     // safe — it won't surface the generic Accessibility prompt.
     log::info!("ensuring Deskunion is listed under Accessibility > Post Event");
+    // SAFETY: `CGRequestPostEventAccess` takes no arguments and has no preconditions.
     unsafe {
         CGRequestPostEventAccess();
     }

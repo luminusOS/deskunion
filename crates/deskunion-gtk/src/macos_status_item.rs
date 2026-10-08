@@ -39,6 +39,9 @@ pub fn setup(app: &adw::Application, window: &adw::ApplicationWindow) {
             return;
         }
 
+        // SAFETY: runs on the GTK main thread (AppKit requires it); every Objective-C
+        // receiver is a class or an object returned by AppKit and null-checked, and each
+        // `msg_send_*` declaration matches the argument and return types of its selector.
         unsafe {
             let hold = app.hold();
 
@@ -182,6 +185,8 @@ unsafe fn new_delegate() -> Id {
 fn delegate_class() -> Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
 
+    // SAFETY: the class pair is allocated and registered once (`OnceLock`) under a unique
+    // name; the method IMPs are `extern "C"` fns whose signatures match their type encodings.
     *CLASS.get_or_init(|| unsafe {
         let superclass = class(c"NSObject");
         let class_name = CString::new("DeskunionStatusItemDelegate").unwrap();
@@ -232,6 +237,8 @@ fn present_window() {
             window.present();
         }
 
+        // SAFETY: `NSApplication` is a valid class and `sharedApplication` returns the live
+        // singleton; `activateIgnoringOtherApps:` takes one BOOL.
         unsafe {
             let ns_app = msg_send_id(class(c"NSApplication"), sel(c"sharedApplication"));
             msg_send_void_bool(ns_app, sel(c"activateIgnoringOtherApps:"), 1);
