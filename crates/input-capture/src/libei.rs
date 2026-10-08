@@ -1,6 +1,6 @@
 use ashpd::{
     desktop::{
-        Session,
+        PersistMode, Session,
         clipboard::{Clipboard, RequestClipboardOptions, SetSelectionOptions},
         input_capture::{
             Activated, ActivatedBarrier, Barrier, BarrierID, Capabilities, CreateSession2Options,
@@ -206,11 +206,21 @@ async fn create_session(
             } else {
                 false
             };
-            let start_options = StartOptions::default().set_capabilities(requested_capabilities());
+            // Persist the grant so the portal can offer "remember" and skip
+            // the prompt on later launches (the token is single-use).
+            let start_options = StartOptions::default()
+                .set_capabilities(requested_capabilities())
+                .set_persist_mode(PersistMode::ExplicitlyRevoked)
+                .set_restore_token(read_token());
             let response = input_capture
                 .start(&session, None, start_options)
                 .await?
                 .response()?;
+            if let Some(token) = response.restore_token() {
+                if let Err(error) = write_token(token) {
+                    log::warn!("failed to save InputCapture token: {error}");
+                }
+            }
             let clipboard_enabled =
                 clipboard_available(clipboard_requested, response.is_clipboard_enabled());
             if clipboard_requested && !clipboard_enabled {
@@ -226,6 +236,28 @@ async fn create_session(
         }
         Err(error) => Err(error),
     }
+}
+
+fn token_path() -> std::path::PathBuf {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+        });
+    cache.join("deskunion").join("input-capture.token")
+}
+
+fn read_token() -> Option<String> {
+    let token = std::fs::read_to_string(token_path()).ok()?;
+    Some(token.trim().to_string()).filter(|token| !token.is_empty())
+}
+
+fn write_token(token: &str) -> io::Result<()> {
+    let path = token_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, token)
 }
 
 fn supports_create_session2(version: u32) -> bool {
