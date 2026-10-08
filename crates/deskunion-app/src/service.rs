@@ -133,12 +133,14 @@ impl Service {
             client_manager.clone(),
             config.release_bind(),
             operation_mode == OperationMode::Server,
+            config.clipboard_enabled(),
         );
         let emulation_backend = config.emulation_backend().map(|b| b.into());
         let emulation = Emulation::new(
             emulation_backend,
             conn,
             operation_mode == OperationMode::Client,
+            config.clipboard_enabled(),
         );
 
         // create dns resolver
@@ -484,6 +486,7 @@ impl Service {
                 self.notify_frontend(FrontendEvent::EmulationStatus(self.emulation_status));
             }
             EmulationEvent::ReleaseNotify => self.capture.release(),
+            EmulationEvent::ClipboardText(_) => {}
             EmulationEvent::Connected { addr, fingerprint } => {
                 if self.operation_mode == OperationMode::Client {
                     self.notify_frontend(FrontendEvent::DeviceConnected { addr, fingerprint });

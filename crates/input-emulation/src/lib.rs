@@ -76,7 +76,10 @@ pub struct InputEmulation {
 }
 
 impl InputEmulation {
-    async fn with_backend(backend: Backend) -> Result<InputEmulation, EmulationCreationError> {
+    async fn with_backend(
+        backend: Backend,
+        _clipboard_enabled: bool,
+    ) -> Result<InputEmulation, EmulationCreationError> {
         let emulation: Box<dyn Emulation> = match backend {
             #[cfg(wlroots)]
             Backend::Wlroots => Box::new(wlroots::WlrootsEmulation::new()?),
@@ -87,7 +90,7 @@ impl InputEmulation {
             #[cfg(rdp)]
             Backend::Xdp => Box::new(xdg_desktop_portal::DesktopPortalEmulation::new().await?),
             #[cfg(windows)]
-            Backend::Windows => Box::new(windows::WindowsEmulation::new()?),
+            Backend::Windows => Box::new(windows::WindowsEmulation::new(_clipboard_enabled)?),
             #[cfg(target_os = "macos")]
             Backend::MacOs => Box::new(macos::MacOSEmulation::new()?),
             Backend::Dummy => Box::new(dummy::DummyEmulation::new()),
@@ -100,8 +103,15 @@ impl InputEmulation {
     }
 
     pub async fn new(backend: Option<Backend>) -> Result<InputEmulation, EmulationCreationError> {
+        Self::new_with_clipboard(backend, false).await
+    }
+
+    pub async fn new_with_clipboard(
+        backend: Option<Backend>,
+        clipboard_enabled: bool,
+    ) -> Result<InputEmulation, EmulationCreationError> {
         if let Some(backend) = backend {
-            let b = Self::with_backend(backend).await;
+            let b = Self::with_backend(backend, clipboard_enabled).await;
             if b.is_ok() {
                 log::info!("using emulation backend: {backend}");
             }
@@ -123,7 +133,7 @@ impl InputEmulation {
             Backend::MacOs,
             Backend::Dummy,
         ] {
-            match Self::with_backend(backend).await {
+            match Self::with_backend(backend, clipboard_enabled).await {
                 Ok(b) => {
                     log::info!("using emulation backend: {backend}");
                     return Ok(b);
@@ -151,6 +161,14 @@ impl InputEmulation {
             }
             _ => self.emulation.consume(event, handle).await,
         }
+    }
+
+    pub async fn set_clipboard_text(&mut self, text: String) -> Result<(), EmulationError> {
+        self.emulation.set_clipboard_text(text).await
+    }
+
+    pub async fn next_clipboard_text(&mut self) -> Option<String> {
+        self.emulation.next_clipboard_text().await
     }
 
     pub async fn create(&mut self, handle: EmulationHandle) -> bool {
@@ -234,6 +252,12 @@ trait Emulation: Send {
         event: Event,
         handle: EmulationHandle,
     ) -> Result<(), EmulationError>;
+    async fn set_clipboard_text(&mut self, _text: String) -> Result<(), EmulationError> {
+        Ok(())
+    }
+    async fn next_clipboard_text(&mut self) -> Option<String> {
+        std::future::pending().await
+    }
     async fn create(&mut self, handle: EmulationHandle);
     async fn destroy(&mut self, handle: EmulationHandle);
     async fn terminate(&mut self);

@@ -46,17 +46,35 @@ both ends — sending and receiving are toggled independently.
 - Codec: Opus, over the same DTLS-encrypted UDP channel used for input
   events.
 - Capture/playback: [cpal](https://github.com/RustAudio/cpal), which covers
-  PipeWire loopback capture on Linux, WASAPI loopback on Windows, and
+  PipeWire loopback capture on Linux, WASAPI process loopback on Windows 10
+  build 20348+ (excluding DeskUnion, independent of master output mute/volume;
+  older builds fall back to endpoint loopback), and
   CoreAudio on macOS 14.6+ (older macOS versions can still capture a
   microphone, just not system output).
 - A jitter buffer with clock-drift compensation absorbs network jitter and
   slowly-diverging sender/receiver clocks.
 - Controlled from the gtk frontend's **Audio** page: enable send/receive,
   pick capture/playback devices, adjust bitrate and jitter buffer size, and
-  watch active streams' latency/loss/level.
+  watch buffered audio, packet loss and signal level.
 - Built via the `audio` cargo feature (enabled by default); disable it with
   `--no-default-features` if you don't need it — see
   [Conditional compilation](#conditional-compilation) below.
+
+## Clipboard Sharing
+
+Plain-text clipboard sharing is available between a Windows client and a GNOME
+Wayland server. It is disabled by default because clipboard contents can include
+sensitive text. Enable it on both devices in `config.toml` and restart DeskUnion:
+
+```toml
+[clipboard]
+enabled = true
+```
+
+On GNOME, clipboard access requires an InputCapture portal that supports the v2
+session and grants clipboard permission. Older portals keep input sharing
+available but do not provide clipboard sync. Transfers are UTF-8 text only and
+limited to 64 KiB; images and files are not shared.
 
 ## OS Support
 

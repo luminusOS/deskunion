@@ -12,7 +12,8 @@ pub async fn run(config: Config, _args: TestCaptureArgs) -> Result<(), InputCapt
     log::info!("creating input capture");
     let backend = config.capture_backend().map(|b| b.into());
     loop {
-        let mut input_capture = InputCapture::new(backend).await?;
+        let mut input_capture =
+            InputCapture::new_with_clipboard(backend, config.clipboard_enabled()).await?;
         log::info!("creating clients");
         input_capture.create(0, Position::Left).await?;
         input_capture.create(4, Position::Left).await?;

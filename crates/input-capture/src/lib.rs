@@ -127,6 +127,7 @@ pub struct InputCapture {
     id_map: HashMap<CaptureHandle, Position>,
     /// pending events
     pending: VecDeque<(CaptureHandle, CaptureEvent)>,
+    clipboard_events: Option<tokio::sync::mpsc::Receiver<(Position, String)>>,
 }
 
 impl InputCapture {
@@ -191,14 +192,36 @@ impl InputCapture {
 
     /// creates a new [`InputCapture`]
     pub async fn new(backend: Option<Backend>) -> Result<Self, CaptureCreationError> {
-        let capture = create(backend).await?;
+        Self::new_with_clipboard(backend, false).await
+    }
+
+    pub async fn new_with_clipboard(
+        backend: Option<Backend>,
+        clipboard_enabled: bool,
+    ) -> Result<Self, CaptureCreationError> {
+        let mut capture = create(backend, clipboard_enabled).await?;
+        let clipboard_events = capture.take_clipboard_events();
         Ok(Self {
             capture,
             id_map: Default::default(),
             pending: Default::default(),
+            clipboard_events,
             position_map: Default::default(),
             pressed_keys: HashSet::new(),
         })
+    }
+
+    /// Publish remote text through an active portal capture session.
+    pub fn set_clipboard_text(&mut self, text: String) -> Result<(), CaptureError> {
+        self.capture.set_clipboard_text(text)
+    }
+
+    /// Take the backend's asynchronous plain-text clipboard event stream,
+    /// when backend exposes one.
+    pub fn take_clipboard_events(
+        &mut self,
+    ) -> Option<tokio::sync::mpsc::Receiver<(Position, String)>> {
+        self.clipboard_events.take()
     }
 
     /// check whether the given keys are pressed
@@ -244,8 +267,9 @@ impl Stream for InputCapture {
         };
 
         // handle key presses
-        if let CaptureEvent::Input(Event::Keyboard(KeyboardEvent::Key { key, state, .. })) = event {
-            self.update_pressed_keys(key, state);
+        if let CaptureEvent::Input(Event::Keyboard(KeyboardEvent::Key { key, state, .. })) = &event
+        {
+            self.update_pressed_keys(*key, *state);
         }
 
         let len = self
@@ -287,19 +311,30 @@ trait Capture: Stream<Item = Result<(Position, CaptureEvent), CaptureError>> + U
     /// release mouse
     async fn release(&mut self) -> Result<(), CaptureError>;
 
+    fn set_clipboard_text(&mut self, _text: String) -> Result<(), CaptureError> {
+        Ok(())
+    }
+
+    fn take_clipboard_events(&mut self) -> Option<tokio::sync::mpsc::Receiver<(Position, String)>> {
+        None
+    }
+
     /// destroy the input capture
     async fn terminate(&mut self) -> Result<(), CaptureError>;
 }
 
 async fn create_backend(
     backend: Backend,
+    clipboard_enabled: bool,
 ) -> Result<
     Box<dyn Capture<Item = Result<(Position, CaptureEvent), CaptureError>>>,
     CaptureCreationError,
 > {
     match backend {
         #[cfg(libei)]
-        Backend::InputCapturePortal => Ok(Box::new(libei::LibeiInputCapture::new().await?)),
+        Backend::InputCapturePortal => Ok(Box::new(
+            libei::LibeiInputCapture::new(clipboard_enabled).await?,
+        )),
         #[cfg(layer_shell)]
         Backend::LayerShell => Ok(Box::new(layer_shell::LayerShellInputCapture::new()?)),
         #[cfg(x11)]
@@ -314,12 +349,13 @@ async fn create_backend(
 
 async fn create(
     backend: Option<Backend>,
+    clipboard_enabled: bool,
 ) -> Result<
     Box<dyn Capture<Item = Result<(Position, CaptureEvent), CaptureError>>>,
     CaptureCreationError,
 > {
     if let Some(backend) = backend {
-        let b = create_backend(backend).await;
+        let b = create_backend(backend, clipboard_enabled).await;
         if b.is_ok() {
             log::info!("using capture backend: {backend}");
         }
@@ -338,7 +374,7 @@ async fn create(
         #[cfg(target_os = "macos")]
         Backend::MacOs,
     ] {
-        match create_backend(backend).await {
+        match create_backend(backend, clipboard_enabled).await {
             Ok(b) => {
                 log::info!("using capture backend: {backend}");
                 return Ok(b);

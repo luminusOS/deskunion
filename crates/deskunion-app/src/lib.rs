@@ -5,6 +5,7 @@ mod audio_loopback_test;
 mod capture;
 pub mod capture_test;
 pub mod client;
+mod clipboard;
 pub mod config;
 mod connect;
 mod crypto;

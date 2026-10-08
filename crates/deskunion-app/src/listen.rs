@@ -1,5 +1,8 @@
 use deskunion_ipc::ClientHandle;
-use deskunion_proto::{Datagram, MAX_DATAGRAM_SIZE, MAX_EVENT_SIZE, ProtoEvent, decode};
+use deskunion_proto::{
+    ClipboardTextFragment, Datagram, DatagramRef, MAX_CLIPBOARD_FRAGMENT_SIZE,
+    MAX_CLIPBOARD_TEXT_SIZE, MAX_DATAGRAM_SIZE, MAX_EVENT_SIZE, ProtoEvent, decode, encode_into,
+};
 use futures::{Stream, StreamExt};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use rustls::pki_types::CertificateDer;
@@ -49,6 +52,15 @@ pub(crate) enum ListenEvent {
         event: ProtoEvent,
         addr: SocketAddr,
     },
+    ClipboardText {
+        fragment: ClipboardTextFragment,
+        payload: Vec<u8>,
+        addr: SocketAddr,
+    },
+    ClipboardAck {
+        addr: SocketAddr,
+        transfer_id: u32,
+    },
     Accept {
         addr: SocketAddr,
         fingerprint: String,
@@ -80,6 +92,7 @@ pub(crate) struct DeskunionListener {
     client_manager: ClientManager,
     request_port_change: Sender<u16>,
     port_changed: Receiver<Result<u16, ListenerCreationError>>,
+    clipboard_queue: Rc<RefCell<crate::clipboard::ClipboardSendQueue>>,
 }
 
 type VerifyPeerCertificateFn = Arc<
@@ -220,6 +233,7 @@ impl DeskunionListener {
             client_manager,
             port_changed,
             request_port_change,
+            clipboard_queue: Rc::new(RefCell::new(Default::default())),
         })
     }
 
@@ -288,6 +302,140 @@ impl DeskunionListener {
             }
         }
     }
+
+    pub(crate) fn send_clipboard_text(&self, addr: SocketAddr, transfer_id: u32, text: &str) {
+        if text.len() > MAX_CLIPBOARD_TEXT_SIZE || text.contains('\0') {
+            log::warn!(
+                "dropping invalid or oversized clipboard text ({} bytes)",
+                text.len()
+            );
+            return;
+        }
+        let queue = self.clipboard_queue.clone();
+        let start_worker = queue
+            .borrow_mut()
+            .enqueue(crate::clipboard::PendingClipboardSend {
+                addr,
+                transfer_id,
+                text: text.to_owned(),
+            });
+        if !start_worker {
+            return;
+        }
+        let conns = self.conns.clone();
+        spawn_local(async move {
+            loop {
+                let generation = queue.borrow().generation();
+                let Some(send) = queue.borrow_mut().take() else {
+                    if queue.borrow_mut().finish_or_continue() {
+                        continue;
+                    }
+                    break;
+                };
+                queue.borrow_mut().begin_ack(send.addr, send.transfer_id);
+                let conn = {
+                    let conns = conns.lock().await;
+                    conns
+                        .iter()
+                        .find(|(connected_addr, _)| *connected_addr == send.addr)
+                        .map(|(_, conn)| conn.clone())
+                };
+                if let Some(conn) = conn {
+                    for attempt in 0..3 {
+                        let sent = send_clipboard_fragments(
+                            conn.clone(),
+                            &send,
+                            queue.clone(),
+                            generation,
+                        )
+                        .await;
+                        if !sent || queue.borrow().ack_received(send.addr, send.transfer_id) {
+                            break;
+                        }
+                        if attempt < 2 {
+                            let notify = queue.borrow().ack_notifier();
+                            tokio::select! {
+                                _ = notify.notified() => {},
+                                _ = tokio::time::sleep(Duration::from_millis(120)) => {},
+                            }
+                            if queue.borrow().ack_received(send.addr, send.transfer_id) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                queue.borrow_mut().finish_ack(send.addr, send.transfer_id);
+            }
+        });
+    }
+
+    pub(crate) fn clear_clipboard_text(&self) {
+        self.clipboard_queue.borrow_mut().cancel();
+    }
+
+    pub(crate) fn acknowledge_clipboard_text(&self, addr: SocketAddr, transfer_id: u32) {
+        self.clipboard_queue
+            .borrow_mut()
+            .acknowledge(addr, transfer_id);
+    }
+
+    pub(crate) fn send_clipboard_ack(&self, addr: SocketAddr, transfer_id: u32) {
+        let conns = self.conns.clone();
+        spawn_local(async move {
+            let conn = {
+                let conns = conns.lock().await;
+                conns
+                    .iter()
+                    .find(|(connected_addr, _)| *connected_addr == addr)
+                    .map(|(_, conn)| conn.clone())
+            };
+            if let Some(conn) = conn {
+                let mut packet = [0u8; 5];
+                if let Ok(len) = encode_into(DatagramRef::ClipboardAck(transfer_id), &mut packet) {
+                    if let Err(error) = conn.send(&packet[..len]).await {
+                        log::debug!("clipboard ack to {addr} failed: {error}");
+                    }
+                }
+            }
+        });
+    }
+}
+
+async fn send_clipboard_fragments(
+    conn: ArcConn,
+    send: &crate::clipboard::PendingClipboardSend,
+    queue: Rc<RefCell<crate::clipboard::ClipboardSendQueue>>,
+    generation: u64,
+) -> bool {
+    let count = send.text.len().max(1).div_ceil(MAX_CLIPBOARD_FRAGMENT_SIZE) as u16;
+    for index in 0..count {
+        if queue.borrow().generation() != generation {
+            return false;
+        }
+        let start = index as usize * MAX_CLIPBOARD_FRAGMENT_SIZE;
+        let end = (start + MAX_CLIPBOARD_FRAGMENT_SIZE).min(send.text.len());
+        let mut packet = [0u8; MAX_DATAGRAM_SIZE];
+        let len = match encode_into(
+            DatagramRef::ClipboardText {
+                transfer_id: send.transfer_id,
+                index,
+                count,
+                payload: &send.text.as_bytes()[start..end],
+            },
+            &mut packet,
+        ) {
+            Ok(len) => len,
+            Err(error) => {
+                log::warn!("failed to encode clipboard text: {error}");
+                return false;
+            }
+        };
+        if let Err(error) = conn.send(&packet[..len]).await {
+            log::debug!("clipboard send to {} stopped: {error}", send.addr);
+            return false;
+        }
+    }
+    true
 }
 
 impl Stream for DeskunionListener {
@@ -577,6 +725,21 @@ async fn read_loop(
                 log::trace!("{addr} <=<=<=<=<= {event}");
                 dtls_tx
                     .send(ListenEvent::Msg { event, addr })
+                    .expect("channel closed");
+            }
+            Ok(Datagram::ClipboardText(fragment)) => {
+                let payload = buf[fragment.payload_range.clone()].to_vec();
+                dtls_tx
+                    .send(ListenEvent::ClipboardText {
+                        fragment,
+                        payload,
+                        addr,
+                    })
+                    .expect("channel closed");
+            }
+            Ok(Datagram::ClipboardAck(transfer_id)) => {
+                dtls_tx
+                    .send(ListenEvent::ClipboardAck { addr, transfer_id })
                     .expect("channel closed");
             }
             #[cfg_attr(not(feature = "audio"), allow(unused_variables))]

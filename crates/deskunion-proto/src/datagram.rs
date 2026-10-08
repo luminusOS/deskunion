@@ -27,6 +27,12 @@ const AUDIO_CONTROL_SIZE: usize = 1 + 1 + 4 + 1;
 const AUDIO_BATCH_HEADER_SIZE: usize = 2;
 const AUDIO_BATCH_FRAME_HEADER_SIZE: usize = 4 + 4 + 2;
 
+/// Maximum UTF-8 clipboard text size, in bytes.
+pub const MAX_CLIPBOARD_TEXT_SIZE: usize = 64 * 1024;
+/// Text fragments stay within the existing conservative DTLS datagram budget.
+pub const MAX_CLIPBOARD_FRAGMENT_SIZE: usize = MAX_DATAGRAM_SIZE - CLIPBOARD_HEADER_SIZE;
+const CLIPBOARD_HEADER_SIZE: usize = 1 + 4 + 2 + 2;
+
 #[derive(Clone, Debug)]
 pub struct AudioFrame {
     pub seq: u32,
@@ -39,6 +45,14 @@ pub struct AudioFrameRef<'a> {
     pub seq: u32,
     pub ts_ms: u32,
     pub payload: &'a [u8],
+}
+
+#[derive(Clone, Debug)]
+pub struct ClipboardTextFragment {
+    pub transfer_id: u32,
+    pub index: u16,
+    pub count: u16,
+    pub payload_range: Range<usize>,
 }
 
 /// audio stream control, sent by the sending (emulation) side before
@@ -69,6 +83,11 @@ pub enum Datagram {
     /// Multiple consecutive Opus frames. Batching amortizes the relatively
     /// expensive DTLS send without changing the codec's 20 ms frame size.
     AudioBatch(Vec<AudioFrame>),
+    /// UTF-8 text clipboard fragment. The complete transfer must be
+    /// reassembled and validated as UTF-8 by the receiver.
+    ClipboardText(ClipboardTextFragment),
+    /// receipt acknowledgement for a completed clipboard transfer
+    ClipboardAck(u32),
     /// audio stream control
     AudioControl(AudioControlCmd),
 }
@@ -89,6 +108,13 @@ pub enum DatagramRef<'a> {
         payload: &'a [u8],
     },
     AudioBatch(&'a [AudioFrameRef<'a>]),
+    ClipboardText {
+        transfer_id: u32,
+        index: u16,
+        count: u16,
+        payload: &'a [u8],
+    },
+    ClipboardAck(u32),
     /// audio stream control
     AudioControl(AudioControlCmd),
 }
@@ -172,6 +198,38 @@ pub fn decode(buf: &[u8]) -> Result<Datagram, ProtocolError> {
                 });
             }
             Ok(Datagram::AudioBatch(frames))
+        }
+        EventType::ClipboardText => {
+            if buf.len() < CLIPBOARD_HEADER_SIZE {
+                return Err(ProtocolError::Truncated(buf.len()));
+            }
+            let transfer_id = u32::from_be_bytes(buf[1..5].try_into().expect("slice len"));
+            let index = u16::from_be_bytes(buf[5..7].try_into().expect("slice len"));
+            let count = u16::from_be_bytes(buf[7..9].try_into().expect("slice len"));
+            let max_count = MAX_CLIPBOARD_TEXT_SIZE.div_ceil(MAX_CLIPBOARD_FRAGMENT_SIZE) as u16;
+            if count == 0 || index >= count || count > max_count {
+                return Err(ProtocolError::InvalidClipboardFragment { index, count });
+            }
+            let payload_range = CLIPBOARD_HEADER_SIZE..buf.len();
+            if payload_range.len() > MAX_CLIPBOARD_FRAGMENT_SIZE {
+                return Err(ProtocolError::ClipboardFragmentTooLarge(
+                    payload_range.len(),
+                ));
+            }
+            Ok(Datagram::ClipboardText(ClipboardTextFragment {
+                transfer_id,
+                index,
+                count,
+                payload_range,
+            }))
+        }
+        EventType::ClipboardAck => {
+            if buf.len() < 1 + 4 {
+                return Err(ProtocolError::Truncated(buf.len()));
+            }
+            Ok(Datagram::ClipboardAck(u32::from_be_bytes(
+                buf[1..5].try_into().expect("slice len"),
+            )))
         }
         _ => {
             // legacy events are variable-length on the wire (e.g. `Ping`
@@ -293,6 +351,45 @@ pub fn encode_into(dg: DatagramRef, out: &mut [u8]) -> Result<usize, ProtocolErr
             }
             Ok(cursor)
         }
+        DatagramRef::ClipboardText {
+            transfer_id,
+            index,
+            count,
+            payload,
+        } => {
+            let max_count = MAX_CLIPBOARD_TEXT_SIZE.div_ceil(MAX_CLIPBOARD_FRAGMENT_SIZE) as u16;
+            if count == 0 || index >= count || count > max_count {
+                return Err(ProtocolError::InvalidClipboardFragment { index, count });
+            }
+            if payload.len() > MAX_CLIPBOARD_FRAGMENT_SIZE {
+                return Err(ProtocolError::ClipboardFragmentTooLarge(payload.len()));
+            }
+            let needed = CLIPBOARD_HEADER_SIZE + payload.len();
+            if out.len() < needed {
+                return Err(ProtocolError::BufferTooSmall {
+                    needed,
+                    have: out.len(),
+                });
+            }
+            out[0] = EventType::ClipboardText as u8;
+            out[1..5].copy_from_slice(&transfer_id.to_be_bytes());
+            out[5..7].copy_from_slice(&index.to_be_bytes());
+            out[7..9].copy_from_slice(&count.to_be_bytes());
+            out[CLIPBOARD_HEADER_SIZE..needed].copy_from_slice(payload);
+            Ok(needed)
+        }
+        DatagramRef::ClipboardAck(transfer_id) => {
+            let needed = 1 + 4;
+            if out.len() < needed {
+                return Err(ProtocolError::BufferTooSmall {
+                    needed,
+                    have: out.len(),
+                });
+            }
+            out[0] = EventType::ClipboardAck as u8;
+            out[1..needed].copy_from_slice(&transfer_id.to_be_bytes());
+            Ok(needed)
+        }
     }
 }
 
@@ -305,6 +402,60 @@ mod test {
         let mut buf = [0u8; MAX_DATAGRAM_SIZE];
         let len = encode_into(dg, &mut buf).expect("encode");
         buf[..len].to_vec()
+    }
+
+    #[test]
+    fn clipboard_fragment_round_trips_with_bounded_payload() {
+        let text = "clipboard 🦀 text".as_bytes();
+        let encoded = encode(DatagramRef::ClipboardText {
+            transfer_id: 0x1234_5678,
+            index: 1,
+            count: 3,
+            payload: text,
+        });
+        let Datagram::ClipboardText(fragment) = decode(&encoded).expect("decode") else {
+            panic!("expected clipboard fragment");
+        };
+        assert_eq!(fragment.transfer_id, 0x1234_5678);
+        assert_eq!(fragment.index, 1);
+        assert_eq!(fragment.count, 3);
+        assert_eq!(&encoded[fragment.payload_range], text);
+        assert!(encoded.len() <= MAX_DATAGRAM_SIZE);
+    }
+
+    #[test]
+    fn clipboard_ack_round_trips() {
+        let encoded = encode(DatagramRef::ClipboardAck(0xAABB_CCDD));
+        assert_eq!(encoded.len(), 5);
+        assert!(matches!(
+            decode(&encoded),
+            Ok(Datagram::ClipboardAck(0xAABB_CCDD))
+        ));
+    }
+
+    #[test]
+    fn clipboard_fragment_rejects_invalid_indices_and_oversize_payloads() {
+        let mut invalid = [0u8; CLIPBOARD_HEADER_SIZE];
+        invalid[0] = crate::EventType::ClipboardText as u8;
+        invalid[5..7].copy_from_slice(&1u16.to_be_bytes());
+        invalid[7..9].copy_from_slice(&1u16.to_be_bytes());
+        assert!(matches!(
+            decode(&invalid),
+            Err(ProtocolError::InvalidClipboardFragment { index: 1, count: 1 })
+        ));
+
+        assert!(matches!(
+            encode_into(
+                DatagramRef::ClipboardText {
+                    transfer_id: 1,
+                    index: 0,
+                    count: 1,
+                    payload: &vec![0; MAX_CLIPBOARD_FRAGMENT_SIZE + 1],
+                },
+                &mut [0; MAX_DATAGRAM_SIZE],
+            ),
+            Err(ProtocolError::ClipboardFragmentTooLarge(_))
+        ));
     }
 
     #[test]

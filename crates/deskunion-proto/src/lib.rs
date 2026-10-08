@@ -10,8 +10,8 @@ use thiserror::Error;
 mod datagram;
 
 pub use datagram::{
-    AudioControlCmd, AudioFrame, AudioFrameRef, Datagram, DatagramRef, MAX_DATAGRAM_SIZE, decode,
-    encode_into,
+    AudioControlCmd, AudioFrame, AudioFrameRef, ClipboardTextFragment, Datagram, DatagramRef,
+    MAX_CLIPBOARD_FRAGMENT_SIZE, MAX_CLIPBOARD_TEXT_SIZE, MAX_DATAGRAM_SIZE, decode, encode_into,
 };
 
 /// defines the maximum size an encoded event can take up
@@ -40,6 +40,12 @@ pub enum ProtocolError {
     /// audio control command does not exist
     #[error("invalid audio control command: `{0}`")]
     InvalidAudioControlCmd(u8),
+    /// clipboard fragment index/count are inconsistent
+    #[error("invalid clipboard fragment index {index} for count {count}")]
+    InvalidClipboardFragment { index: u16, count: u16 },
+    /// clipboard fragment exceeds the datagram budget
+    #[error("clipboard fragment too large: `{0}` bytes")]
+    ClipboardFragmentTooLarge(usize),
     /// output buffer too small for encoding
     #[error("buffer too small: need `{needed}` bytes, have `{have}`")]
     BufferTooSmall { needed: usize, have: usize },
@@ -144,6 +150,10 @@ pub enum EventType {
     AudioControl = 13,
     /// several Opus frames in one DTLS datagram
     AudioBatch = 14,
+    /// bounded clipboard text fragment
+    ClipboardText = 15,
+    /// acknowledgement for a completely reassembled clipboard transfer
+    ClipboardAck = 16,
 }
 
 impl ProtoEvent {
@@ -228,9 +238,11 @@ impl TryFrom<[u8; MAX_EVENT_SIZE]> for ProtoEvent {
                 }
                 Ok(Self::Hello { commit })
             }
-            variant @ (EventType::Audio | EventType::AudioControl | EventType::AudioBatch) => {
-                Err(ProtocolError::UnexpectedVariableEvent(variant))
-            }
+            variant @ (EventType::Audio
+            | EventType::AudioControl
+            | EventType::AudioBatch
+            | EventType::ClipboardText
+            | EventType::ClipboardAck) => Err(ProtocolError::UnexpectedVariableEvent(variant)),
         }
     }
 }

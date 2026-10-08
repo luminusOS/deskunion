@@ -71,11 +71,19 @@ struct ConfigToml {
     clients: Option<Vec<TomlClient>>,
     authorized_fingerprints: Option<HashMap<String, String>>,
     audio: Option<AudioConfigToml>,
+    /// `[clipboard] enabled = true` opts in to bidirectional plain-text sync.
+    clipboard: Option<ClipboardConfigToml>,
     /// server this device dials in client mode (emulation side
     /// connects out to the capture side)
     server_hostname: Option<String>,
     server_ips: Option<Vec<IpAddr>>,
     server_port: Option<u16>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq)]
+struct ClipboardConfigToml {
+    /// bidirectional plain-text clipboard sync; disabled unless explicitly opted in
+    enabled: Option<bool>,
 }
 
 /// `[audio]` section — see `deskunion/DESKUNION_AUDIO_PLAN.md` §5.3.
@@ -116,6 +124,13 @@ impl ConfigToml {
     fn new(path: &Path) -> Result<ConfigToml, ConfigError> {
         let config = fs::read_to_string(path)?;
         Ok(toml::from_str::<_>(&config)?)
+    }
+
+    fn clipboard_enabled(&self) -> bool {
+        self.clipboard
+            .as_ref()
+            .and_then(|clipboard| clipboard.enabled)
+            .unwrap_or(false)
     }
 }
 
@@ -619,6 +634,22 @@ impl Config {
         }
     }
 
+    /// Clipboard sharing is opt-in because it transfers arbitrary user text.
+    pub fn clipboard_enabled(&self) -> bool {
+        self.config_toml
+            .as_ref()
+            .is_some_and(ConfigToml::clipboard_enabled)
+    }
+
+    pub fn set_clipboard_enabled(&mut self, enabled: bool) {
+        if self.config_toml.is_none() {
+            self.config_toml = Some(Default::default());
+        }
+        self.config_toml.as_mut().expect("config").clipboard = Some(ClipboardConfigToml {
+            enabled: Some(enabled),
+        });
+    }
+
     /// release bind for returning control to the host
     pub fn release_bind(&self) -> Vec<scancode::Linux> {
         self.config_toml
@@ -731,5 +762,24 @@ impl Config {
         let _ = self.watch();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod clipboard_config_tests {
+    use super::ConfigToml;
+
+    #[test]
+    fn clipboard_sync_defaults_to_opt_out_for_legacy_configs() {
+        let config: ConfigToml = toml::from_str("").expect("legacy config");
+        assert!(!config.clipboard_enabled());
+    }
+
+    #[test]
+    fn clipboard_sync_opt_in_round_trips_in_toml() {
+        let config: ConfigToml = toml::from_str("[clipboard]\nenabled = true").expect("config");
+        let serialized = toml::to_string(&config).expect("serialize");
+        let restored: ConfigToml = toml::from_str(&serialized).expect("deserialize");
+        assert!(restored.clipboard_enabled());
     }
 }

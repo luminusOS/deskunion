@@ -16,6 +16,7 @@ tempfile = "3.25.0"
 thiserror = "2.0.0"
 tokio = { version = "1.32.0", features = [
     "io-util",
+    "fs",
     "io-std",
     "macros",
     "net",
@@ -43,6 +44,7 @@ wayland-protocols-wlr = { version = "0.3.1", features = [
 x11 = { version = "2.21.0", features = ["xlib", "xtest"], optional = true }
 ashpd = { version = "0.13.9", default-features = false, features = [
     "input_capture",
+    "clipboard",
     "tokio",
 ], optional = true }
 reis = { version = "0.7.0", features = ["tokio"], optional = true }

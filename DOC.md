@@ -203,11 +203,18 @@ sign of life; after ~6 unanswered pings the peer is declared dead and its
 connection is closed deterministically.
 
 Audio is one-directional (client → server) over the same DTLS connection: the
-client captures its system output (WASAPI loopback on Windows, PipeWire
-monitor on Linux, CoreAudio loopback on macOS ≥ 14.6), encodes it as Opus and
+client captures its system output (WASAPI process loopback on supported Windows,
+PipeWire monitor on Linux, CoreAudio loopback on macOS ≥ 14.6), encodes it as Opus and
 the server plays it back. `AudioControl::Start` is retransmitted until traffic
 flows, receivers are created lazily on the first frame, and `Stop` is sent on
 teardown.
+
+Clipboard text sharing is separately opt-in in `config.toml` with
+`[clipboard] enabled = true`. It uses bounded UTF-8 fragments over the
+authenticated DTLS connection and is scoped to the active peer. GNOME Wayland
+uses the active InputCapture portal session; portal v2 permission is requested
+before session start and must be granted. Windows uses Unicode text clipboard
+monitoring. Transfers are capped at 64 KiB; images and files are not included.
 
 ## Problems
 The network protocol supports bidirectional events, but the selected operation

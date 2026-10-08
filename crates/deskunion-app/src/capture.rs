@@ -118,6 +118,7 @@ impl Capture {
         client_manager: ClientManager,
         release_bind: Vec<scancode::Linux>,
         enabled: bool,
+        clipboard_enabled: bool,
     ) -> Self {
         let (request_tx, request_rx) = channel();
         let (event_tx, event_rx) = channel();
@@ -131,6 +132,11 @@ impl Capture {
             client_manager,
             event_tx,
             enabled,
+            clipboard_enabled,
+            next_clipboard_transfer_id: 0,
+            clipboard_assembler: Default::default(),
+            pending_local_clipboard: None,
+            last_sent_clipboard_text: None,
             rejected_connections: Default::default(),
             request_rx,
             release_bind: Rc::new(RefCell::new(release_bind)),
@@ -263,6 +269,11 @@ struct CaptureTask {
     client_manager: ClientManager,
     event_tx: Sender<ICaptureEvent>,
     enabled: bool,
+    clipboard_enabled: bool,
+    next_clipboard_transfer_id: u32,
+    clipboard_assembler: crate::clipboard::ClipboardTextAssembler,
+    pending_local_clipboard: Option<String>,
+    last_sent_clipboard_text: Option<String>,
     /// debounce for unauthorized connection attempts
     rejected_connections: HashMap<String, Instant>,
     release_bind: Rc<RefCell<Vec<scancode::Linux>>>,
@@ -315,6 +326,16 @@ impl CaptureTask {
             ListenEvent::Disconnected { addr } => {
                 if let Some(handle) = self.client_manager.get_client_by_active_addr(addr) {
                     log::info!("client {handle} disconnected ({addr})");
+                    if self.active_client == Some(handle) {
+                        self.active_client = None;
+                        self.state = State::WaitingForAck;
+                        self.pending_local_clipboard = None;
+                        self.last_sent_clipboard_text = None;
+                        self.clipboard_assembler.reset();
+                        if let Some(listener) = &self.listener {
+                            listener.clear_clipboard_text();
+                        }
+                    }
                     self.client_manager.set_active_addr(handle, None);
                     self.client_manager.set_alive(handle, false);
                     self.client_manager.set_peer_commit(handle, None);
@@ -364,6 +385,14 @@ impl CaptureTask {
                 // and are never expected on the listener
                 event => log::trace!("ignoring unexpected {event} from {addr}"),
             },
+            ListenEvent::ClipboardText { addr, .. } => {
+                log::trace!("received clipboard text fragment from {addr}");
+            }
+            ListenEvent::ClipboardAck { addr, transfer_id } => {
+                if let Some(listener) = &self.listener {
+                    listener.acknowledge_clipboard_text(addr, transfer_id);
+                }
+            }
             ListenEvent::AudioStream {
                 addr,
                 active,
@@ -536,9 +565,10 @@ impl CaptureTask {
     async fn do_capture(&mut self) -> Result<(), InputCaptureError> {
         /* allow cancelling capture request */
         let mut capture = tokio::select! {
-            r = InputCapture::new(self.backend) => r?,
+            r = InputCapture::new_with_clipboard(self.backend, self.clipboard_enabled) => r?,
             _ = self.cancellation_token.cancelled() => return Ok(()),
         };
+        let mut clipboard_events = capture.take_clipboard_events();
 
         let _capture_guard = DropGuard::new(
             self.event_tx.clone(),
@@ -553,7 +583,9 @@ impl CaptureTask {
             return Err(e.into());
         }
 
-        let r = self.do_capture_session(&mut capture).await;
+        let r = self
+            .do_capture_session(&mut capture, &mut clipboard_events)
+            .await;
 
         // FIXME replace with async drop when stabilized
         capture.terminate().await?;
@@ -575,12 +607,33 @@ impl CaptureTask {
     async fn do_capture_session(
         &mut self,
         capture: &mut InputCapture,
+        clipboard_events: &mut Option<tokio::sync::mpsc::Receiver<(Position, String)>>,
     ) -> Result<(), InputCaptureError> {
         loop {
             tokio::select! {
                 event = capture.next() => match event {
                     Some(event) => self.handle_capture_event(capture, event?).await?,
                     None => return Ok(()),
+                },
+                clipboard = next_clipboard_event(clipboard_events), if self.clipboard_enabled => {
+                    match clipboard {
+                        Some((pos, text)) => {
+                            if let Some(handle) = self.active_client {
+                                if self.get_pos(handle) == pos {
+                                    if self.state == State::Sending {
+                                        self.send_clipboard_text(handle, text);
+                                    } else {
+                                        self.pending_local_clipboard = Some(text);
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            self.clipboard_enabled = false;
+                            *clipboard_events = None;
+                            log::warn!("clipboard stream closed; disabling clipboard sync");
+                        }
+                    }
                 },
                 listen_event = next_listen_event(&mut self.listener) => {
                     let Some(listen_event) = listen_event else {
@@ -595,6 +648,11 @@ impl CaptureTask {
                             }) {
                                 log::info!("client @ {addr} acknowledged the connection!");
                                 self.state = State::Sending;
+                                if let Some(handle) = self.active_client {
+                                    if let Some(text) = self.pending_local_clipboard.take() {
+                                        self.send_clipboard_text(handle, text);
+                                    }
+                                }
                             }
                         }
                         // client left its device region
@@ -604,6 +662,24 @@ impl CaptureTask {
                             }) {
                                 log::info!("releasing capture: left remote client device region");
                                 self.release_capture(capture).await?;
+                            }
+                        }
+                        ListenEvent::ClipboardText { addr, fragment, payload } => {
+                            let active_addr = self.active_client
+                                .and_then(|handle| self.client_manager.active_addr(handle));
+                            if self.clipboard_enabled && active_addr == Some(addr) {
+                                let transfer_id = fragment.transfer_id;
+                                let is_last_fragment = fragment.index + 1 == fragment.count;
+                                if let Some(text) = self.clipboard_assembler.push(&fragment, &payload) {
+                                    capture.set_clipboard_text(text)?;
+                                }
+                                if is_last_fragment
+                                    && self.clipboard_assembler.is_completed(transfer_id)
+                                {
+                                    if let Some(listener) = &self.listener {
+                                        listener.send_clipboard_ack(addr, transfer_id);
+                                    }
+                                }
                             }
                         }
                         event => self.handle_listen_event(event).await,
@@ -676,6 +752,12 @@ impl CaptureTask {
 
         // activated a new client
         if event == CaptureEvent::Begin && Some(handle) != self.active_client {
+            if let Some(listener) = &self.listener {
+                listener.clear_clipboard_text();
+            }
+            self.pending_local_clipboard = None;
+            self.last_sent_clipboard_text = None;
+            self.clipboard_assembler.reset();
             self.state = State::WaitingForAck;
             self.active_client.replace(handle);
             self.event_tx
@@ -703,8 +785,14 @@ impl CaptureTask {
     }
 
     async fn release_capture(&mut self, capture: &mut InputCapture) -> Result<(), CaptureError> {
+        self.pending_local_clipboard = None;
+        self.last_sent_clipboard_text = None;
+        self.clipboard_assembler.reset();
         // If we have an active client, notify them we're leaving
         if let Some(handle) = self.active_client.take() {
+            if let Some(listener) = &self.listener {
+                listener.clear_clipboard_text();
+            }
             // Synthesize key-up events for every key still held in the
             // capture's pressed_keys set BEFORE sending Leave. Without
             // this, pressing the release-bind chord (typically all four
@@ -746,6 +834,30 @@ impl CaptureTask {
             }
         }
         capture.release().await
+    }
+
+    fn send_clipboard_text(&mut self, handle: CaptureHandle, text: String) {
+        if self.last_sent_clipboard_text.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        let Some(addr) = self.client_manager.active_addr(handle) else {
+            return;
+        };
+        self.last_sent_clipboard_text = Some(text.clone());
+        let transfer_id = self.next_clipboard_transfer_id;
+        self.next_clipboard_transfer_id = self.next_clipboard_transfer_id.wrapping_add(1);
+        if let Some(listener) = &self.listener {
+            listener.send_clipboard_text(addr, transfer_id, &text);
+        }
+    }
+}
+
+async fn next_clipboard_event(
+    receiver: &mut Option<tokio::sync::mpsc::Receiver<(Position, String)>>,
+) -> Option<(Position, String)> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
     }
 }
 

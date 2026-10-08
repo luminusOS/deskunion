@@ -1,7 +1,11 @@
 use crate::config::local_commit;
-use deskunion_proto::{Datagram, MAX_DATAGRAM_SIZE, MAX_EVENT_SIZE, ProtoEvent, decode};
+use deskunion_proto::{
+    ClipboardTextFragment, Datagram, DatagramRef, MAX_CLIPBOARD_FRAGMENT_SIZE,
+    MAX_CLIPBOARD_TEXT_SIZE, MAX_DATAGRAM_SIZE, MAX_EVENT_SIZE, ProtoEvent, decode, encode_into,
+};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
+    cell::RefCell,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     rc::Rc,
     sync::Arc,
@@ -42,11 +46,25 @@ pub(crate) enum DeskunionConnectionError {
 
 pub(crate) enum ConnectionEvent {
     /// a protocol event received from the server
-    Message { addr: SocketAddr, event: ProtoEvent },
+    Message {
+        addr: SocketAddr,
+        event: ProtoEvent,
+    },
+    ClipboardText {
+        addr: SocketAddr,
+        fragment: ClipboardTextFragment,
+        payload: Vec<u8>,
+    },
+    ClipboardAck {
+        addr: SocketAddr,
+        transfer_id: u32,
+    },
     /// any non-event datagram arrived from the server (e.g. audio from a
     /// future bidirectional-audio peer, or an unknown datagram) —
     /// proves liveness for the emulation-side idle watchdog
-    PeerAlive { addr: SocketAddr },
+    PeerAlive {
+        addr: SocketAddr,
+    },
     /// the DTLS session to the server is established
     Connected {
         addr: SocketAddr,
@@ -54,7 +72,9 @@ pub(crate) enum ConnectionEvent {
     },
     /// the DTLS session to the server ended; the reconnect loop already
     /// redials while a server target is configured
-    Disconnected { addr: SocketAddr },
+    Disconnected {
+        addr: SocketAddr,
+    },
 }
 
 /// the capture-side endpoint the emulation side dials
@@ -196,6 +216,7 @@ pub(crate) struct DeskunionConnection {
     recv_rx: Receiver<ConnectionEvent>,
     recv_tx: Sender<ConnectionEvent>,
     audio: crate::config::AudioSettings,
+    clipboard_queue: Rc<RefCell<crate::clipboard::ClipboardSendQueue>>,
 }
 
 impl DeskunionConnection {
@@ -211,6 +232,7 @@ impl DeskunionConnection {
             recv_rx,
             recv_tx,
             audio,
+            clipboard_queue: Rc::new(RefCell::new(Default::default())),
         }
     }
 
@@ -231,6 +253,103 @@ impl DeskunionConnection {
         }
     }
 
+    pub(crate) fn send_clipboard_text(&self, addr: SocketAddr, transfer_id: u32, text: &str) {
+        if text.len() > MAX_CLIPBOARD_TEXT_SIZE || text.contains('\0') {
+            log::warn!(
+                "dropping invalid or oversized clipboard text ({} bytes)",
+                text.len()
+            );
+            return;
+        }
+        let queue = self.clipboard_queue.clone();
+        let start_worker = queue
+            .borrow_mut()
+            .enqueue(crate::clipboard::PendingClipboardSend {
+                addr,
+                transfer_id,
+                text: text.to_owned(),
+            });
+        if !start_worker {
+            return;
+        }
+        let shared = self.shared.clone();
+        spawn_local(async move {
+            loop {
+                let generation = queue.borrow().generation();
+                let Some(send) = queue.borrow_mut().take() else {
+                    if queue.borrow_mut().finish_or_continue() {
+                        continue;
+                    }
+                    break;
+                };
+                queue.borrow_mut().begin_ack(send.addr, send.transfer_id);
+                let conn = {
+                    let current = shared.conn.lock().await;
+                    current
+                        .as_ref()
+                        .filter(|(connected_addr, _)| *connected_addr == send.addr)
+                        .map(|(_, conn)| conn.clone())
+                };
+                if let Some(conn) = conn {
+                    for attempt in 0..3 {
+                        let sent = send_connection_clipboard(
+                            conn.clone(),
+                            &send,
+                            queue.clone(),
+                            generation,
+                        )
+                        .await;
+                        if !sent || queue.borrow().ack_received(send.addr, send.transfer_id) {
+                            break;
+                        }
+                        if attempt < 2 {
+                            let notify = queue.borrow().ack_notifier();
+                            tokio::select! {
+                                _ = notify.notified() => {},
+                                _ = tokio::time::sleep(Duration::from_millis(120)) => {},
+                            }
+                            if queue.borrow().ack_received(send.addr, send.transfer_id) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                queue.borrow_mut().finish_ack(send.addr, send.transfer_id);
+            }
+        });
+    }
+
+    pub(crate) fn acknowledge_clipboard_text(&self, addr: SocketAddr, transfer_id: u32) {
+        self.clipboard_queue
+            .borrow_mut()
+            .acknowledge(addr, transfer_id);
+    }
+
+    pub(crate) fn send_clipboard_ack(&self, addr: SocketAddr, transfer_id: u32) {
+        let shared = self.shared.clone();
+        spawn_local(async move {
+            let conn = {
+                let current = shared.conn.lock().await;
+                current
+                    .as_ref()
+                    .filter(|(connected_addr, _)| *connected_addr == addr)
+                    .map(|(_, conn)| conn.clone())
+            };
+            if let Some(conn) = conn {
+                let mut packet = [0u8; 5];
+                if let Ok(len) = encode_into(DatagramRef::ClipboardAck(transfer_id), &mut packet) {
+                    if let Err(error) = conn.send(&packet[..len]).await {
+                        log::debug!("clipboard ack to {addr} failed: {error}");
+                    }
+                }
+            }
+        });
+    }
+
+    pub(crate) fn clear_clipboard_text(&self) {
+        self.clipboard_queue.borrow_mut().cancel();
+    }
+
     /// set the server endpoint to dial. `Some` starts (or retargets) the
     /// reconnect loop; `None` tears the current connection down and
     /// stops redialing.
@@ -247,6 +366,7 @@ impl DeskunionConnection {
         if !changed {
             return;
         }
+        self.clear_clipboard_text();
         // retarget or shutdown: drop the current session; the server
         // loop's exit path redials the new target, if any
         let conn = self.shared.conn.lock().await.take();
@@ -361,6 +481,43 @@ impl DeskunionConnection {
             Ok(())
         }
     }
+}
+
+async fn send_connection_clipboard(
+    conn: ArcConn,
+    send: &crate::clipboard::PendingClipboardSend,
+    queue: Rc<RefCell<crate::clipboard::ClipboardSendQueue>>,
+    generation: u64,
+) -> bool {
+    let count = send.text.len().max(1).div_ceil(MAX_CLIPBOARD_FRAGMENT_SIZE) as u16;
+    for index in 0..count {
+        if queue.borrow().generation() != generation {
+            return false;
+        }
+        let start = index as usize * MAX_CLIPBOARD_FRAGMENT_SIZE;
+        let end = (start + MAX_CLIPBOARD_FRAGMENT_SIZE).min(send.text.len());
+        let mut packet = [0u8; MAX_DATAGRAM_SIZE];
+        let len = match encode_into(
+            DatagramRef::ClipboardText {
+                transfer_id: send.transfer_id,
+                index,
+                count,
+                payload: &send.text.as_bytes()[start..end],
+            },
+            &mut packet,
+        ) {
+            Ok(len) => len,
+            Err(error) => {
+                log::warn!("failed to encode clipboard text: {error}");
+                return false;
+            }
+        };
+        if let Err(error) = conn.send(&packet[..len]).await {
+            log::debug!("clipboard send to {} stopped: {error}", send.addr);
+            return false;
+        }
+    }
+    true
 }
 
 fn ensure_connecting(
@@ -626,6 +783,15 @@ async fn server_loop(
                     Ok(Datagram::Event(event)) => tx
                         .send(ConnectionEvent::Message { addr, event })
                         .expect("channel closed"),
+                    Ok(Datagram::ClipboardText(fragment)) => {
+                        let payload = buf[fragment.payload_range.clone()].to_vec();
+                        tx.send(ConnectionEvent::ClipboardText { addr, fragment, payload })
+                            .expect("channel closed");
+                    }
+                    Ok(Datagram::ClipboardAck(transfer_id)) => {
+                        tx.send(ConnectionEvent::ClipboardAck { addr, transfer_id })
+                            .expect("channel closed");
+                    }
                     Ok(Datagram::Audio { .. } | Datagram::AudioBatch(_) | Datagram::AudioControl(_)) => {
                         // audio is half-duplex in V1 (§9.7): the capture
                         // side never sends audio to the emulation side,

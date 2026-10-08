@@ -6,7 +6,16 @@ use input_event::{
 
 use async_trait::async_trait;
 use std::ops::BitOrAssign;
-use std::time::Duration;
+use std::{
+    io,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+use tokio::sync::Notify;
 use tokio::task::AbortHandle;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
@@ -18,6 +27,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT_0, KEYEVENTF_EXTENDEDKEY, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{XBUTTON1, XBUTTON2};
+use windows::Win32::{
+    Foundation::{GlobalFree, HANDLE},
+    System::{
+        DataExchange::{
+            CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber,
+            IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
+        },
+        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
+        Ole::CF_UNICODETEXT,
+    },
+};
 
 use super::{Emulation, EmulationHandle};
 
@@ -26,11 +46,62 @@ const DEFAULT_REPEAT_INTERVAL: Duration = Duration::from_millis(32);
 
 pub(crate) struct WindowsEmulation {
     repeat_task: Option<AbortHandle>,
+    latest_clipboard: Arc<Mutex<Option<String>>>,
+    clipboard_notify: Arc<Notify>,
+    clipboard_stop: Arc<AtomicBool>,
+    clipboard_thread: Option<JoinHandle<()>>,
+    remote_text: Arc<Mutex<Option<String>>>,
 }
 
 impl WindowsEmulation {
-    pub(crate) fn new() -> Result<Self, WindowsEmulationCreationError> {
-        Ok(Self { repeat_task: None })
+    pub(crate) fn new(clipboard_enabled: bool) -> Result<Self, WindowsEmulationCreationError> {
+        let clipboard_stop = Arc::new(AtomicBool::new(false));
+        let remote_text = Arc::new(Mutex::new(None));
+        let latest_clipboard = Arc::new(Mutex::new(None));
+        let clipboard_notify = Arc::new(Notify::new());
+        let clipboard_thread = clipboard_enabled.then(|| {
+            let stop = clipboard_stop.clone();
+            let suppressed = remote_text.clone();
+            let latest = latest_clipboard.clone();
+            let notify = clipboard_notify.clone();
+            thread::spawn(move || {
+                let mut last_sequence = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(150));
+                    let sequence = unsafe { GetClipboardSequenceNumber() };
+                    if sequence == last_sequence {
+                        continue;
+                    }
+                    last_sequence = sequence;
+                    if let Some(text) = read_clipboard_text() {
+                        let is_remote_echo = suppressed
+                            .lock()
+                            .ok()
+                            .map(|mut value| {
+                                if value.as_deref() == Some(text.as_str()) {
+                                    value.take();
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        if !is_remote_echo {
+                            *latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(text);
+                            notify.notify_one();
+                        }
+                    }
+                }
+            })
+        });
+        Ok(Self {
+            repeat_task: None,
+            latest_clipboard,
+            clipboard_notify,
+            clipboard_stop,
+            clipboard_thread,
+            remote_text,
+        })
     }
 }
 
@@ -75,11 +146,125 @@ impl Emulation for WindowsEmulation {
         Ok(())
     }
 
+    async fn set_clipboard_text(&mut self, text: String) -> Result<(), EmulationError> {
+        const MAX_CLIPBOARD_TEXT_BYTES: usize = 64 * 1024;
+        if text.len() > MAX_CLIPBOARD_TEXT_BYTES {
+            return Ok(());
+        }
+        *self.remote_text.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.clone());
+        match tokio::task::spawn_blocking(move || write_clipboard_text(&text)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                self.remote_text
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                log::warn!("failed to apply remote clipboard text: {error}");
+            }
+            Err(error) => {
+                self.remote_text
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                log::warn!("Windows clipboard worker failed: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    async fn next_clipboard_text(&mut self) -> Option<String> {
+        loop {
+            let notified = self.clipboard_notify.notified();
+            if let Some(text) = self
+                .latest_clipboard
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                return Some(text);
+            }
+            notified.await;
+        }
+    }
+
     async fn create(&mut self, _handle: EmulationHandle) {}
 
     async fn destroy(&mut self, _handle: EmulationHandle) {}
 
-    async fn terminate(&mut self) {}
+    async fn terminate(&mut self) {
+        self.clipboard_stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.clipboard_thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn read_clipboard_text() -> Option<String> {
+    const MAX_CLIPBOARD_TEXT_BYTES: usize = 64 * 1024;
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return None;
+        }
+        let result = (|| {
+            IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).ok()?;
+            let handle = GetClipboardData(CF_UNICODETEXT.0 as u32).ok()?;
+            let global = windows::Win32::Foundation::HGLOBAL(handle.0);
+            let size = GlobalSize(global).min(MAX_CLIPBOARD_TEXT_BYTES * 2 + 2);
+            if size < 2 {
+                return None;
+            }
+            let pointer = GlobalLock(global);
+            if pointer.is_null() {
+                return None;
+            }
+            let units = std::slice::from_raw_parts(pointer.cast::<u16>(), size / 2);
+            let Some(length) = units.iter().position(|&unit| unit == 0) else {
+                let _ = GlobalUnlock(global);
+                return None;
+            };
+            let text = String::from_utf16(&units[..length]).ok();
+            let _ = GlobalUnlock(global);
+            text.filter(|text| text.len() <= MAX_CLIPBOARD_TEXT_BYTES)
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+fn write_clipboard_text(text: &str) -> io::Result<()> {
+    let mut wide = text.encode_utf16().collect::<Vec<_>>();
+    wide.push(0);
+    let bytes = wide.len() * std::mem::size_of::<u16>();
+    unsafe {
+        OpenClipboard(None).map_err(|error| io::Error::other(error.to_string()))?;
+        let close = ClipboardCloseGuard;
+        EmptyClipboard().map_err(|error| io::Error::other(error.to_string()))?;
+        let memory = GlobalAlloc(GMEM_MOVEABLE, bytes)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let pointer = GlobalLock(memory);
+        if pointer.is_null() {
+            let _ = GlobalFree(Some(memory));
+            return Err(io::Error::last_os_error());
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), pointer.cast::<u16>(), wide.len());
+        let _ = GlobalUnlock(memory);
+        if let Err(error) = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(memory.0))) {
+            let _ = GlobalFree(Some(memory));
+            return Err(io::Error::other(error.to_string()));
+        }
+        drop(close);
+    }
+    Ok(())
+}
+
+struct ClipboardCloseGuard;
+
+impl Drop for ClipboardCloseGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseClipboard();
+        }
+    }
 }
 
 impl WindowsEmulation {

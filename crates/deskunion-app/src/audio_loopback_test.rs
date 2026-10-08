@@ -212,6 +212,8 @@ async fn audio_keeps_flowing_through_the_whole_pipeline() {
                             Datagram::AudioControl(cmd) => {
                                 rx_state.on_control(cmd, &audio_settings, &event_tx, server_addr)
                             }
+                            Datagram::ClipboardText(_) => {}
+                            Datagram::ClipboardAck(_) => {}
                             Datagram::Event(_) => {}
                         }
                     }

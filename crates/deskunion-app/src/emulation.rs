@@ -50,6 +50,8 @@ pub(crate) enum EmulationEvent {
     EmulationEnabled,
     /// capture should be released
     ReleaseNotify,
+    /// local clipboard text changed while this peer owns pointer focus
+    ClipboardText(String),
 }
 
 enum EmulationRequest {
@@ -71,8 +73,9 @@ impl Emulation {
         backend: Option<input_emulation::Backend>,
         conn: DeskunionConnection,
         enabled: bool,
+        clipboard_enabled: bool,
     ) -> Self {
-        let emulation_proxy = EmulationProxy::new(backend, enabled);
+        let emulation_proxy = EmulationProxy::new(backend, enabled, clipboard_enabled);
         let (request_tx, request_rx) = channel();
         let (event_tx, event_rx) = channel();
         let emulation_task = DialTask {
@@ -80,6 +83,7 @@ impl Emulation {
             emulation_proxy,
             request_rx,
             event_tx,
+            clipboard_enabled,
         };
         let task = spawn_local(emulation_task.run());
         Self {
@@ -144,11 +148,17 @@ struct DialTask {
     emulation_proxy: EmulationProxy,
     request_rx: Receiver<EmulationRequest>,
     event_tx: Sender<EmulationEvent>,
+    clipboard_enabled: bool,
 }
 
 impl DialTask {
     async fn run(mut self) {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
+        let mut clipboard_text = crate::clipboard::ClipboardTextAssembler::default();
+        let mut active_addr = None;
+        let mut clipboard_transfer_id = 0u32;
+        let mut pending_local_clipboard: Option<String> = None;
+        let mut last_sent_local_clipboard: Option<String> = None;
         // Keep this above the listener's DTLS liveness interval. Audio and
         // control share one association, so a transiently slow audio send
         // must not make the UI declare the peer dead.
@@ -164,12 +174,30 @@ impl DialTask {
                             ProtoEvent::Enter(pos) => {
                                 if let Some(fingerprint) = self.conn.get_certificate_fingerprint(addr).await {
                                     log::info!("releasing capture: {addr} entered this device");
+                                    if active_addr != Some(addr) {
+                                        clipboard_text.reset();
+                                    }
+                                    active_addr = Some(addr);
+                                    if self.clipboard_enabled {
+                                        if let Some(text) = pending_local_clipboard.take() {
+                                            last_sent_local_clipboard = Some(text.clone());
+                                            self.conn.send_clipboard_text(addr, clipboard_transfer_id, &text);
+                                            clipboard_transfer_id = clipboard_transfer_id.wrapping_add(1);
+                                        }
+                                    }
                                     self.event_tx.send(EmulationEvent::ReleaseNotify).expect("channel closed");
                                     self.conn.reply(addr, ProtoEvent::Ack(0)).await;
                                     self.event_tx.send(EmulationEvent::Entered{addr, pos: to_ipc_pos(pos), fingerprint}).expect("channel closed");
                                 }
                             }
                             ProtoEvent::Leave(_) => {
+                                if active_addr == Some(addr) {
+                                    active_addr = None;
+                                    clipboard_text.reset();
+                                    pending_local_clipboard = None;
+                                    last_sent_local_clipboard = None;
+                                    self.conn.clear_clipboard_text();
+                                }
                                 self.emulation_proxy.remove(addr);
                                 self.conn.reply(addr, ProtoEvent::Ack(0)).await;
                             }
@@ -186,6 +214,23 @@ impl DialTask {
                         // events
                         last_response.insert(addr, Instant::now());
                     }
+                    ConnectionEvent::ClipboardText { addr, fragment, payload } => {
+                        last_response.insert(addr, Instant::now());
+                        if self.clipboard_enabled && active_addr == Some(addr) {
+                            let transfer_id = fragment.transfer_id;
+                            let is_last_fragment = fragment.index + 1 == fragment.count;
+                            if let Some(text) = clipboard_text.push(&fragment, &payload) {
+                                self.emulation_proxy.set_clipboard_text(addr, text);
+                            }
+                            if is_last_fragment && clipboard_text.is_completed(transfer_id) {
+                                self.conn.send_clipboard_ack(addr, transfer_id);
+                            }
+                        }
+                    }
+                    ConnectionEvent::ClipboardAck { addr, transfer_id } => {
+                        last_response.insert(addr, Instant::now());
+                        self.conn.acknowledge_clipboard_text(addr, transfer_id);
+                        }
                     ConnectionEvent::Connected { addr, fingerprint } => {
                         last_response.insert(addr, Instant::now());
                         self.event_tx.send(EmulationEvent::Connected { addr, fingerprint }).expect("channel closed");
@@ -193,19 +238,52 @@ impl DialTask {
                     ConnectionEvent::Disconnected { addr } => {
                         last_response.remove(&addr);
                         self.emulation_proxy.remove(addr);
+                        if active_addr == Some(addr) {
+                            active_addr = None;
+                            clipboard_text.reset();
+                            pending_local_clipboard = None;
+                            last_sent_local_clipboard = None;
+                            self.conn.clear_clipboard_text();
+                        }
                         self.event_tx.send(EmulationEvent::Disconnected { addr }).expect("channel closed");
                     }
-                }}
-                event = self.emulation_proxy.event() => {
-                    self.event_tx.send(event).expect("channel closed");
-                }
+                }},
+                event = self.emulation_proxy.event() => match event {
+                    EmulationEvent::ClipboardText(text) => {
+                        if self.clipboard_enabled {
+                            if let Some(addr) = active_addr {
+                                if last_sent_local_clipboard.as_deref() != Some(text.as_str()) {
+                                    last_sent_local_clipboard = Some(text.clone());
+                                    self.conn.send_clipboard_text(addr, clipboard_transfer_id, &text);
+                                    clipboard_transfer_id = clipboard_transfer_id.wrapping_add(1);
+                                }
+                            } else {
+                                pending_local_clipboard = Some(text);
+                            }
+                        }
+                    }
+                    EmulationEvent::EmulationDisabled => {
+                        pending_local_clipboard = None;
+                        active_addr = None;
+                        last_sent_local_clipboard = None;
+                        self.conn.clear_clipboard_text();
+                        self.event_tx.send(EmulationEvent::EmulationDisabled).expect("channel closed");
+                    }
+                    event => self.event_tx.send(event).expect("channel closed"),
+                },
                 request = self.request_rx.recv() => match request.expect("channel closed") {
                     // reenable emulation
                     EmulationRequest::Reenable => self.emulation_proxy.reenable(),
                     EmulationRequest::SetEnabled(enabled) => self.emulation_proxy.set_enabled(enabled),
                     // notify the other end that we hit a barrier (should release capture)
                     EmulationRequest::Release(addr) => self.conn.reply(addr, ProtoEvent::Leave(0)).await,
-                    EmulationRequest::SetServer(target) => self.conn.set_server(target).await,
+                    EmulationRequest::SetServer(target) => {
+                        pending_local_clipboard = None;
+                        active_addr = None;
+                        last_sent_local_clipboard = None;
+                        self.conn.clear_clipboard_text();
+                        self.conn.set_server(target).await;
+                    }
                     EmulationRequest::TestConnection { request_id, hostname, port } => {
                         let test = self.conn.test_connection(hostname, port);
                         let event_tx = self.event_tx.clone();
@@ -258,6 +336,7 @@ pub(crate) struct EmulationProxy {
 
 enum ProxyRequest {
     Input(Event, SocketAddr),
+    ClipboardText(String, SocketAddr),
     Remove(SocketAddr),
     Terminate,
     Reenable,
@@ -265,7 +344,11 @@ enum ProxyRequest {
 }
 
 impl EmulationProxy {
-    fn new(backend: Option<input_emulation::Backend>, enabled: bool) -> Self {
+    fn new(
+        backend: Option<input_emulation::Backend>,
+        enabled: bool,
+        clipboard_enabled: bool,
+    ) -> Self {
         let (request_tx, request_rx) = channel();
         let (event_tx, event_rx) = channel();
         let emulation_active = Rc::new(Cell::new(false));
@@ -273,6 +356,7 @@ impl EmulationProxy {
         let emulation_task = EmulationTask {
             backend,
             enabled,
+            clipboard_enabled,
             exit_requested: exit_requested.clone(),
             request_rx,
             event_tx,
@@ -291,10 +375,10 @@ impl EmulationProxy {
 
     async fn event(&mut self) -> EmulationEvent {
         let event = self.event_rx.recv().await.expect("channel closed");
-        if let EmulationEvent::EmulationEnabled = event {
+        if matches!(&event, EmulationEvent::EmulationEnabled) {
             self.emulation_active.replace(true);
         }
-        if let EmulationEvent::EmulationDisabled = event {
+        if matches!(&event, EmulationEvent::EmulationDisabled) {
             self.emulation_active.replace(false);
         }
         event
@@ -313,6 +397,14 @@ impl EmulationProxy {
         self.request_tx
             .send(ProxyRequest::Remove(addr))
             .expect("channel closed");
+    }
+
+    fn set_clipboard_text(&self, addr: SocketAddr, text: String) {
+        if self.emulation_active.get() {
+            self.request_tx
+                .send(ProxyRequest::ClipboardText(text, addr))
+                .expect("channel closed");
+        }
     }
 
     fn reenable(&self) {
@@ -339,6 +431,7 @@ impl EmulationProxy {
 struct EmulationTask {
     backend: Option<input_emulation::Backend>,
     enabled: bool,
+    clipboard_enabled: bool,
     exit_requested: Rc<Cell<bool>>,
     request_rx: Receiver<ProxyRequest>,
     event_tx: Sender<EmulationEvent>,
@@ -368,6 +461,7 @@ impl EmulationTask {
                     ProxyRequest::SetEnabled(false) => {}
                     ProxyRequest::Terminate => return,
                     ProxyRequest::Input(..) => { /* emulation inactive => ignore */ }
+                    ProxyRequest::ClipboardText(..) => { /* emulation inactive => ignore */ }
                     ProxyRequest::Remove(..) => { /* emulation inactive => ignore */ }
                 }
             }
@@ -377,7 +471,7 @@ impl EmulationTask {
     async fn do_emulation(&mut self) -> Result<(), InputEmulationError> {
         log::info!("creating input emulation ...");
         let mut emulation = tokio::select! {
-            r = InputEmulation::new(self.backend) => r?,
+            r = InputEmulation::new_with_clipboard(self.backend, self.clipboard_enabled) => r?,
             // allow termination event while requesting input emulation
             _ = wait_for_termination(&mut self.request_rx) => return Ok(()),
         };
@@ -434,6 +528,11 @@ impl EmulationTask {
                         };
                         emulation.consume(event, handle).await?;
                     },
+                    ProxyRequest::ClipboardText(text, _addr) => {
+                        if self.clipboard_enabled {
+                            emulation.set_clipboard_text(text).await?;
+                        }
+                    }
                     ProxyRequest::Remove(addr) => {
                         if let Some(handle) = self.handles.remove(&addr) {
                             emulation.destroy(handle).await;
@@ -447,6 +546,13 @@ impl EmulationTask {
                         break Ok(());
                     },
                 },
+                text = emulation.next_clipboard_text(), if self.clipboard_enabled => {
+                    if let Some(text) = text {
+                        self.event_tx
+                            .send(EmulationEvent::ClipboardText(text))
+                            .expect("channel closed");
+                    }
+                }
             }
         }
     }
@@ -466,6 +572,7 @@ async fn wait_for_termination(rx: &mut Receiver<ProxyRequest>) {
         match rx.recv().await.expect("channel closed") {
             ProxyRequest::Terminate => return,
             ProxyRequest::Input(_, _) => continue,
+            ProxyRequest::ClipboardText(_, _) => continue,
             ProxyRequest::Remove(_) => continue,
             ProxyRequest::Reenable => continue,
             ProxyRequest::SetEnabled(_) => continue,
