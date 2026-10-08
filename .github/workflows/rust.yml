@@ -44,13 +44,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install libx11-dev libxtst-dev libadwaita-1-dev libgtk-4-dev
+          sudo apt-get install libx11-dev libxtst-dev libadwaita-1-dev libgtk-4-dev libpipewire-0.3-dev libopus-dev libclang-dev
       - name: Install Linux test display
         if: runner.os == 'Linux' && matrix.job == 'test'
         run: sudo apt-get install -y xvfb dbus-x11
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install gtk4 libadwaita imagemagick
+        run: brew install gtk4 libadwaita imagemagick opus pkgconf
       - name: Record macOS native lib versions for cache key
         if: runner.os == 'macOS'
         run: |
