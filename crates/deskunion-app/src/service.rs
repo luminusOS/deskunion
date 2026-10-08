@@ -38,6 +38,8 @@ pub enum ServiceError {
 pub struct Service {
     /// configuration
     config: Config,
+    /// clipboard setting captured by the platform backends at service startup
+    clipboard_enabled_at_start: bool,
     /// whether this machine controls peers or accepts remote control
     operation_mode: OperationMode,
     /// the (D)TLS certificate, kept to (re)create the listener when
@@ -85,6 +87,7 @@ struct Incoming {
 
 impl Service {
     pub async fn new(config: Config) -> Result<Self, ServiceError> {
+        let clipboard_enabled_at_start = config.clipboard_enabled();
         let client_manager = ClientManager::default();
         for client in config.clients() {
             client_manager.add_with_config(client);
@@ -149,6 +152,7 @@ impl Service {
         let port = config.port();
         let service = Self {
             config,
+            clipboard_enabled_at_start,
             operation_mode,
             cert,
             capture,
@@ -335,7 +339,19 @@ impl Service {
                 self.notify_audio_status();
             }
             FrontendRequest::EnumerateAudioDevices => self.enumerate_audio_devices(),
+            FrontendRequest::SetClipboardEnabled(enabled) => {
+                self.config.set_clipboard_enabled(enabled);
+                self.save_config();
+                self.notify_clipboard_status();
+            }
         }
+    }
+
+    fn notify_clipboard_status(&mut self) {
+        self.notify_frontend(FrontendEvent::ClipboardStatus {
+            enabled: self.config.clipboard_enabled(),
+            restart_required: self.config.clipboard_enabled() != self.clipboard_enabled_at_start,
+        });
     }
 
     /// broadcast current audio settings. Note: these settings are read
@@ -720,6 +736,7 @@ impl Service {
             port: endpoint.port,
         });
         self.notify_audio_status();
+        self.notify_clipboard_status();
     }
 
     const ENTER_HANDLE_BEGIN: u64 = u64::MAX / 2 + 1;

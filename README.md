@@ -64,7 +64,8 @@ both ends — sending and receiving are toggled independently.
 
 Plain-text clipboard sharing is available between a Windows client and a GNOME
 Wayland server. It is disabled by default because clipboard contents can include
-sensitive text. Enable it on both devices in `config.toml` and restart DeskUnion:
+sensitive text. Enable it on both devices from **Audio → Clipboard** (or in
+`config.toml`) and restart DeskUnion:
 
 ```toml
 [clipboard]

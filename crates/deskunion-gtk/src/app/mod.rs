@@ -133,6 +133,7 @@ pub enum AppMsg {
     AudioPlaybackDeviceChanged(u32),
     AudioBitrateChanged(u32),
     AudioBufferChanged(u32),
+    ClipboardEnabledToggled(bool),
 
     LogFilterChanged(Option<LogCategory>),
     LogCopy,
@@ -222,6 +223,8 @@ pub struct AppModel {
     audio_loopback_supported: bool,
     audio_capture_devices: Vec<AudioDeviceInfo>,
     audio_playback_devices: Vec<AudioDeviceInfo>,
+    clipboard_enabled: bool,
+    clipboard_restart_required: bool,
 
     log: LogState,
 
@@ -792,6 +795,13 @@ impl AppModel {
                     None => format!("audio error: {message}"),
                 };
                 self.toast_overlay.add_toast(adw::Toast::new(&msg));
+            }
+            FrontendEvent::ClipboardStatus {
+                enabled,
+                restart_required,
+            } => {
+                self.clipboard_enabled = enabled;
+                self.clipboard_restart_required = restart_required;
             }
             FrontendEvent::ServerEndpoint {
                 hostname,
@@ -1469,6 +1479,28 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         adw::PreferencesGroup {
+                                            set_title: "Clipboard",
+                                            #[watch]
+                                            set_description: Some(if model.clipboard_restart_required {
+                                                "Restart this DeskUnion instance to apply. Enable sharing on both devices."
+                                            } else {
+                                                "Share plain text with the active computer. Enable on both devices; GNOME may ask for portal permission."
+                                            }),
+
+                                            #[name(clipboard_switch)]
+                                            adw::SwitchRow {
+                                                set_title: "Share clipboard text",
+                                                set_subtitle: "Clipboard contents can contain sensitive information",
+                                                #[watch]
+                                                #[block_signal(clipboard_handler)]
+                                                set_active: model.clipboard_enabled,
+                                                connect_active_notify[sender] => move |row| {
+                                                    sender.input(AppMsg::ClipboardEnabledToggled(row.is_active()));
+                                                } @clipboard_handler,
+                                            },
+                                        },
+
+                                        adw::PreferencesGroup {
                                             set_title: "Active streams",
                                             #[local_ref]
                                             audio_stream_list -> gtk::ListBox {
@@ -1866,6 +1898,8 @@ impl SimpleComponent for AppModel {
             audio_loopback_supported: true,
             audio_capture_devices: Vec::new(),
             audio_playback_devices: Vec::new(),
+            clipboard_enabled: false,
+            clipboard_restart_required: false,
             log: LogState::new(log_list_box.clone()),
             authorization_dialog: None,
             pending_authorization_fingerprint: None,
@@ -2087,6 +2121,9 @@ impl SimpleComponent for AppModel {
                         buffer_ms,
                     });
                 }
+            }
+            AppMsg::ClipboardEnabledToggled(enabled) => {
+                self.request(FrontendRequest::SetClipboardEnabled(enabled));
             }
 
             AppMsg::LogFilterChanged(filter) => self.log.apply_filter(filter),

@@ -158,6 +158,13 @@ impl LogState {
                     hostname.as_deref().unwrap_or("-")
                 ),
             ),
+            FrontendEvent::ClipboardStatus {
+                enabled,
+                restart_required,
+            } => (
+                LogCategory::Connections,
+                format!("clipboard sharing: enabled={enabled} restart_required={restart_required}"),
+            ),
         };
         Some(described)
     }

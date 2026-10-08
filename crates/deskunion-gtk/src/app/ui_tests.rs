@@ -212,6 +212,14 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
         assert_eq!(controller.model().current_page.get(), page);
         if page == Page::Audio {
             assert!(controller.widgets().audio_receive_switch.is_visible());
+            controller.emit(AppMsg::Frontend(FrontendEvent::ClipboardStatus {
+                enabled: true,
+                restart_required: true,
+            }));
+            settle();
+            assert!(controller.model().clipboard_enabled);
+            assert!(controller.model().clipboard_restart_required);
+            assert!(controller.widgets().clipboard_switch.is_active());
             assert!(
                 controller
                     .widgets()

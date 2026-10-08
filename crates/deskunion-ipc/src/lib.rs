@@ -290,6 +290,11 @@ pub enum FrontendEvent {
         addr: Option<SocketAddr>,
         message: String,
     },
+    /// whether clipboard text sharing is enabled in configuration and needs restart
+    ClipboardStatus {
+        enabled: bool,
+        restart_required: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,6 +379,8 @@ pub enum FrontendRequest {
     SetAudioPlaybackDevice(Option<String>),
     /// request enumeration of available audio devices
     EnumerateAudioDevices,
+    /// persist opt-in for plain-text clipboard sharing
+    SetClipboardEnabled(bool),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
