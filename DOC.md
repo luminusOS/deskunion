@@ -1,6 +1,16 @@
 # General Software Architecture
 
-## Release 0.1.3
+## Release 0.2.0
+
+Adds opt-in text clipboard sharing between Windows and GNOME Wayland, Windows
+process-loopback audio capture that is independent of master output volume on
+supported builds, and clearer audio/clipboard controls in the GTK frontend.
+
+Clipboard sharing is disabled by default. Enable it on both devices from
+**Audio → Clipboard** and restart DeskUnion so the platform backends start with
+the setting enabled.
+
+## Release workflow
 
 Pushing a `v<version>` tag runs `release.yml`, which calls one reusable
 workflow per platform and publishes every artifact (the tag must match the
