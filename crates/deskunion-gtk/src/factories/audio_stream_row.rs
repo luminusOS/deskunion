@@ -27,7 +27,10 @@ pub enum AudioStreamRowInput {
 
 impl AudioStreamRowModel {
     fn subtitle(&self) -> String {
-        format!("{} ms · {} lost", self.latency_ms, self.packets_lost)
+        format!(
+            "{} ms buffered · {} packets lost",
+            self.latency_ms, self.packets_lost
+        )
     }
 }
 
@@ -50,6 +53,10 @@ impl FactoryComponent for AudioStreamRowModel {
                 set_max_value: 1.0,
                 set_valign: gtk::Align::Center,
                 set_width_request: 80,
+                update_property: &[gtk::accessible::Property::Label(&format!(
+                    "Incoming audio level from {}",
+                    self.addr
+                ))],
                 #[watch]
                 set_value: self.level as f64,
             },

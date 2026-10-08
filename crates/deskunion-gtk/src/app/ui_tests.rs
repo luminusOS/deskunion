@@ -210,6 +210,18 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
         nav.emit_by_name::<()>("row-activated", &[&row]);
         settle();
         assert_eq!(controller.model().current_page.get(), page);
+        if page == Page::Audio {
+            assert!(controller.widgets().audio_receive_switch.is_visible());
+            assert!(
+                controller
+                    .widgets()
+                    .toast_overlay
+                    .measure(gtk::Orientation::Horizontal, -1)
+                    .0
+                    <= window.width(),
+                "audio page content must fit a narrow window"
+            );
+        }
         capture(window, &format!("{}-narrow-dark", page.name()));
     }
 
@@ -251,6 +263,50 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     assert!(controller.model().server_connection_error.is_none());
     capture(window, "screens-server-dark");
     assert_eq!(controller.model().status_text(), "Sharing stopped");
+    assert!(
+        controller
+            .widgets()
+            .service_toggle
+            .has_css_class("suggested-action")
+    );
+    controller.emit(AppMsg::Frontend(FrontendEvent::CaptureStatus(
+        Status::Enabled,
+    )));
+    settle();
+    assert!(
+        controller
+            .widgets()
+            .service_toggle
+            .has_css_class("destructive-action")
+    );
+    assert_eq!(controller.model().status_text(), "Listening on port 4242");
+    assert_eq!(
+        controller
+            .widgets()
+            .service_toggle
+            .tooltip_text()
+            .as_deref(),
+        Some("Stop input sharing")
+    );
+    controller.emit(AppMsg::Frontend(FrontendEvent::CaptureStatus(
+        Status::Disabled,
+    )));
+    settle();
+    assert!(
+        controller
+            .widgets()
+            .service_toggle
+            .has_css_class("suggested-action")
+    );
+    assert_eq!(controller.model().status_text(), "Sharing stopped");
+    assert_eq!(
+        controller
+            .widgets()
+            .service_toggle
+            .tooltip_text()
+            .as_deref(),
+        Some("Start input sharing")
+    );
     styles.set_color_scheme(adw::ColorScheme::ForceLight);
     settle();
     capture(window, "screens-server-light");

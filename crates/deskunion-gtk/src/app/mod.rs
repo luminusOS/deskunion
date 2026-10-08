@@ -1074,14 +1074,23 @@ impl SimpleComponent for AppModel {
                                 // app opens with the sidebar visible
                                 set_active: true,
                             },
+                            #[name(service_toggle)]
                             pack_end = &gtk::Button {
                                 set_margin_end: 6,
                                 #[watch]
                                 set_visible: model.operation_mode != OperationMode::Unconfigured,
-                                // the one highlighted action of the window: follows
-                                // the system accent colour for both Start and Stop
-                                add_css_class: "suggested-action",
-                                set_tooltip_text: Some("Start or stop input sharing"),
+                                #[watch]
+                                set_css_classes: if model.service_running() {
+                                    &["destructive-action"]
+                                } else {
+                                    &["suggested-action"]
+                                },
+                                #[watch]
+                                set_tooltip_text: Some(if model.service_running() {
+                                    "Stop input sharing"
+                                } else {
+                                    "Start input sharing"
+                                }),
                                 connect_clicked => AppMsg::ToggleServiceRunning,
 
                                 #[wrap(Some)]
@@ -1093,7 +1102,7 @@ impl SimpleComponent for AppModel {
                                         "media-playback-start-symbolic"
                                     },
                                     #[watch]
-                                    set_label: if model.service_running() { "Stop" } else { "Start" },
+                                                set_label: if model.service_running() { "Stop" } else { "Start" },
                                 },
                             },
                         },
@@ -1380,6 +1389,7 @@ impl SimpleComponent for AppModel {
 
                                         adw::PreferencesGroup {
                                             set_title: "Receiving",
+                                            set_description: Some("Received audio follows this computer's output volume and mute controls. Audio changes take effect when sharing restarts or the client reconnects."),
 
                                             #[name(audio_receive_switch)]
                                             adw::SwitchRow {
@@ -1406,6 +1416,7 @@ impl SimpleComponent for AppModel {
 
                                         adw::PreferencesGroup {
                                             set_title: "Sending",
+                                            set_description: Some("Audio changes take effect when sharing restarts or the client reconnects."),
 
                                             #[name(audio_send_switch)]
                                             adw::SwitchRow {

@@ -111,7 +111,7 @@ impl ClientRowModel {
         let mut parts = vec![ip.to_string()];
         if self.audio_active {
             if let Some(ms) = self.audio_latency_ms {
-                parts.push(format!("latency {ms} ms"));
+                parts.push(format!("audio buffer {ms} ms"));
             }
         }
         parts.push("TLS active".to_string());
