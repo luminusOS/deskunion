@@ -306,7 +306,7 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
             .service_toggle
             .has_css_class("suggested-action")
     );
-    assert_eq!(controller.model().status_text(), "Sharing stopped");
+    assert_eq!(controller.model().status_text(), "Capture disabled");
     assert_eq!(
         controller
             .widgets()
