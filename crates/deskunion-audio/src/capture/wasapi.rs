@@ -22,11 +22,13 @@ use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WasapiError, WaveFormat};
-
+use super::process_loopback::supports_process_loopback;
 use super::{AudioCapture, CaptureCallback};
 use crate::codec::SAMPLE_RATE;
 use crate::{AudioDevice, AudioError, AudioFormat};
+use wasapi::{
+    AudioClient, DeviceEnumerator, Direction, SampleType, StreamMode, WasapiError, WaveFormat,
+};
 
 const CHANNELS: u16 = 2;
 const BYTES_PER_SAMPLE: usize = 4; // 32-bit float, matches WaveFormat below
@@ -50,6 +52,58 @@ enum CaptureRun {
     /// the endpoint went away (device change, format change, session
     /// reset); the caller reopens it
     Interrupted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CaptureSource {
+    ProcessLoopback,
+    EndpointLoopback,
+}
+
+impl CaptureSource {
+    fn description(self) -> &'static str {
+        match self {
+            Self::ProcessLoopback => {
+                "system-wide process loopback (excluding DeskUnion; master-volume independent; per-app volume preserved)"
+            }
+            Self::EndpointLoopback => "endpoint loopback (follows Windows master volume/mute)",
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_version() -> Result<(u32, u32), AudioError> {
+    #[repr(C)]
+    struct OsVersionInfoW {
+        size: u32,
+        major_version: u32,
+        minor_version: u32,
+        build_number: u32,
+        platform_id: u32,
+        service_pack: [u16; 128],
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(version: *mut OsVersionInfoW) -> i32;
+    }
+
+    let mut version = OsVersionInfoW {
+        size: std::mem::size_of::<OsVersionInfoW>() as u32,
+        major_version: 0,
+        minor_version: 0,
+        build_number: 0,
+        platform_id: 0,
+        service_pack: [0; 128],
+    };
+    // RtlGetVersion writes into the caller-provided, correctly sized struct.
+    let status = unsafe { RtlGetVersion(&mut version) };
+    if status < 0 {
+        return Err(AudioError::WindowsVersion(format!(
+            "RtlGetVersion returned NTSTATUS {status:#x}"
+        )));
+    }
+    Ok((version.major_version, version.build_number))
 }
 
 fn ensure_com_initialized() -> Result<(), AudioError> {
@@ -85,6 +139,14 @@ impl Default for WasapiCapture {
 impl AudioCapture for WasapiCapture {
     fn devices(&self) -> Result<Vec<AudioDevice>, AudioError> {
         ensure_com_initialized()?;
+        if windows_version().is_ok_and(|(major, build)| supports_process_loopback(major, build)) {
+            return Ok(vec![AudioDevice {
+                id: "process-loopback".to_owned(),
+                name: "All application audio (master-volume independent)".to_owned(),
+                is_monitor: true,
+                is_default: true,
+            }]);
+        }
         let enumerator = DeviceEnumerator::new().map_err(AudioError::from)?;
         let default_id = enumerator
             .get_default_device(&Direction::Render)
@@ -127,6 +189,25 @@ impl AudioCapture for WasapiCapture {
                 return;
             }
 
+            let source = match windows_version() {
+                Ok((major, build)) if supports_process_loopback(major, build) => {
+                    CaptureSource::ProcessLoopback
+                }
+                Ok((major, build)) => {
+                    log::warn!(
+                        "process loopback unavailable on Windows {major}.{build}; using endpoint loopback"
+                    );
+                    CaptureSource::EndpointLoopback
+                }
+                Err(error) => {
+                    log::warn!(
+                        "unable to determine Windows version ({error}); using endpoint loopback"
+                    );
+                    CaptureSource::EndpointLoopback
+                }
+            };
+            log::info!("Windows audio capture mode: {}", source.description());
+
             // a broken capture used to end the thread with a single
             // warning: the encode thread then slept forever on an empty
             // ring and audio stopped while the connection stayed up.
@@ -136,6 +217,7 @@ impl AudioCapture for WasapiCapture {
             loop {
                 let ran_since = std::time::Instant::now();
                 match run_capture(
+                    source,
                     device_id.as_deref(),
                     &mut on_data,
                     &stop_rx,
@@ -153,7 +235,10 @@ impl AudioCapture for WasapiCapture {
                             let _ = format_tx.send(Err(e));
                             return;
                         }
-                        log::error!("wasapi loopback capture failed: {e}; reopening the endpoint");
+                        log::error!(
+                            "Windows audio capture failed in {} mode ({e}); reopening",
+                            source.description()
+                        );
                     }
                 }
                 // a run that streamed for a while was not part of the
@@ -192,31 +277,38 @@ impl AudioCapture for WasapiCapture {
 /// format through `format_tx` on the first successful open only —
 /// `start()` blocks on that, and later reopens must not resend it.
 fn run_capture(
+    source: CaptureSource,
     device_id: Option<&str>,
     on_data: &mut CaptureCallback,
     stop_rx: &mpsc::Receiver<()>,
     format_tx: &mpsc::Sender<Result<AudioFormat, AudioError>>,
     announced: &mut bool,
 ) -> Result<CaptureRun, AudioError> {
-    let enumerator = DeviceEnumerator::new()?;
-    let device = match device_id {
-        Some(id) => match enumerator.get_device(id) {
-            Ok(device) => device,
-            Err(error) => {
-                // Older DeskUnion builds enumerated CPAL input
-                // devices on Windows. Their persisted IDs are not
-                // render endpoint IDs, so keep upgrades working by
-                // falling back to the default output.
-                log::warn!(
-                    "configured Windows audio endpoint is unavailable ({error}); using the default output"
-                );
-                enumerator.get_default_device(&Direction::Render)?
-            }
-        },
-        None => enumerator.get_default_device(&Direction::Render)?,
+    let mut audio_client = match source {
+        CaptureSource::ProcessLoopback => {
+            AudioClient::new_application_loopback_client(std::process::id(), false)?
+        }
+        CaptureSource::EndpointLoopback => {
+            let enumerator = DeviceEnumerator::new()?;
+            let device = match device_id {
+                Some(id) => match enumerator.get_device(id) {
+                    Ok(device) => device,
+                    Err(error) => {
+                        // Older DeskUnion builds enumerated CPAL input
+                        // devices on Windows. Their persisted IDs are not
+                        // render endpoint IDs, so keep upgrades working by
+                        // falling back to the default output.
+                        log::warn!(
+                            "configured Windows audio endpoint is unavailable ({error}); using the default output"
+                        );
+                        enumerator.get_default_device(&Direction::Render)?
+                    }
+                },
+                None => enumerator.get_default_device(&Direction::Render)?,
+            };
+            device.get_iaudioclient()?
+        }
     };
-
-    let mut audio_client = device.get_iaudioclient()?;
     let desired_format = WaveFormat::new(
         32,
         32,
@@ -225,25 +317,25 @@ fn run_capture(
         CHANNELS as usize,
         None,
     );
-    let (default_period, _min_period) = audio_client.get_device_period()?;
-    // requesting the minimum period in event-driven shared
-    // mode leaves no headroom: any scheduling jitter on the
-    // capture thread overruns the buffer and glitches the
-    // stream. 3× the engine's default period absorbs that
-    // while adding only ~20-30 ms of capture latency.
+    // Process-loopback duration is not device-relative, so use a fixed
+    // shared-mode duration there. Endpoint loopback uses 3× engine period
+    // to leave headroom for scheduling jitter.
+    let buffer_duration_hns = match source {
+        CaptureSource::ProcessLoopback => 200_000,
+        CaptureSource::EndpointLoopback => audio_client.get_device_period()?.0 * 3,
+    };
     let mode = StreamMode::EventsShared {
         autoconvert: true,
-        buffer_duration_hns: default_period * 3,
+        buffer_duration_hns,
     };
-    // requesting `Direction::Capture` against a client whose
-    // own device is `Direction::Render` is what makes this
-    // loopback rather than plain capture — see module docs.
+    // Process loopback clients also require shared capture mode.
     audio_client.initialize_client(&desired_format, &Direction::Capture, &mode)?;
 
     let event_handle = audio_client.set_get_eventhandle()?;
     let capture_client = audio_client.get_audiocaptureclient()?;
     audio_client.start_stream()?;
 
+    log::info!("Windows audio capture active: {}", source.description());
     if !*announced {
         let _ = format_tx.send(Ok(AudioFormat {
             sample_rate: SAMPLE_RATE,
@@ -253,6 +345,7 @@ fn run_capture(
     }
 
     let mut byte_queue: VecDeque<u8> = VecDeque::with_capacity(BYTES_PER_SAMPLE * 4096);
+    let mut samples = Vec::with_capacity(4096);
     let outcome = loop {
         if stop_rx.try_recv().is_ok() {
             break CaptureRun::Stopped;
@@ -273,7 +366,8 @@ fn run_capture(
         if usable_bytes == 0 {
             continue;
         }
-        let mut samples = Vec::with_capacity(usable_bytes / BYTES_PER_SAMPLE);
+        samples.clear();
+        samples.reserve(usable_bytes / BYTES_PER_SAMPLE);
         for _ in 0..usable_bytes / BYTES_PER_SAMPLE {
             let mut bytes = [0u8; BYTES_PER_SAMPLE];
             for byte in &mut bytes {

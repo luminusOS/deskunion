@@ -11,6 +11,7 @@ pub type CaptureCallback = Box<dyn FnMut(&[f32]) + Send>;
 // (see `is_monitor_name`'s doc comment).
 mod cpal;
 mod dummy;
+mod process_loopback;
 #[cfg(windows)]
 mod wasapi;
 

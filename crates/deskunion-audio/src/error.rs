@@ -21,4 +21,7 @@ pub enum AudioError {
     #[cfg(windows)]
     #[error(transparent)]
     Wasapi(#[from] wasapi::WasapiError),
+    #[cfg(windows)]
+    #[error("unable to determine Windows version: {0}")]
+    WindowsVersion(String),
 }

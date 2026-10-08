@@ -106,6 +106,9 @@ pub struct JitterBuffer {
     decoder: Decoder,
     drift: DriftController,
     packets: HashMap<u32, Vec<u8>>,
+    /// Recycled Opus payload allocations avoid freeing packet buffers on
+    /// the realtime playback callback after each frame is decoded.
+    recycled_packets: Vec<Vec<u8>>,
     next_seq: Option<u32>,
     startup_frames: u32,
     /// becomes true on the first `pop()`. Before that, `push()` may
@@ -133,6 +136,7 @@ impl JitterBuffer {
             decoder: Decoder::new(channels)?,
             drift: DriftController::new(target_ms),
             packets: HashMap::new(),
+            recycled_packets: Vec::with_capacity(MAX_WINDOW_FRAMES as usize),
             next_seq: None,
             startup_frames: (target_ms / FRAME_MS).max(1),
             started: false,
@@ -158,7 +162,7 @@ impl JitterBuffer {
     pub fn push(&mut self, seq: u32, payload: &[u8]) {
         let Some(next) = self.next_seq else {
             self.next_seq = Some(seq);
-            self.packets.insert(seq, payload.to_vec());
+            self.store_packet(seq, payload);
             return;
         };
         // wrapping distance from the next-expected seq: small values
@@ -178,19 +182,29 @@ impl JitterBuffer {
                 self.next_seq = Some(seq);
             }
             if forward <= MAX_WINDOW_FRAMES || backward <= MAX_WINDOW_FRAMES {
-                self.packets.entry(seq).or_insert_with(|| payload.to_vec());
+                self.store_packet(seq, payload);
             }
         } else if forward <= MAX_WINDOW_FRAMES {
-            self.packets.entry(seq).or_insert_with(|| payload.to_vec());
+            self.store_packet(seq, payload);
         } else if self.consecutive_plc >= MAX_CONSECUTIVE_PLC && self.packets.is_empty() {
             // We advanced through PLC while the source was paused/stalled.
             // Re-anchor to the resumed stream and prebuffer again instead of
             // classifying every future arrival as permanently late.
             self.next_seq = Some(seq);
-            self.packets.insert(seq, payload.to_vec());
+            self.store_packet(seq, payload);
             self.started = false;
             self.consecutive_plc = 0;
         }
+    }
+
+    fn store_packet(&mut self, seq: u32, payload: &[u8]) {
+        if self.packets.contains_key(&seq) {
+            return;
+        }
+        let mut storage = self.recycled_packets.pop().unwrap_or_default();
+        storage.clear();
+        storage.extend_from_slice(payload);
+        self.packets.insert(seq, storage);
     }
 
     /// pop and decode the next frame in sequence order, concealing a
@@ -242,7 +256,13 @@ impl JitterBuffer {
         match self.packets.remove(&next) {
             Some(payload) => {
                 self.consecutive_plc = 0;
-                self.decoder.decode_frame_into(&payload, out)?;
+                let decoded = self.decoder.decode_frame_into(&payload, out);
+                let mut payload = payload;
+                payload.clear();
+                if self.recycled_packets.len() < MAX_WINDOW_FRAMES as usize {
+                    self.recycled_packets.push(payload);
+                }
+                decoded?;
             }
             None => {
                 // an intentional hold is concealed like any missing
@@ -264,14 +284,14 @@ impl JitterBuffer {
                     // frame is already buffered or still in flight, it
                     // never reaches playback — one frame drained
                     let skipped = self.next_seq.expect("next_seq set above");
-                    self.packets.remove(&skipped);
+                    if let Some(mut payload) = self.packets.remove(&skipped) {
+                        payload.clear();
+                        if self.recycled_packets.len() < MAX_WINDOW_FRAMES as usize {
+                            self.recycled_packets.push(payload);
+                        }
+                    }
                     self.next_seq = Some(skipped.wrapping_add(1));
                     self.correction_drops += 1;
-                    log::debug!(
-                        "jitter buffer above target; dropped a frame to catch up (occupancy {}, {} drops so far)",
-                        self.occupancy(),
-                        self.correction_drops
-                    );
                 }
                 Some(DriftCorrection::Stretch) => {
                     // rewind onto the slot just popped: the packet is
@@ -279,10 +299,6 @@ impl JitterBuffer {
                     // frame of extra latency
                     self.next_seq = Some(next);
                     self.stretch_pending = true;
-                    log::debug!(
-                        "jitter buffer below target; stretching by one frame (occupancy {})",
-                        self.occupancy()
-                    );
                 }
                 None => {}
             }
@@ -293,7 +309,12 @@ impl JitterBuffer {
     /// drop all buffered state — call on `AudioControl::Stop` and on
     /// reconnect (plano §3.6 step 5).
     pub fn reset(&mut self) {
-        self.packets.clear();
+        for (_, mut payload) in self.packets.drain() {
+            payload.clear();
+            if self.recycled_packets.len() < MAX_WINDOW_FRAMES as usize {
+                self.recycled_packets.push(payload);
+            }
+        }
         self.next_seq = None;
         self.started = false;
         self.consecutive_plc = 0;
@@ -337,6 +358,28 @@ mod test {
             assert!(!out.is_empty());
         }
         assert_eq!(jb.occupancy(), 0);
+    }
+
+    #[test]
+    fn decoded_packet_storage_is_reused_by_the_next_arrival() {
+        let frames = encode_frames(1, 2);
+        let mut jb = JitterBuffer::new(1, FRAME_MS).expect("jitter buffer");
+        jb.push(0, &frames[0]);
+        let allocation = jb.packets.get(&0).expect("queued frame").as_ptr();
+
+        let mut out = vec![0.0; FRAME_SAMPLES];
+        jb.pop_into(&mut out).expect("decode frame");
+        assert!(
+            jb.recycled_packets
+                .iter()
+                .any(|packet| packet.as_ptr() == allocation)
+        );
+
+        jb.push(1, &frames[1]);
+        assert_eq!(
+            jb.packets.get(&1).expect("reused frame").as_ptr(),
+            allocation
+        );
     }
 
     #[test]
