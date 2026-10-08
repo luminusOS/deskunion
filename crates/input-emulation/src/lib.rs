@@ -245,6 +245,7 @@ impl InputEmulation {
     }
 }
 
+#[allow(clippy::double_must_use)] // newer clippy flags async_trait's generated fns
 #[async_trait]
 trait Emulation: Send {
     async fn consume(
