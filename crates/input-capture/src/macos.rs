@@ -169,11 +169,11 @@ impl InputCaptureState {
                 self.active_clients.insert(p);
             }
             ProducerEvent::Destroy(p) => {
-                if let Some(current) = self.current_pos {
-                    if current == p {
-                        self.show_cursor()?;
-                        self.current_pos = None;
-                    };
+                if let Some(current) = self.current_pos
+                    && current == p
+                {
+                    self.show_cursor()?;
+                    self.current_pos = None;
                 }
                 self.active_clients.remove(&p);
             }
