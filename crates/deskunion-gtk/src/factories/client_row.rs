@@ -164,14 +164,15 @@ impl FactoryComponent for ClientRowModel {
                 set_icon_name: Some("channel-secure-symbolic"),
                 add_css_class: "dim-label",
                 set_valign: gtk::Align::Center,
-                set_tooltip_text: Some("connection is encrypted (TLS)"),
+                set_tooltip_text: Some("Connection is encrypted (TLS)"),
+                update_property: &[gtk::accessible::Property::Label("Connection is encrypted")],
                 #[watch]
                 set_visible: self.connected(),
             },
 
             add_row = &adw::ActionRow {
-                set_title: "enabled",
-                set_subtitle: "route input events to this client",
+                set_title: "Enabled",
+                set_subtitle: "Route input events to this client",
 
                 add_suffix = &gtk::Switch {
                     set_valign: gtk::Align::Center,
@@ -190,14 +191,15 @@ impl FactoryComponent for ClientRowModel {
             },
 
             add_row = &adw::ActionRow {
-                set_title: "hostname",
+                set_title: "Hostname",
                 #[watch]
                 set_subtitle: &self.port_text(),
 
                 add_suffix = &gtk::Entry {
                     set_property: ("xalign", 0.5f32),
                     set_valign: gtk::Align::Center,
-                    set_placeholder_text: Some("hostname"),
+                    set_placeholder_text: Some("Hostname"),
+                    update_property: &[gtk::accessible::Property::Label("Client hostname")],
                     set_width_chars: -1,
                     #[watch]
                     set_text: self.hostname.as_deref().unwrap_or(""),
@@ -217,6 +219,7 @@ impl FactoryComponent for ClientRowModel {
                     set_property: ("xalign", 0.5f32),
                     set_valign: gtk::Align::Center,
                     set_placeholder_text: Some("4242"),
+                    update_property: &[gtk::accessible::Property::Label("Client port")],
                     set_width_chars: 5,
                     #[watch]
                     set_text: &self.port_text(),
@@ -242,7 +245,7 @@ impl FactoryComponent for ClientRowModel {
             },
 
             add_row = &adw::ComboRow {
-                set_title: "position",
+                set_title: "Position",
                 set_model: Some(&gtk::StringList::new(&["Left", "Right", "Top", "Bottom"])),
                 #[watch]
                 #[block_signal(position_handler)]
@@ -256,15 +259,32 @@ impl FactoryComponent for ClientRowModel {
             },
 
             add_row = &adw::ActionRow {
-                set_title: "delete this client",
+                set_title: "Delete client",
 
                 add_suffix = &gtk::Button {
                     set_valign: gtk::Align::Center,
                     set_halign: gtk::Align::Center,
                     set_icon_name: "user-trash-symbolic",
                     add_css_class: "error",
-                    connect_clicked[sender, index] => move |_| {
-                        sender.output(ClientRowOutput::Delete(index.clone())).unwrap();
+                    set_tooltip_text: Some("Delete client"),
+                    update_property: &[gtk::accessible::Property::Label("Delete client")],
+                    connect_clicked[sender, index] => move |button| {
+                        let dialog = adw::AlertDialog::new(
+                            Some("Delete this client?"),
+                            Some("The device will need to be paired again."),
+                        );
+                        dialog.add_response("cancel", "_Cancel");
+                        dialog.add_response("delete", "_Delete");
+                        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+                        dialog.set_default_response(Some("cancel"));
+                        dialog.set_close_response("cancel");
+                        let (sender, index) = (sender.clone(), index.clone());
+                        dialog.connect_response(None, move |_, response| {
+                            if response == "delete" {
+                                sender.output(ClientRowOutput::Delete(index.clone())).unwrap();
+                            }
+                        });
+                        dialog.present(Some(button));
                     },
                 },
             },

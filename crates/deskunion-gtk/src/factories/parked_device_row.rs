@@ -71,6 +71,7 @@ impl FactoryComponent for ParkedDeviceRowModel {
                 set_label: "Assign",
                 set_valign: gtk::Align::Center,
                 add_css_class: "pill",
+                update_property: &[gtk::accessible::Property::Label(&format!("Assign {} to the selected screen position", self.addr))],
                 connect_clicked[sender, index] => move |_| {
                     sender.output(ParkedDeviceRowOutput::Assign(index.clone())).unwrap();
                 },
@@ -81,7 +82,8 @@ impl FactoryComponent for ParkedDeviceRowModel {
                 set_model: Some(&gtk::StringList::new(&["Left", "Right", "Top", "Bottom"])),
                 // right is the pairing preference everywhere else
                 set_selected: 1,
-                set_tooltip_text: Some("screen position for this device"),
+                set_tooltip_text: Some("Screen position for this device"),
+                update_property: &[gtk::accessible::Property::Label(&format!("Screen position for {}", self.addr))],
                 connect_selected_notify[sender] => move |dropdown| {
                     sender.input(ParkedDeviceRowInput::SetPosition(
                         position_from_selected(dropdown.selected()),

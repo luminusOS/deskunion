@@ -1094,7 +1094,7 @@ impl SimpleComponent for AppModel {
                                 set_visible: model.operation_mode != OperationMode::Unconfigured,
                                 #[watch]
                                 set_css_classes: if model.service_running() {
-                                    &["destructive-action"]
+                                    &[]
                                 } else {
                                     &["suggested-action"]
                                 },

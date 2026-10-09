@@ -313,10 +313,10 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     )));
     settle();
     assert!(
-        controller
+        !controller
             .widgets()
             .service_toggle
-            .has_css_class("destructive-action")
+            .has_css_class("suggested-action")
     );
     assert_eq!(controller.model().status_text(), "Listening on port 4243");
     assert_eq!(

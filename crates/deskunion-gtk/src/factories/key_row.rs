@@ -37,7 +37,8 @@ impl FactoryComponent for KeyRowModel {
             add_prefix = &gtk::Button {
                 set_valign: gtk::Align::Center,
                 set_halign: gtk::Align::End,
-                set_tooltip_text: Some("revoke authorization"),
+                set_tooltip_text: Some("Revoke authorization"),
+                update_property: &[gtk::accessible::Property::Label(&format!("Revoke authorization for {}", self.description))],
                 set_icon_name: "edit-delete-symbolic",
                 add_css_class: "flat",
                 connect_clicked[sender, index] => move |_| {
