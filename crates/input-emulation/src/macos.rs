@@ -57,10 +57,10 @@ fn drag_event_type(button: u32) -> CGEventType {
     }
 }
 
-// SAFETY: only needed to satisfy the `Emulation: Send` bound. The `Rc` and CoreGraphics
-// handles inside are never shared: the repeat task is started with `spawn_local`, so the
-// value must be used on the thread that created it. Moving it to another thread while a
-// repeat task is alive would be unsound.
+// SAFETY: only needed to satisfy the `Emulation: Send` bound. The value is created and
+// driven inside a `spawn_local` task on a current-thread runtime and never moves threads.
+// The repeat task shares an `Rc<Cell<XMods>>` clone with it, and `Rc` is not thread-safe,
+// so sending the value elsewhere while a repeat task is alive would be unsound.
 unsafe impl Send for MacOSEmulation {}
 
 impl MacOSEmulation {

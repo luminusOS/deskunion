@@ -470,6 +470,7 @@ fn enumerate_displays(display_rects: &mut Vec<RECT>) {
             );
             if ret == FALSE {
                 log::warn!("no display mode");
+                continue;
             }
 
             let pos = dev_mode.Anonymous1.Anonymous2.dmPosition;
