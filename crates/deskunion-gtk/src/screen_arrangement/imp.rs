@@ -37,6 +37,7 @@ struct ScreenStyle<'a> {
     fill: &'a gdk::RGBA,
     text: &'a gdk::RGBA,
     success: &'a gdk::RGBA,
+    warning: &'a gdk::RGBA,
     selection: &'a gdk::RGBA,
     audio_active: bool,
     selected: bool,
@@ -75,12 +76,8 @@ impl ObjectImpl for ScreenArrangement {
         obj.set_tooltip_text(Some(
             "Drag a device to choose the screen edge used to reach it",
         ));
-        obj.update_property(&[
-            gtk::accessible::Property::Label("Device arrangement"),
-            gtk::accessible::Property::Description(
-                "Select a device, then use the arrow keys to move it to another edge of this computer",
-            ),
-        ]);
+        obj.update_property(&[gtk::accessible::Property::Label("Device arrangement")]);
+        self.update_accessibility();
 
         let keys = gtk::EventControllerKey::new();
         keys.connect_key_pressed(clone!(
@@ -91,6 +88,19 @@ impl ObjectImpl for ScreenArrangement {
             move |_keys, key, _code, _state| widget.on_key(key)
         ));
         obj.add_controller(keys);
+
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_enter(clone!(
+            #[weak(rename_to = widget)]
+            self,
+            move |_| widget.obj().queue_draw()
+        ));
+        focus.connect_leave(clone!(
+            #[weak(rename_to = widget)]
+            self,
+            move |_| widget.obj().queue_draw()
+        ));
+        obj.add_controller(focus);
 
         let gesture = gtk::GestureDrag::new();
         gesture.connect_drag_begin(clone!(
@@ -166,6 +176,14 @@ impl WidgetImpl for ScreenArrangement {
         let accent = style
             .lookup_color("accent_bg_color")
             .unwrap_or(gdk::RGBA::new(0.3, 0.5, 0.9, 1.0));
+        // `accent_bg_color` is a fill (paired with `accent_fg_color`);
+        // `accent_color` is the variant meant for text and borders.
+        #[allow(deprecated)]
+        let accent_text = style.lookup_color("accent_color").unwrap_or(accent);
+        #[allow(deprecated)]
+        let warning = style
+            .lookup_color("warning_color")
+            .unwrap_or(gdk::RGBA::new(0.95, 0.65, 0.15, 1.0));
         #[allow(deprecated)]
         let accent_fg = style
             .lookup_color("accent_fg_color")
@@ -176,7 +194,7 @@ impl WidgetImpl for ScreenArrangement {
             .unwrap_or(gdk::RGBA::new(0.2, 0.7, 0.3, 1.0));
         let muted = with_alpha(&fg, 0.08);
         let active = with_alpha(&success, 0.16);
-        let dim = with_alpha(&fg, 0.55);
+        let dim = with_alpha(&fg, 0.7);
         let layout = self.layout(width, height);
         let widget: &gtk::Widget = obj.upcast_ref();
 
@@ -191,7 +209,7 @@ impl WidgetImpl for ScreenArrangement {
                     widget,
                     snapshot,
                     &drop_zone_rect(&layout, position),
-                    &accent,
+                    &accent_text,
                     position == target,
                     &position.to_string(),
                 );
@@ -213,7 +231,8 @@ impl WidgetImpl for ScreenArrangement {
                 fill: &accent,
                 text: &accent_fg,
                 success: &success,
-                selection: &accent,
+                warning: &warning,
+                selection: &accent_text,
                 audio_active: false,
                 selected: false,
                 hovered: false,
@@ -246,12 +265,7 @@ impl WidgetImpl for ScreenArrangement {
             };
 
             let Some(item) = items.get(i) else { continue };
-            let label = item
-                .hostname
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| "Unnamed device".to_string());
+            let label = device_name(item);
 
             let color = if item.connected { &active } else { &muted };
             draw_screen(
@@ -266,14 +280,29 @@ impl WidgetImpl for ScreenArrangement {
                         connection_status(item.active, item.connected)
                     },
                     fill: color,
-                    text: if item.connected { &fg } else { &dim },
+                    text: &fg,
                     success: &success,
-                    selection: &accent,
+                    warning: &warning,
+                    selection: &accent_text,
                     audio_active: item.audio_active,
                     selected: selected == Some(item.handle),
                     hovered: hovered == Some(i),
                     active: item.connected,
                 },
+            );
+        }
+
+        if obj.has_focus()
+            && obj
+                .root()
+                .and_downcast::<gtk::Window>()
+                .is_some_and(|window| window.property::<bool>("focus-visible"))
+        {
+            let bounds = Rect::new(2.0, 2.0, (width - 4.0) as f32, (height - 4.0) as f32);
+            snapshot.append_border(
+                &gsk::RoundedRect::from_rect(bounds, CORNER_RADIUS),
+                &[2.0; 4],
+                &[accent_text; 4],
             );
         }
 
@@ -290,6 +319,14 @@ impl WidgetImpl for ScreenArrangement {
     }
 }
 
+fn device_name(item: &ScreenItem) -> String {
+    item.hostname
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Unnamed device")
+        .to_string()
+}
+
 fn connection_status(active: bool, connected: bool) -> &'static str {
     if connected {
         "Connected"
@@ -301,7 +338,12 @@ fn connection_status(active: bool, connected: bool) -> &'static str {
 }
 
 fn with_alpha(color: &gdk::RGBA, alpha: f32) -> gdk::RGBA {
-    gdk::RGBA::new(color.red(), color.green(), color.blue(), alpha)
+    gdk::RGBA::new(
+        color.red(),
+        color.green(),
+        color.blue(),
+        color.alpha() * alpha,
+    )
 }
 
 fn draw_screen(
@@ -373,7 +415,7 @@ fn draw_screen(
                 rect.x() + rect.width() - BADGE_RADIUS as f32 - 5.0,
                 rect.y() + BADGE_RADIUS as f32 + 5.0,
             ),
-            &gdk::RGBA::new(0.95, 0.65, 0.15, 1.0),
+            style.warning,
         );
     }
 }
@@ -447,6 +489,7 @@ impl ScreenArrangement {
         if *self.host_label.borrow() != label {
             self.host_label.replace(label.to_string());
             self.obj().queue_draw();
+            self.update_accessibility();
         }
     }
 
@@ -460,6 +503,41 @@ impl ScreenArrangement {
         }
         self.items.replace(items);
         self.obj().queue_draw();
+        self.update_accessibility();
+    }
+
+    /// announces the devices, their edges and the selection to assistive
+    /// technology — the canvas is otherwise invisible to them
+    fn update_accessibility(&self) {
+        let host = self.host_label.borrow();
+        let host = if host.is_empty() {
+            "This computer"
+        } else {
+            &host
+        };
+        let items = self.items.borrow();
+        let mut text = if items.is_empty() {
+            format!("{host}. No devices to arrange.")
+        } else {
+            let devices: Vec<String> = items
+                .iter()
+                .map(|item| format!("{} on the {} edge", device_name(item), item.position))
+                .collect();
+            format!("{host} with {}.", devices.join(", "))
+        };
+        if let Some(item) = items
+            .iter()
+            .find(|item| self.selected.get() == Some(item.handle))
+        {
+            text.push_str(&format!(" Selected: {}.", device_name(item)));
+        }
+        if !items.is_empty() {
+            text.push_str(
+                " Page Up and Page Down choose a device, arrow keys move it to another edge.",
+            );
+        }
+        self.obj()
+            .update_property(&[gtk::accessible::Property::Description(&text)]);
     }
 
     /// (index, position, rect) for every screen currently laid out —
@@ -550,15 +628,16 @@ impl ScreenArrangement {
         let obj = self.obj();
         let hit = self.hit_test(x, y);
         self.dragging.set(hit);
+        obj.grab_focus();
         if let Some(index) = hit {
             if let Some(item) = self.items.borrow().get(index) {
                 self.selected.set(Some(item.handle));
             }
-            obj.grab_focus();
             obj.set_cursor_from_name(Some("grabbing"));
         } else {
             self.selected.set(None);
         }
+        self.update_accessibility();
         self.drag_start.set((x, y));
         self.drag_offset.set((0.0, 0.0));
         self.drop_position.set(None);
@@ -615,37 +694,59 @@ impl ScreenArrangement {
         drop(items);
         let obj = self.obj();
         obj.queue_draw();
+        self.update_accessibility();
         if changed {
             obj.emit_by_name::<()>("position-changed", &[&handle, &position.to_string()]);
         }
     }
 
-    /// arrow keys: select the first device, or move the selected one to
-    /// that edge — the keyboard equivalent of dragging
+    /// Page Up/Down, Home/End: choose the selected device; arrow keys:
+    /// move it to that edge — the keyboard equivalent of dragging.
+    /// Escape cancels a drag in progress.
     fn on_key(&self, key: gdk::Key) -> glib::Propagation {
+        if key == gdk::Key::Escape {
+            if self.dragging.take().is_none() {
+                return glib::Propagation::Proceed;
+            }
+            self.drag_offset.set((0.0, 0.0));
+            self.drop_position.set(None);
+            self.obj().set_cursor_from_name(None);
+            self.obj().queue_draw();
+            return glib::Propagation::Stop;
+        }
         let position = match key {
-            gdk::Key::Left => Position::Left,
-            gdk::Key::Right => Position::Right,
-            gdk::Key::Up => Position::Top,
-            gdk::Key::Down => Position::Bottom,
+            gdk::Key::Left => Some(Position::Left),
+            gdk::Key::Right => Some(Position::Right),
+            gdk::Key::Up => Some(Position::Top),
+            gdk::Key::Down => Some(Position::Bottom),
+            gdk::Key::Page_Up | gdk::Key::Page_Down | gdk::Key::Home | gdk::Key::End => None,
             _ => return glib::Propagation::Proceed,
         };
-        let selected = self.selected.get();
-        let index = selected.and_then(|handle| {
-            self.items
-                .borrow()
-                .iter()
-                .position(|item| item.handle == handle)
-        });
-        match index {
-            Some(index) => self.set_position(index, position),
-            None => {
-                let first = self.items.borrow().first().map(|item| item.handle);
-                if first.is_none() {
-                    return glib::Propagation::Proceed;
-                }
-                self.selected.set(first);
+        let (index, count) = {
+            let items = self.items.borrow();
+            let selected = self.selected.get();
+            (
+                items.iter().position(|item| Some(item.handle) == selected),
+                items.len(),
+            )
+        };
+        if count == 0 {
+            return glib::Propagation::Proceed;
+        }
+        match (position, index) {
+            (Some(position), Some(index)) => self.set_position(index, position),
+            _ => {
+                let next = match (key, index) {
+                    (gdk::Key::Home, _) => 0,
+                    (gdk::Key::End, _) => count - 1,
+                    (gdk::Key::Page_Up, Some(i)) => (i + count - 1) % count,
+                    (gdk::Key::Page_Down, Some(i)) => (i + 1) % count,
+                    _ => 0,
+                };
+                let handle = self.items.borrow().get(next).map(|item| item.handle);
+                self.selected.set(handle);
                 self.obj().queue_draw();
+                self.update_accessibility();
             }
         }
         glib::Propagation::Stop
