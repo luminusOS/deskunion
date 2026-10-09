@@ -7,10 +7,43 @@
   <project_license>GPL-3.0-or-later</project_license>
   <url type="homepage">https://github.com/luminusOS/deskunion</url>
   <url type="bugtracker">https://github.com/luminusOS/deskunion/issues</url>
-  <developer_name>LuminusOS</developer_name>
+  <developer id="io.github.luminusos">
+    <name>LuminusOS</name>
+  </developer>
   <description>
     <p>Share one mouse and keyboard between computers on the same network.</p>
+    <p>Move the pointer past a screen edge to control the neighbouring computer. Traffic is encrypted with DTLS and devices are paired by certificate fingerprint.</p>
+    <p>Optionally stream a client's audio to the server and share plain-text clipboard contents between computers.</p>
   </description>
+  <categories>
+    <category>Utility</category>
+    <category>Network</category>
+    <category>RemoteAccess</category>
+  </categories>
+  <keywords>
+    <keyword>KVM</keyword>
+    <keyword>mouse</keyword>
+    <keyword>keyboard</keyword>
+    <keyword>share</keyword>
+    <keyword>LAN</keyword>
+  </keywords>
+  <branding>
+    <color type="primary" scheme_preference="light">#99c1f1</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+  <recommends>
+    <display_length compare="ge">360</display_length>
+  </recommends>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Connections page in light mode</caption>
+      <image type="source">https://raw.githubusercontent.com/luminusOS/deskunion/main/screenshots/ui-server-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Connections page in dark mode</caption>
+      <image type="source">https://raw.githubusercontent.com/luminusOS/deskunion/main/screenshots/ui-server-dark.png</image>
+    </screenshot>
+  </screenshots>
   <launchable type="desktop-id">io.github.luminusos.DeskUnion.desktop</launchable>
   <content_rating type="oars-1.1" />
   <releases>

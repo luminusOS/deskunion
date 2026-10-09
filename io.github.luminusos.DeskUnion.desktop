@@ -1,12 +1,11 @@
 [Desktop Entry]
-Categories=Utility;
-Comment[en_US]=Mouse & Keyboard sharing via LAN
+Categories=Utility;Network;RemoteAccess;
 Comment=Mouse & Keyboard sharing via LAN
 Comment[de_DE]=Maus- und Tastaturfreigabe über LAN
 Exec=deskunion
 Icon=io.github.luminusos.DeskUnion
-Name[en_US]=Deskunion
-Name=Deskunion
+Keywords=KVM;mouse;keyboard;share;LAN;
+Name=DeskUnion
 StartupNotify=true
 Terminal=false
 Type=Application

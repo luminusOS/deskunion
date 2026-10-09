@@ -21,7 +21,7 @@ process-loopback audio capture that is independent of master output volume on
 supported builds, and clearer audio/clipboard controls in the GTK frontend.
 
 Clipboard sharing is enabled by default. Opt out on a device from
-**Settings → Clipboard** and restart DeskUnion so the platform backends start with
+**Settings → Clipboard** ("Share clipboard text") and restart DeskUnion so the platform backends start with
 the setting disabled.
 
 ## Release workflow
@@ -87,8 +87,9 @@ cargo test -p deskunion-app --no-default-features --features audio --locked
 
 ## GTK interface and verification
 
-The frontend retains its Rust/Relm4 architecture and four sections: Screens,
-Audio, Logs, and Settings. A fresh installation presents an `AdwStatusPage`
+The frontend retains its Rust/Relm4 architecture and four pages: Connections
+(titled "Connection" in client mode and "Welcome" while unconfigured), Audio, Logs,
+and Settings. A fresh installation presents an `AdwStatusPage`
 with explicit Server/Client actions. An `AdwBreakpoint` at 860sp changes the
 existing `AdwOverlaySplitView` to an overlay; it does not replace the page model.
 The supported minimum window size is 480×360, with scrolling for shorter views.
@@ -106,7 +107,10 @@ entry resets before a Relm4 message is queued, preserving apply/cancel state.
 GNOME design references: `libadwaita/doc/adaptive-layouts.md`,
 `libadwaita/doc/style-classes.md`, and the workspace `gnome-ui-ux` skill's
 patterns reference (2026-10-03). Decisions use components available within the
-existing GTK 4.14 / libadwaita 1.5 API floors; dependencies were not upgraded.
+declared GTK 4.14 / libadwaita 1.5 API floors (the `v4_14`/`v1_5` binding features);
+dependencies were not upgraded. The Flatpak manifest in `build-aux` targets the
+GNOME 50 runtime (libadwaita 1.9). Behaviour at the declared floors has not been
+tested.
 
 Checks from the repository root:
 
@@ -148,7 +152,7 @@ the default renderer could not start because the container lacks
 Scoped Clippy with warnings denied and an application build using
 `--no-default-features --features gtk` passed. Workspace-wide validation is
 blocked by missing `xtst.pc` and an Opus fallback build incompatible with the
-installed CMake version. Flatpak's GNOME 48 runtime, minimum library versions,
+installed CMake version. The GNOME 50 Flatpak runtime, the declared minimum library versions (GTK 4.14 / libadwaita 1.5),
 Windows/macOS UI execution, exhaustive keyboard navigation, and Orca were not
 tested. Independent human UX/accessibility review remains pending.
 

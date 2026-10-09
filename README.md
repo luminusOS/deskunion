@@ -1,16 +1,16 @@
 <p align="center">
   <img src="crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"
-       alt="Deskunion logo"
+       alt="DeskUnion logo"
        width="240">
 </p>
 
-<h1 align="center">Deskunion</h1>
+<h1 align="center">DeskUnion</h1>
 
 [![CI](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml) [![Release](https://github.com/luminusOS/deskunion/actions/workflows/release.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/release.yml)
 
 [![crates.io](https://img.shields.io/crates/v/deskunion-app.svg)](https://crates.io/crates/deskunion-app)  [![license](https://img.shields.io/crates/l/deskunion-app.svg)](https://github.com/luminusOS/deskunion/blob/main/Cargo.toml)
 
-Deskunion is a *cross-platform* mouse and keyboard sharing software similar to universal-control on Apple devices.
+DeskUnion is a *cross-platform* mouse and keyboard sharing software similar to universal-control on Apple devices.
 It allows for using multiple PCs via a single set of mouse and keyboard.
 This is also known as a Software KVM switch.
 
@@ -27,18 +27,18 @@ Focus lies on performance, ease of use and a maintainable implementation that ca
 <picture>
     <source media="(prefers-color-scheme: dark)" srcset="/screenshots/ui-server-dark.png?raw=true">
     <source media="(prefers-color-scheme: light)" srcset="/screenshots/ui-server-light.png?raw=true">
-    <img alt="DeskUnion Screens page with no paired clients" src="/screenshots/ui-server-dark.png">
+    <img alt="DeskUnion Connections page with no paired clients" src="/screenshots/ui-server-dark.png">
 </picture>
 
 
 ## Encryption
 
-Deskunion encrypts all network traffic using the DTLS implementation provided by [WebRTC.rs](https://github.com/webrtc-rs/webrtc).
+DeskUnion encrypts all network traffic using the DTLS implementation provided by [WebRTC.rs](https://github.com/webrtc-rs/webrtc).
 There are currently no mitigations in place for timing side-channel attacks.
 
 ## Audio Streaming
 
-Deskunion can stream a client machine's audio to the server it's connected
+DeskUnion can stream a client machine's audio to the server it's connected
 to, so audio plays out of the server's speakers alongside the shared mouse
 and keyboard. Streaming is one-directional (client → server) and opt-in on
 both ends — sending and receiving are toggled independently.
@@ -64,7 +64,7 @@ both ends — sending and receiving are toggled independently.
 
 Plain-text clipboard sharing is available between a Windows client and a GNOME
 Wayland server. It is enabled by default. To opt out, turn it off on a device
-from **Audio → Clipboard** (or in `config.toml`) and restart DeskUnion:
+from **Settings → Clipboard** (or in `config.toml`) and restart DeskUnion:
 
 ```toml
 [clipboard]
@@ -106,14 +106,14 @@ For more detailed information about os support see [Detailed OS Support](#detail
 ### Android & IOS
 
 A proof of concept for an Android / IOS Application by [rohitsangwan01](https://github.com/rohitsangwan01) can be found [here](https://github.com/rohitsangwan01/deskunion-mobile).
-It can be used as a remote control for any device supported by Deskunion.
+It can be used as a remote control for any device supported by DeskUnion.
 
 ## Installation
 
 <details>
     <summary>Arch Linux</summary>
 
-Deskunion can be installed from the [official repositories](https://archlinux.org/packages/extra/x86_64/deskunion/):
+DeskUnion can be installed from the [official repositories](https://archlinux.org/packages/extra/x86_64/deskunion/):
 
 ```sh
 pacman -S deskunion
@@ -136,7 +136,7 @@ paru -S deskunion-git
 
 <details>
     <summary>Fedora</summary>
-You can install Deskunion from the [Terra Repository](https://terra.fyralabs.com).
+You can install DeskUnion from the [Terra Repository](https://terra.fyralabs.com).
 
 
 After enabling Terra:
@@ -153,7 +153,7 @@ dnf install deskunion
 - Unzip it
 - Remove the quarantine with `xattr -rd com.apple.quarantine "Deskunion.app"`
 - Launch the app
-- Use the menu bar item to open the settings window or quit Deskunion. Bundled macOS builds run as a menu bar app and do not keep a Dock icon visible.
+- Use the menu bar item to open the settings window or quit DeskUnion. Bundled macOS builds run as a menu bar app and do not keep a Dock icon visible.
 - Grant accessibility permissions in System Preferences
 
 </details>
@@ -429,10 +429,10 @@ it — the device is then paired automatically and placed on the first free
 screen edge, preferring the right one (right, then left, top, bottom). This
 persists the fingerprint binding in the configuration file (see
 [Configuration](#configuration)); you can move the device to another edge at
-any time from the Screens page.
+any time from the Connections page.
 
 Only when all four edges are already taken does the device show up under
-"Devices awaiting a position" on the server's Screens page and wait for you to
+"Devices awaiting a position" on the server's Connections page and wait for you to
 pick an edge by hand.
 
 Paired clients announce their OS computer name over the authenticated connection
@@ -469,7 +469,7 @@ for information on how to use a specific command.
 <details>
     <summary>Daemon Mode</summary>
 
-Deskunion can be launched in daemon mode to keep it running in the background (e.g. for use in a systemd-service).
+DeskUnion can be launched in daemon mode to keep it running in the background (e.g. for use in a systemd-service).
 
 To do so, use the `daemon` subcommand:
 
@@ -588,7 +588,7 @@ Where `left` can be either `left`, `right`, `top` or `bottom`.
 - [ ] X11 Input Capture
 - [ ] Latency measurement and visualization
 - [ ] Bandwidth usage measurement and visualization
-- [ ] Clipboard support
+- [x] Clipboard support (plain text)
 
 
 ## Detailed OS Support
