@@ -219,6 +219,25 @@ fn setup_actions(app: &adw::Application) {
         }
     });
     app.add_action(&quit_action);
+    app.set_accels_for_action("app.quit", &["<Control>q"]);
+
+    let about_action = gio::SimpleAction::new("about", None);
+    about_action.connect_activate({
+        let app = app.clone();
+        move |_, _| {
+            let dialog = adw::AboutDialog::builder()
+                .application_name("DeskUnion")
+                .application_icon("io.github.luminusos.DeskUnion")
+                .version(env!("CARGO_PKG_VERSION"))
+                .developer_name("LuminusOS")
+                .website("https://github.com/luminusOS/deskunion")
+                .issue_url("https://github.com/luminusOS/deskunion/issues")
+                .license_type(gtk::License::Gpl30)
+                .build();
+            adw::prelude::AdwDialogExt::present(&dialog, app.active_window().as_ref());
+        }
+    });
+    app.add_action(&about_action);
 }
 
 // Set up a global menu

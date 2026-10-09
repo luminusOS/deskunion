@@ -905,6 +905,13 @@ impl SimpleComponent for AppModel {
                         add_top_bar = &adw::HeaderBar {
                             set_show_end_title_buttons: false,
                             add_css_class: "flat",
+                            #[name(primary_menu)]
+                            pack_end = &gtk::MenuButton {
+                                set_icon_name: "open-menu-symbolic",
+                                set_tooltip_text: Some("Main menu"),
+                                update_property: &[gtk::accessible::Property::Label("Main menu")],
+                                set_primary: true,
+                            },
                         },
 
                         #[wrap(Some)]
@@ -1016,7 +1023,7 @@ impl SimpleComponent for AppModel {
                                     add_css_class: "mode-card",
 
                                     gtk::Label {
-                                        set_label: "Operation Mode",
+                                        set_label: "Operation mode",
                                         set_xalign: 0.0,
                                         add_css_class: "caption-heading",
                                     },
@@ -1141,7 +1148,7 @@ impl SimpleComponent for AppModel {
 
                                         adw::StatusPage {
                                             set_icon_name: Some("io.github.luminusos.DeskUnion"),
-                                            set_title: "Share Your Keyboard and Mouse",
+                                            set_title: "Share your keyboard and mouse",
                                             set_description: Some("Choose a role for this computer. A server shares its keyboard and mouse; a client receives input from that server."),
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Unconfigured,
@@ -1153,12 +1160,12 @@ impl SimpleComponent for AppModel {
                                                 set_halign: gtk::Align::Center,
 
                                                 gtk::Button {
-                                                    set_label: "Use as Server",
+                                                    set_label: "Use as server",
                                                     add_css_class: "pill",
                                                     connect_clicked => AppMsg::SetOperationMode(OperationMode::Server),
                                                 },
                                                 gtk::Button {
-                                                    set_label: "Use as Client",
+                                                    set_label: "Use as client",
                                                     add_css_class: "pill",
                                                     connect_clicked => AppMsg::SetOperationMode(OperationMode::Client),
                                                 },
@@ -1166,7 +1173,7 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         adw::PreferencesGroup {
-                                            set_title: "Screen Arrangement",
+                                            set_title: "Screen arrangement",
                                             set_description: Some("Drag a device to the edge of this computer where its screen sits, or select it and use the arrow keys."),
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Server,
@@ -1196,13 +1203,13 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         adw::PreferencesGroup {
-                                            set_title: "Connect a Client",
+                                            set_title: "Connect a client",
                                             set_description: Some("On the other computer choose Client, enter this computer's address and press Connect. Then allow it here."),
                                             #[watch]
                                             set_visible: model.show_connect_hint(),
 
                                             adw::ActionRow {
-                                                set_title: "This Computer",
+                                                set_title: "This computer",
                                                 set_use_markup: false,
                                                 set_subtitle_lines: 0,
                                                 set_icon_name: Some("computer-symbolic"),
@@ -1265,7 +1272,7 @@ impl SimpleComponent for AppModel {
 
                                             #[name(server_connection_error_row)]
                                             adw::ActionRow {
-                                                set_title: "Connection Test Failed",
+                                                set_title: "Connection test failed",
                                                 set_use_markup: false,
                                                 set_subtitle_lines: 0,
                                                 set_icon_name: Some("dialog-warning-symbolic"),
@@ -1283,13 +1290,13 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         adw::PreferencesGroup {
-                                            set_title: "This Computer",
+                                            set_title: "This computer",
                                             set_description: Some("The server asks you to confirm this fingerprint before it allows this computer."),
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Client,
 
                                             adw::ActionRow {
-                                                set_title: "Certificate Fingerprint",
+                                                set_title: "Certificate fingerprint",
                                                 set_use_markup: false,
                                                 set_subtitle_lines: 0,
                                                 set_icon_name: Some("auth-fingerprint-symbolic"),
@@ -1319,7 +1326,7 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         adw::PreferencesGroup {
-                                            set_title: "Capture / Emulation Status",
+                                            set_title: "Capture and emulation status",
                                             #[watch]
                                             set_visible: model.backend_attention_required(),
 
@@ -1348,21 +1355,21 @@ impl SimpleComponent for AppModel {
                                                 set_visible: model.emulation_row_visible(),
                                                 add_css_class: "warning",
                                                 set_icon_name: Some("dialog-warning-symbolic"),
-                                                set_title: "input emulation is disabled",
-                                                set_subtitle: "required for incoming connections",
+                                                set_title: "Input emulation is disabled",
+                                                set_subtitle: "Required for incoming connections",
 
                                                 add_suffix = &gtk::Button {
                                                     set_valign: gtk::Align::Center,
                                                     add_css_class: "pill",
                                                     add_css_class: "flat",
-                                                    set_label: "Reenable",
+                                                    set_label: "Re-enable",
                                                     connect_clicked => AppMsg::ToggleEmulation,
                                                 },
                                             },
                                         },
 
                                         adw::PreferencesGroup {
-                                            set_title: "Devices Awaiting a Position",
+                                            set_title: "Devices awaiting a position",
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Server && !model.parked_device_rows.is_empty(),
                                             #[local_ref]
@@ -1600,7 +1607,7 @@ impl SimpleComponent for AppModel {
                                             },
 
                                             adw::ActionRow {
-                                                set_title: "Listening Port",
+                                                set_title: "Listening port",
                                                 #[watch]
                                                 set_visible: model.operation_mode != OperationMode::Client,
                                                 set_use_markup: false,
@@ -1650,7 +1657,7 @@ impl SimpleComponent for AppModel {
                                                 },
                                                 add_suffix = &gtk::Button {
                                                     set_valign: gtk::Align::Center,
-                                                    set_icon_name: "process-stop-symbolic",
+                                                    set_icon_name: "edit-undo-symbolic",
                                                     set_tooltip_text: Some("Cancel port changes"),
                                                     update_property: &[gtk::accessible::Property::Label("Cancel port changes")],
                                                     #[watch]
@@ -1660,7 +1667,7 @@ impl SimpleComponent for AppModel {
                                             },
 
                                             adw::ActionRow {
-                                                set_title: "Certificate Fingerprint",
+                                                set_title: "Certificate fingerprint",
                                                 set_use_markup: false,
                                                 set_subtitle_lines: 0,
                                                 set_icon_name: Some("auth-fingerprint-symbolic"),
@@ -1702,13 +1709,13 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         adw::PreferencesGroup {
-                                            set_title: "Manual Pairing",
+                                            set_title: "Manual pairing",
                                             set_description: Some("Normally a computer appears here and you allow it. Use this to add one in advance."),
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Server,
 
                                             adw::ActionRow {
-                                                set_title: "Add Client…",
+                                                set_title: "Add client…",
                                                 set_subtitle: "Pair a computer by its certificate fingerprint and choose its screen position",
                                                 set_subtitle_lines: 0,
                                                 set_activatable: true,
@@ -1729,12 +1736,12 @@ impl SimpleComponent for AppModel {
                                             #[watch]
                                             set_visible: model.operation_mode != OperationMode::Client,
                                             adw::ActionRow {
-                                                set_title: "Release Shortcut",
+                                                set_title: "Release shortcut",
                                                 set_subtitle: "Default: Ctrl + Shift + Meta + Alt — return control to this computer",
                                                 set_subtitle_lines: 0,
                                             },
                                             adw::ActionRow {
-                                                set_title: "Connection Command",
+                                                set_title: "Connection command",
                                                 set_subtitle: "Configure enter_hook in config.toml to run a command when entering a client's screen",
                                                 set_subtitle_lines: 0,
                                             },
@@ -1947,6 +1954,11 @@ impl SimpleComponent for AppModel {
             ),
         );
 
+        let menu = gtk::gio::Menu::new();
+        menu.append(Some("_About DeskUnion"), Some("app.about"));
+        menu.append(Some("_Quit"), Some("app.quit"));
+        widgets.primary_menu.set_menu_model(Some(&menu));
+
         widgets
             .sidebar_toggle
             .bind_property("active", &widgets.split_view, "show-sidebar")
@@ -1960,7 +1972,7 @@ impl SimpleComponent for AppModel {
             adw::BreakpointCondition::parse("max-width: 860sp").expect("valid breakpoint"),
         );
         breakpoint.add_setter(&widgets.split_view, "collapsed", Some(&true.to_value()));
-        // `collapsed` already manages sidebar visibility.
+        breakpoint.add_setter(&widgets.split_view, "show-sidebar", Some(&false.to_value()));
         model.root.add_breakpoint(breakpoint);
         widgets
             .nav_list
