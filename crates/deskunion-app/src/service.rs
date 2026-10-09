@@ -833,9 +833,18 @@ impl Service {
             OperationMode::Unconfigured => {}
             OperationMode::Server => {
                 if running {
+                    self.capture.start_listening(
+                        self.port,
+                        self.cert.clone(),
+                        self.authorized_keys.clone(),
+                        self.config.audio_settings(),
+                    );
                     self.capture.reenable();
                 } else {
+                    // closing the listener drops every connection, which
+                    // also ends the incoming audio streams
                     self.capture.set_enabled(false);
+                    self.capture.stop_listening();
                 }
             }
             OperationMode::Client => {

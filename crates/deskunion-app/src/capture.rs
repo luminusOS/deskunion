@@ -476,7 +476,23 @@ impl CaptureTask {
     async fn stop_listening(&mut self) {
         if let Some(mut listener) = self.listener.take() {
             log::debug!("closing the device listener");
+            let addrs = listener.connected_addrs().await;
             listener.terminate().await;
+            // `terminate` closes the event channel, so the read loops'
+            // own `Disconnected`/audio-stopped events are lost: replay them
+            // here so paired clients and the frontend see the teardown.
+            for addr in addrs {
+                self.handle_listen_event(ListenEvent::AudioStream {
+                    addr,
+                    active: false,
+                    latency_ms: 0,
+                    packets_lost: 0,
+                    level: 0.0,
+                })
+                .await;
+                self.handle_listen_event(ListenEvent::Disconnected { addr })
+                    .await;
+            }
         }
     }
 

@@ -249,6 +249,10 @@ impl DeskunionListener {
         self.port_changed.recv().await.expect("channel closed")
     }
 
+    pub(crate) async fn connected_addrs(&self) -> Vec<SocketAddr> {
+        self.conns.lock().await.iter().map(|(a, _)| *a).collect()
+    }
+
     pub(crate) async fn terminate(&mut self) {
         self.listen_task.abort();
         let conns = self.conns.lock().await;
