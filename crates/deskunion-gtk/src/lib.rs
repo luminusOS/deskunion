@@ -177,15 +177,18 @@ fn configure_macos_bundle_environment() {
     }
 
     let schemas = share.join("glib-2.0").join("schemas");
-    if schemas.exists() {
-        env::set_var("GSETTINGS_SCHEMA_DIR", schemas);
-    }
+    // SAFETY: this runs once at startup, before GTK and any worker thread exist.
+    unsafe {
+        if schemas.exists() {
+            env::set_var("GSETTINGS_SCHEMA_DIR", schemas);
+        }
 
-    env::set_var("XDG_DATA_DIRS", &share);
-    env::set_var(
-        "GTK_DATA_PREFIX",
-        contents.join("Resources").to_string_lossy().as_ref(),
-    );
+        env::set_var("XDG_DATA_DIRS", &share);
+        env::set_var(
+            "GTK_DATA_PREFIX",
+            contents.join("Resources").to_string_lossy().as_ref(),
+        );
+    }
 }
 
 fn load_css() {

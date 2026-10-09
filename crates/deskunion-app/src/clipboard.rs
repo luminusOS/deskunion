@@ -66,11 +66,12 @@ impl ClipboardSendQueue {
     }
 
     pub(crate) fn acknowledge(&mut self, addr: std::net::SocketAddr, transfer_id: u32) {
-        if let Some((active_addr, active_id, received)) = self.active_ack.as_mut() {
-            if *active_addr == addr && *active_id == transfer_id {
-                *received = true;
-                self.ack_notify.notify_one();
-            }
+        if let Some((active_addr, active_id, received)) = self.active_ack.as_mut()
+            && *active_addr == addr
+            && *active_id == transfer_id
+        {
+            *received = true;
+            self.ack_notify.notify_one();
         }
     }
 
@@ -142,15 +143,14 @@ impl ClipboardTextAssembler {
             return None;
         }
         if !self.pending.contains_key(&fragment.transfer_id) {
-            if self.pending.len() >= MAX_IN_FLIGHT_TRANSFERS {
-                if let Some(oldest_id) = self
+            if self.pending.len() >= MAX_IN_FLIGHT_TRANSFERS
+                && let Some(oldest_id) = self
                     .pending
                     .iter()
                     .min_by_key(|(_, pending)| pending.started)
                     .map(|(id, _)| *id)
-                {
-                    self.pending.remove(&oldest_id);
-                }
+            {
+                self.pending.remove(&oldest_id);
             }
             self.pending.insert(
                 fragment.transfer_id,
@@ -195,15 +195,14 @@ impl ClipboardTextAssembler {
             .ok()
             .filter(|text| !text.contains('\0'))?;
         self.completed.insert(fragment.transfer_id, Instant::now());
-        if self.completed.len() > MAX_RECENT_TRANSFERS {
-            if let Some(oldest_id) = self
+        if self.completed.len() > MAX_RECENT_TRANSFERS
+            && let Some(oldest_id) = self
                 .completed
                 .iter()
                 .min_by_key(|(_, completed)| **completed)
                 .map(|(id, _)| *id)
-            {
-                self.completed.remove(&oldest_id);
-            }
+        {
+            self.completed.remove(&oldest_id);
         }
         Some(text)
     }

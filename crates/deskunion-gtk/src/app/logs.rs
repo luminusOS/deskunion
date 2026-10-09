@@ -205,10 +205,10 @@ impl LogState {
         self.list_box.append(&label);
         self.entries.push_back(LogEntry { category, label });
 
-        if self.entries.len() > MAX_LOG_ENTRIES {
-            if let Some(old) = self.entries.pop_front() {
-                self.list_box.remove(&old.label);
-            }
+        if self.entries.len() > MAX_LOG_ENTRIES
+            && let Some(old) = self.entries.pop_front()
+        {
+            self.list_box.remove(&old.label);
         }
     }
 

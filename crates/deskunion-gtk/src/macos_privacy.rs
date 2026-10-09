@@ -18,13 +18,13 @@ use gtk::glib;
 // a `Boolean`-returning function as `-> bool` is technically UB if Apple ever
 // returns a non-canonical true value. Keep these as `c_uchar` and normalize.
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn AXIsProcessTrusted() -> c_uchar;
     fn AXIsProcessTrustedWithOptions(options: *const c_void) -> c_uchar;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     static kCFAllocatorDefault: *const c_void;
     static kCFTypeDictionaryKeyCallBacks: *const c_void;
     static kCFTypeDictionaryValueCallBacks: *const c_void;
@@ -42,12 +42,12 @@ extern "C" {
 
 // kAXTrustedCheckOptionPrompt is a CFStringRef exported from ApplicationServices.
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     static kAXTrustedCheckOptionPrompt: *const c_void;
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CGRequestListenEventAccess() -> c_uchar;
     fn CGRequestPostEventAccess() -> c_uchar;
 

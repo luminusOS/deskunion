@@ -216,10 +216,10 @@ async fn create_session(
                 .start(&session, None, start_options)
                 .await?
                 .response()?;
-            if let Some(token) = response.restore_token() {
-                if let Err(error) = write_token(token) {
-                    log::warn!("failed to save InputCapture token: {error}");
-                }
+            if let Some(token) = response.restore_token()
+                && let Err(error) = write_token(token)
+            {
+                log::warn!("failed to save InputCapture token: {error}");
             }
             let clipboard_enabled =
                 clipboard_available(clipboard_requested, response.is_clipboard_enabled());
@@ -603,54 +603,48 @@ async fn do_capture_session(
         let local_read_notify = Arc::new(Notify::new());
         let transfer_slots = Arc::new(Semaphore::new(4));
         let rejection_slots = Arc::new(Semaphore::new(4));
-        if clipboard_active {
-            if let Some(clipboard) = clipboard.clone() {
-                let pending = local_read_pending.clone();
-                let notify = local_read_notify.clone();
-                let local_text = local_text.clone();
-                let clipboard_revision = clipboard_revision.clone();
-                let current_pos = current_pos.clone();
-                let clipboard_event_tx = events.clipboard.events.clone();
-                let cancellation = clipboard_cancellation.child_token();
-                tokio::task::spawn_local(async move {
+        if clipboard_active && let Some(clipboard) = clipboard.clone() {
+            let pending = local_read_pending.clone();
+            let notify = local_read_notify.clone();
+            let local_text = local_text.clone();
+            let clipboard_revision = clipboard_revision.clone();
+            let current_pos = current_pos.clone();
+            let clipboard_event_tx = events.clipboard.events.clone();
+            let cancellation = clipboard_cancellation.child_token();
+            tokio::task::spawn_local(async move {
+                loop {
+                    tokio::select! {
+                        _ = cancellation.cancelled() => break,
+                        _ = notify.notified() => {},
+                    }
                     loop {
-                        tokio::select! {
-                            _ = cancellation.cancelled() => break,
-                            _ = notify.notified() => {},
+                        let request = pending.borrow_mut().take();
+                        let Some((owner_session, mime_type, revision)) = request else {
+                            break;
+                        };
+                        let Some(text) =
+                            read_portal_text(&clipboard, &owner_session, &mime_type, &cancellation)
+                                .await
+                        else {
+                            continue;
+                        };
+                        if clipboard_revision.get() != revision {
+                            continue;
                         }
-                        loop {
-                            let request = pending.borrow_mut().take();
-                            let Some((owner_session, mime_type, revision)) = request else {
-                                break;
-                            };
-                            let Some(text) = read_portal_text(
-                                &clipboard,
-                                &owner_session,
-                                &mime_type,
-                                &cancellation,
-                            )
-                            .await
-                            else {
-                                continue;
-                            };
-                            if clipboard_revision.get() != revision {
-                                continue;
-                            }
-                            *local_text.borrow_mut() = Some(text.clone());
-                            if let Some(pos) = current_pos.get() {
-                                tokio::select! {
-                                    _ = cancellation.cancelled() => break,
-                                    result = clipboard_event_tx.send((pos, text)) => {
-                                        if result.is_err() {
-                                            break;
-                                        }
+                        *local_text.borrow_mut() = Some(text.clone());
+                        if let Some(pos) = current_pos.get() {
+                            tokio::select! {
+                                _ = cancellation.cancelled() => break,
+                                result = clipboard_event_tx.send((pos, text)) => {
+                                    if result.is_err() {
+                                        break;
                                     }
                                 }
                             }
                         }
                     }
-                });
-            }
+                }
+            });
         }
         let set_selection_worker = async {
             loop {
@@ -693,8 +687,8 @@ async fn do_capture_session(
                             let revision = clipboard_revision.get().wrapping_add(1);
                             clipboard_revision.set(revision);
                             let _ = local_text.borrow_mut().take();
-                            if details.session_is_owner() != Some(true) {
-                                if let Some(mime_type) = select_text_mime(details.mime_types()) {
+                            if details.session_is_owner() != Some(true)
+                                && let Some(mime_type) = select_text_mime(details.mime_types()) {
                                     *local_read_pending.borrow_mut() = Some((
                                         owner_session,
                                         mime_type.to_owned(),
@@ -702,7 +696,6 @@ async fn do_capture_session(
                                     ));
                                     local_read_notify.notify_one();
                                 }
-                            }
                         }
                     } else if clipboard_active {
                         log::warn!("clipboard owner stream closed; disabling clipboard sync");
@@ -724,10 +717,10 @@ async fn do_capture_session(
                         let matching_session = format!("{transfer_session:?}") == format!("{session:?}");
                         if clipboard_active && matching_session {
                             let Ok(permit) = transfer_slots.clone().try_acquire_owned() else {
-                                if let (Some(clipboard), Ok(permit)) = (
+                                match (
                                     clipboard.as_ref().cloned(),
                                     rejection_slots.clone().try_acquire_owned(),
-                                ) {
+                                ) { (Some(clipboard), Ok(permit)) => {
                                     let cancellation = clipboard_cancellation.child_token();
                                     tokio::task::spawn_local(async move {
                                         let _permit = permit;
@@ -748,11 +741,11 @@ async fn do_capture_session(
                                             );
                                         }
                                     });
-                                } else {
+                                } _ => {
                                     log::warn!(
                                         "dropping overloaded portal clipboard request without blocking input capture"
                                     );
-                                }
+                                }}
                                 continue;
                             };
                             let supported = matches!(mime_type.as_str(), "text/plain" | "text/plain;charset=utf-8" | "UTF8_STRING");
@@ -816,8 +809,8 @@ async fn do_capture_session(
                         None => {
                             log::warn!("INVALID BARRIER ID: Id {barrier_id} does not exist!");
                             let id = find_corresponding_client(&barriers, activated.cursor_position().expect("no cursor position reported by compositor"));
-                            let pos = *pos_for_barrier_id.get(&id).expect("invalid barrier id");
-                            pos
+
+                            *pos_for_barrier_id.get(&id).expect("invalid barrier id")
                         },
                     };
                     current_pos.replace(Some(pos));

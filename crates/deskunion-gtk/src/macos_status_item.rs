@@ -302,7 +302,7 @@ unsafe fn nsstring(value: &CStr) -> Id {
 }
 
 #[link(name = "objc")]
-extern "C" {
+unsafe extern "C" {
     fn objc_allocateClassPair(superclass: Class, name: *const c_char, extra_bytes: usize) -> Class;
     fn objc_getClass(name: *const c_char) -> Class;
     fn objc_registerClassPair(class: Class);
@@ -311,10 +311,10 @@ extern "C" {
 }
 
 #[link(name = "AppKit", kind = "framework")]
-extern "C" {}
+unsafe extern "C" {}
 
 #[link(name = "objc")]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "objc_msgSend"]
     fn msg_send_id(receiver: Id, selector: Sel) -> Id;
     #[link_name = "objc_msgSend"]

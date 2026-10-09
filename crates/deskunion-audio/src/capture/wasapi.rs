@@ -84,7 +84,7 @@ fn windows_version() -> Result<(u32, u32), AudioError> {
     }
 
     #[link(name = "ntdll")]
-    extern "system" {
+    unsafe extern "system" {
         fn RtlGetVersion(version: *mut OsVersionInfoW) -> i32;
     }
 

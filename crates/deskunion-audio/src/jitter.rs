@@ -234,15 +234,14 @@ impl JitterBuffer {
         }
         self.started = true;
 
-        if self.consecutive_plc > MAX_CONSECUTIVE_PLC {
-            if let Some(&catch_up) = self
+        if self.consecutive_plc > MAX_CONSECUTIVE_PLC
+            && let Some(&catch_up) = self
                 .packets
                 .keys()
                 .min_by_key(|&&seq| seq.wrapping_sub(next))
-            {
-                next = catch_up;
-                self.consecutive_plc = 0;
-            }
+        {
+            next = catch_up;
+            self.consecutive_plc = 0;
         }
 
         // the flag excuses *this* pop, whatever it turns out to be, and

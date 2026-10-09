@@ -219,16 +219,16 @@ impl VirtualInput {
             Event::Keyboard(e) => match e {
                 KeyboardEvent::Key { time, key, state } => {
                     self.keyboard.key(time, key, state as u32);
-                    if let Ok(mut mods) = self.modifiers.lock() {
-                        if mods.update_by_key_event(key, state) {
-                            log::trace!("Key triggers modifier change: {mods:?}");
-                            self.keyboard.modifiers(
-                                mods.mask_pressed().bits(),
-                                0,
-                                mods.mask_locks().bits(),
-                                0,
-                            );
-                        }
+                    if let Ok(mut mods) = self.modifiers.lock()
+                        && mods.update_by_key_event(key, state)
+                    {
+                        log::trace!("Key triggers modifier change: {mods:?}");
+                        self.keyboard.modifiers(
+                            mods.mask_pressed().bits(),
+                            0,
+                            mods.mask_locks().bits(),
+                            0,
+                        );
                     }
                 }
                 KeyboardEvent::Modifiers {
@@ -294,10 +294,9 @@ impl Dispatch<WlSeat, ()> for State {
         if let wl_seat::Event::Capabilities {
             capabilities: WEnum::Value(capabilities),
         } = event
+            && capabilities.contains(wl_seat::Capability::Keyboard)
         {
-            if capabilities.contains(wl_seat::Capability::Keyboard) {
-                seat.get_keyboard(qhandle, ());
-            }
+            seat.get_keyboard(qhandle, ());
         }
     }
 }

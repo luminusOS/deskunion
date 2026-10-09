@@ -395,10 +395,10 @@ impl DeskunionListener {
             };
             if let Some(conn) = conn {
                 let mut packet = [0u8; 5];
-                if let Ok(len) = encode_into(DatagramRef::ClipboardAck(transfer_id), &mut packet) {
-                    if let Err(error) = conn.send(&packet[..len]).await {
-                        log::debug!("clipboard ack to {addr} failed: {error}");
-                    }
+                if let Ok(len) = encode_into(DatagramRef::ClipboardAck(transfer_id), &mut packet)
+                    && let Err(error) = conn.send(&packet[..len]).await
+                {
+                    log::debug!("clipboard ack to {addr} failed: {error}");
                 }
             }
         });

@@ -178,13 +178,12 @@ impl DialTask {
                                         clipboard_text.reset();
                                     }
                                     active_addr = Some(addr);
-                                    if self.clipboard_enabled {
-                                        if let Some(text) = pending_local_clipboard.take() {
+                                    if self.clipboard_enabled
+                                        && let Some(text) = pending_local_clipboard.take() {
                                             last_sent_local_clipboard = Some(text.clone());
                                             self.conn.send_clipboard_text(addr, clipboard_transfer_id, &text);
                                             clipboard_transfer_id = clipboard_transfer_id.wrapping_add(1);
                                         }
-                                    }
                                     self.event_tx.send(EmulationEvent::ReleaseNotify).expect("channel closed");
                                     self.conn.reply(addr, ProtoEvent::Ack(0)).await;
                                     self.event_tx.send(EmulationEvent::Entered{addr, pos: to_ipc_pos(pos), fingerprint}).expect("channel closed");

@@ -165,12 +165,12 @@ fn request_input_control_permission() -> bool {
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CGPreflightPostEventAccess() -> bool;
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
 }
 

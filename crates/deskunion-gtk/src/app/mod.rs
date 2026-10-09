@@ -857,10 +857,10 @@ impl AppModel {
                 }
             }
             ClientRowOutput::PortChange(index, port) => {
-                if let Some(row) = self.client_rows.get(index.current_index()) {
-                    if row.port() != port {
-                        self.request(FrontendRequest::UpdatePort(row.handle(), port));
-                    }
+                if let Some(row) = self.client_rows.get(index.current_index())
+                    && row.port() != port
+                {
+                    self.request(FrontendRequest::UpdatePort(row.handle(), port));
                 }
             }
             ClientRowOutput::PositionChange(index, position) => {

@@ -59,12 +59,16 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     let socket_path = directory.join("deskunion-socket.sock");
     let listener = UnixListener::bind(&socket_path).unwrap();
     let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
-    std::env::set_var("XDG_RUNTIME_DIR", &directory);
+    // SAFETY: this is the only test in the crate that touches `XDG_RUNTIME_DIR`, and no
+    // other thread reads it while the variable is swapped.
+    unsafe { std::env::set_var("XDG_RUNTIME_DIR", &directory) };
     let (_events, writer) = deskunion_ipc::connect().unwrap();
     if let Some(original) = original_runtime_dir {
-        std::env::set_var("XDG_RUNTIME_DIR", original);
+        // SAFETY: as above.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", original) };
     } else {
-        std::env::remove_var("XDG_RUNTIME_DIR");
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
     let (mut connection, _) = listener.accept().unwrap();
     connection

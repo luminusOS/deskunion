@@ -464,15 +464,15 @@ impl State {
         }
 
         // capture modifier keys
-        if let Some(shortcut_inhibit_manager) = &self.globals.shortcut_inhibit_manager {
-            if self.shortcut_inhibitor.is_none() {
-                self.shortcut_inhibitor = Some(shortcut_inhibit_manager.inhibit_shortcuts(
-                    surface,
-                    &self.globals.seat,
-                    qh,
-                    (),
-                ));
-            }
+        if let Some(shortcut_inhibit_manager) = &self.globals.shortcut_inhibit_manager
+            && self.shortcut_inhibitor.is_none()
+        {
+            self.shortcut_inhibitor = Some(shortcut_inhibit_manager.inhibit_shortcuts(
+                surface,
+                &self.globals.seat,
+                qh,
+                (),
+            ));
         }
     }
 
@@ -667,10 +667,10 @@ impl Stream for LayerShellInputCapture {
                 inner.dispatch_events();
 
                 // flush outgoing events
-                if let Err(e) = inner.flush_events() {
-                    if e.kind() != ErrorKind::WouldBlock {
-                        return Poll::Ready(Some(Err(e.into())));
-                    }
+                if let Err(e) = inner.flush_events()
+                    && e.kind() != ErrorKind::WouldBlock
+                {
+                    return Poll::Ready(Some(Err(e.into())));
                 }
 
                 // prepare for the next read
@@ -891,14 +891,13 @@ impl Dispatch<ZwpRelativePointerV1, ()> for State {
             dy_unaccel: dy,
             ..
         } = event
+            && let Some(window) = &app.focused
         {
-            if let Some(window) = &app.focused {
-                let time = ((((utime_hi as u64) << 32) | utime_lo as u64) / 1000) as u32;
-                app.pending_events.push_back((
-                    window.pos,
-                    CaptureEvent::Input(Event::Pointer(PointerEvent::Motion { time, dx, dy })),
-                ));
-            }
+            let time = ((((utime_hi as u64) << 32) | utime_lo as u64) / 1000) as u32;
+            app.pending_events.push_back((
+                window.pos,
+                CaptureEvent::Input(Event::Pointer(PointerEvent::Motion { time, dx, dy })),
+            ));
         }
     }
 }
@@ -912,19 +911,18 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zwlr_layer_surface_v1::Event::Configure { serial, .. } = event {
-            if let Some(window) = app
+        if let zwlr_layer_surface_v1::Event::Configure { serial, .. } = event
+            && let Some(window) = app
                 .active_windows
                 .iter()
                 .find(|w| &w.layer_surface == layer_surface)
-            {
-                // client corresponding to the layer_surface
-                let surface = &window.surface;
-                let buffer = &window.buffer;
-                surface.attach(Some(buffer), 0, 0);
-                layer_surface.ack_configure(serial);
-                surface.commit();
-            }
+        {
+            // client corresponding to the layer_surface
+            let surface = &window.surface;
+            let buffer = &window.buffer;
+            surface.attach(Some(buffer), 0, 0);
+            layer_surface.ack_configure(serial);
+            surface.commit();
         }
     }
 }

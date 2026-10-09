@@ -2,7 +2,7 @@
 name = "deskunion-cli"
 description = "CLI Frontend for deskunion"
 version = "0.3.0"
-edition = "2021"
+edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/luminusOS/deskunion"
 

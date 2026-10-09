@@ -117,10 +117,10 @@ fn supports_config(
 /// supported: the device default if it's f32, otherwise the
 /// highest-rate f32 range on offer.
 fn fallback_config(device: &cpal::Device) -> Option<cpal::StreamConfig> {
-    if let Ok(default) = device.default_output_config() {
-        if default.sample_format() == cpal::SampleFormat::F32 {
-            return Some(default.config());
-        }
+    if let Ok(default) = device.default_output_config()
+        && default.sample_format() == cpal::SampleFormat::F32
+    {
+        return Some(default.config());
     }
     device
         .supported_output_configs()

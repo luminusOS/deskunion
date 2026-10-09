@@ -813,7 +813,7 @@ impl Stream for MacOSInputCapture {
 type CGSConnectionID = u32;
 
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CGSSetConnectionProperty(
         cid: CGSConnectionID,
         targetCID: CGSConnectionID,
@@ -823,7 +823,7 @@ extern "C" {
     fn _CGSDefaultConnection() -> CGSConnectionID;
 }
 
-extern "C" {
+unsafe extern "C" {
     fn CGEventSourceSetLocalEventsSuppressionInterval(
         event_source: CGEventSource,
         seconds: CFTimeInterval,
@@ -850,7 +850,7 @@ extern "C" {
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
 }
 
