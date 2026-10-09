@@ -209,13 +209,24 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     styles.set_color_scheme(adw::ColorScheme::ForceDark);
     settle();
     capture(window, "settings-narrow-dark");
-    for page in [Page::Audio, Page::Logs, Page::Screens] {
+    for page in [Page::Audio, Page::Logs, Page::Settings, Page::Screens] {
         let row = nav.row_at_index(page.nav_index()).unwrap();
         nav.emit_by_name::<()>("row-activated", &[&row]);
         settle();
         assert_eq!(controller.model().current_page.get(), page);
         if page == Page::Audio {
             assert!(controller.widgets().audio_receive_switch.is_visible());
+            assert!(
+                controller
+                    .widgets()
+                    .toast_overlay
+                    .measure(gtk::Orientation::Horizontal, -1)
+                    .0
+                    <= window.width(),
+                "audio page content must fit a narrow window"
+            );
+        }
+        if page == Page::Settings {
             controller.emit(AppMsg::Frontend(FrontendEvent::ClipboardStatus {
                 enabled: true,
                 restart_required: true,
@@ -231,7 +242,7 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
                     .measure(gtk::Orientation::Horizontal, -1)
                     .0
                     <= window.width(),
-                "audio page content must fit a narrow window"
+                "settings page content must fit a narrow window"
             );
         }
         capture(window, &format!("{}-narrow-dark", page.name()));
@@ -272,6 +283,22 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     assert_eq!(controller.model().current_page.get(), Page::Screens);
     controller.emit(AppMsg::SetOperationMode(OperationMode::Server));
     settle();
+    assert_eq!(
+        controller.widgets().screen_arrangement.height_request(),
+        220
+    );
+    controller.emit(AppMsg::ToggleArrangementSize);
+    settle();
+    assert_eq!(
+        controller.widgets().screen_arrangement.height_request(),
+        360
+    );
+    controller.emit(AppMsg::ToggleArrangementSize);
+    settle();
+    assert_eq!(
+        controller.widgets().screen_arrangement.height_request(),
+        220
+    );
     assert!(controller.model().server_connection_error.is_none());
     capture(window, "screens-server-dark");
     assert_eq!(controller.model().status_text(), "Sharing stopped");

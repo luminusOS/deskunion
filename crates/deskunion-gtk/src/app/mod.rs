@@ -134,6 +134,7 @@ pub enum AppMsg {
     AudioBitrateChanged(u32),
     AudioBufferChanged(u32),
     ClipboardEnabledToggled(bool),
+    ToggleArrangementSize,
 
     LogFilterChanged(Option<LogCategory>),
     LogCopy,
@@ -225,6 +226,7 @@ pub struct AppModel {
     audio_playback_devices: Vec<AudioDeviceInfo>,
     clipboard_enabled: bool,
     clipboard_restart_required: bool,
+    arrangement_expanded: bool,
 
     log: LogState,
 
@@ -281,6 +283,7 @@ impl AppModel {
                 hostname: row.hostname().map(str::to_string),
                 position: row.position(),
                 active: row.active(),
+                connected: row.active_addr.is_some(),
                 audio_active: row.audio_active(),
             })
             .collect()
@@ -1168,11 +1171,22 @@ impl SimpleComponent for AppModel {
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Server,
 
+                                            #[wrap(Some)]
+                                            set_header_suffix = &gtk::Button {
+                                                add_css_class: "flat",
+                                                #[watch]
+                                                set_label: if model.arrangement_expanded { "Show less" } else { "Expand" },
+                                                #[watch]
+                                                set_tooltip_text: Some(if model.arrangement_expanded { "Use a compact screen arrangement" } else { "Show a larger screen arrangement" }),
+                                                connect_clicked => AppMsg::ToggleArrangementSize,
+                                            },
+
                                             gtk::Frame {
                                                 add_css_class: "card",
                                                 #[wrap(Some)]
                                                 set_child: screen_arrangement = &ScreenArrangement {
-                                                    set_height_request: 320,
+                                                    #[watch]
+                                                    set_height_request: if model.arrangement_expanded { 360 } else { 220 },
                                                     set_margin_all: 12,
                                                     set_host_label: &model.hostname,
                                                     #[watch]
@@ -1479,28 +1493,6 @@ impl SimpleComponent for AppModel {
                                         },
 
                                         adw::PreferencesGroup {
-                                            set_title: "Clipboard",
-                                            #[watch]
-                                            set_description: Some(if model.clipboard_restart_required {
-                                                "Restart this DeskUnion instance to apply. Enable sharing on both devices."
-                                            } else {
-                                                "Share plain text with the active computer. GNOME asks for permission together with input capture."
-                                            }),
-
-                                            #[name(clipboard_switch)]
-                                            adw::SwitchRow {
-                                                set_title: "Share clipboard text",
-                                                set_subtitle: "Clipboard contents can contain sensitive information",
-                                                #[watch]
-                                                #[block_signal(clipboard_handler)]
-                                                set_active: model.clipboard_enabled,
-                                                connect_active_notify[sender] => move |row| {
-                                                    sender.input(AppMsg::ClipboardEnabledToggled(row.is_active()));
-                                                } @clipboard_handler,
-                                            },
-                                        },
-
-                                        adw::PreferencesGroup {
                                             set_title: "Active streams",
                                             #[local_ref]
                                             audio_stream_list -> gtk::ListBox {
@@ -1747,6 +1739,28 @@ impl SimpleComponent for AppModel {
                                                 set_subtitle_lines: 0,
                                             },
                                         },
+
+                                        adw::PreferencesGroup {
+                                            set_title: "Clipboard",
+                                            #[watch]
+                                            set_description: Some(if model.clipboard_restart_required {
+                                                "Restart DeskUnion to apply this change on both computers."
+                                            } else {
+                                                "Share plain text with a connected computer. Clipboard contents can contain sensitive information."
+                                            }),
+
+                                            #[name(clipboard_switch)]
+                                            adw::SwitchRow {
+                                                set_title: "Share clipboard text",
+                                                set_subtitle: "Enable on both computers; grant clipboard permission on Linux",
+                                                #[watch]
+                                                #[block_signal(clipboard_handler)]
+                                                set_active: model.clipboard_enabled,
+                                                connect_active_notify[sender] => move |row| {
+                                                    sender.input(AppMsg::ClipboardEnabledToggled(row.is_active()));
+                                                } @clipboard_handler,
+                                            },
+                                        },
                                     },
                                 },
                             } -> {
@@ -1900,6 +1914,7 @@ impl SimpleComponent for AppModel {
             audio_playback_devices: Vec::new(),
             clipboard_enabled: true,
             clipboard_restart_required: false,
+            arrangement_expanded: false,
             log: LogState::new(log_list_box.clone()),
             authorization_dialog: None,
             pending_authorization_fingerprint: None,
@@ -2123,6 +2138,9 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::ClipboardEnabledToggled(enabled) => {
                 self.request(FrontendRequest::SetClipboardEnabled(enabled));
+            }
+            AppMsg::ToggleArrangementSize => {
+                self.arrangement_expanded = !self.arrangement_expanded;
             }
 
             AppMsg::LogFilterChanged(filter) => self.log.apply_filter(filter),

@@ -20,6 +20,7 @@ pub struct ScreenItem {
     pub hostname: Option<String>,
     pub position: Position,
     pub active: bool,
+    pub connected: bool,
     pub audio_active: bool,
 }
 

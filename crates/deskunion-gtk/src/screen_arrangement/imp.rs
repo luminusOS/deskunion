@@ -253,7 +253,7 @@ impl WidgetImpl for ScreenArrangement {
                 .map(str::to_string)
                 .unwrap_or_else(|| "Unnamed device".to_string());
 
-            let color = if item.active { &active } else { &muted };
+            let color = if item.connected { &active } else { &muted };
             draw_screen(
                 widget,
                 snapshot,
@@ -262,19 +262,17 @@ impl WidgetImpl for ScreenArrangement {
                 &ScreenStyle {
                     subtitle: if item.audio_active {
                         "Streaming audio"
-                    } else if item.active {
-                        "Connected"
                     } else {
-                        "Not connected"
+                        connection_status(item.active, item.connected)
                     },
                     fill: color,
-                    text: if item.active { &fg } else { &dim },
+                    text: if item.connected { &fg } else { &dim },
                     success: &success,
                     selection: &accent,
                     audio_active: item.audio_active,
                     selected: selected == Some(item.handle),
                     hovered: hovered == Some(i),
-                    active: item.active,
+                    active: item.connected,
                 },
             );
         }
@@ -289,6 +287,16 @@ impl WidgetImpl for ScreenArrangement {
                 "Add a client to arrange it here",
             );
         }
+    }
+}
+
+fn connection_status(active: bool, connected: bool) -> &'static str {
+    if connected {
+        "Connected"
+    } else if active {
+        "Paired · offline"
+    } else {
+        "Paused"
     }
 }
 
@@ -737,5 +745,15 @@ mod tests {
             nearest_position(200.0, 195.0, 400.0, 200.0),
             Position::Bottom
         );
+    }
+
+    #[test]
+    fn paired_device_without_session_is_not_shown_as_connected() {
+        assert_eq!(connection_status(true, false), "Paired · offline");
+    }
+
+    #[test]
+    fn connected_device_is_shown_as_connected() {
+        assert_eq!(connection_status(true, true), "Connected");
     }
 }

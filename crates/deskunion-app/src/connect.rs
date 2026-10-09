@@ -755,10 +755,42 @@ pub(crate) async fn send_audio_batch(
     }
 }
 
+/// Keep audio writes out of the connection receive loop. A saturated audio
+/// send may yield for network backpressure; input still needs the receive
+/// loop to keep polling while that happens.
+#[cfg(feature = "audio")]
+async fn forward_audio_frames(
+    conn: ArcConn,
+    addr: SocketAddr,
+    audio_rx: tokio::sync::mpsc::Receiver<(u32, u32, Vec<u8>)>,
+) {
+    let mut audio_rx = Some(audio_rx);
+    let mut sent_audio_frames = 0u64;
+    send_audio_start(&conn, addr).await;
+    let mut start_retransmit = tokio::time::interval(Duration::from_secs(2));
+    start_retransmit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    start_retransmit.tick().await; // consume the immediate first tick
+    loop {
+        tokio::select! {
+            frame = recv_audio_frame(&mut audio_rx) => match frame {
+                Some(frame) => {
+                    send_audio_batch(&conn, addr, &mut audio_rx, frame, &mut sent_audio_frames).await;
+                }
+                None => break,
+            },
+            _ = start_retransmit.tick() => send_audio_start(&conn, addr).await,
+        }
+    }
+    log::error!(
+        "audio capture for {addr} ended after {sent_audio_frames} frames; no more audio will be sent on this connection"
+    );
+    send_audio_stop(&conn, addr).await;
+}
+
 /// the session loop of the dialed server connection. Audio flows
 /// emulation -> capture (§3.1 of the audio plan): this is the emulation
-/// side, so it's the sender. `audio_sender` is held only to keep the
-/// stream alive for the loop's lifetime — dropping it stops capture.
+/// side, so it's the sender. The audio task keeps its sender alive until
+/// the connection closes — dropping it stops capture.
 async fn server_loop(
     shared: Rc<Shared>,
     addr: SocketAddr,
@@ -771,26 +803,44 @@ async fn server_loop(
     let mut buf = [0u8; MAX_DATAGRAM_SIZE];
 
     let computer_name = local_computer_name();
-    send_computer_name(&conn, computer_name.as_deref()).await;
+
+    // Metadata writes share the DTLS writer with audio. Coalesce periodic
+    // announcements so writer backpressure never pauses incoming input.
+    let (metadata_tx, mut metadata_rx) = tokio::sync::mpsc::channel(1);
+    let metadata_conn = conn.clone();
+    let metadata_name = computer_name.clone();
+    let metadata_task = spawn_local(async move {
+        while metadata_rx.recv().await.is_some() {
+            send_computer_name(&metadata_conn, metadata_name.as_deref()).await;
+        }
+    });
+    let _ = metadata_tx.try_send(());
 
     #[cfg(feature = "audio")]
-    let (audio_sender, mut audio_rx) = match crate::audio::start_sender(&audio) {
-        Some((sender, rx)) => {
-            send_audio_start(&conn, addr).await;
-            (Some(sender), Some(rx))
-        }
+    let (audio_sender, audio_rx) = match crate::audio::start_sender(&audio) {
+        Some((sender, rx)) => (Some(sender), Some(rx)),
         None => (None, None),
     };
-    #[cfg(not(feature = "audio"))]
-    let mut audio_rx: Option<tokio::sync::mpsc::Receiver<(u32, u32, Vec<u8>)>> = None;
+    let mut audio_stopped_rx: Option<tokio::sync::mpsc::Receiver<()>> = None;
+    #[cfg(feature = "audio")]
+    let audio_conn = conn.clone();
+    #[cfg(feature = "audio")]
+    let (audio_stopped_tx, stopped_rx) = tokio::sync::mpsc::channel(1);
+    #[cfg(feature = "audio")]
+    let mut audio_task = audio_sender.zip(audio_rx).map(|(sender, rx)| {
+        audio_stopped_rx = Some(stopped_rx);
+        spawn_local(async move {
+            // Keep capture alive until the connection or its audio task ends.
+            let _audio_sender = sender;
+            forward_audio_frames(audio_conn, addr, rx).await;
+            let _ = audio_stopped_tx.try_send(());
+        })
+    });
 
-    // Retransmit metadata independently of audio (including parked pairs).
-    // UDP can lose the first name or AudioControl::Start announcement.
+    // UDP can lose the first name announcement, including for parked pairs.
     let mut start_retransmit = tokio::time::interval(Duration::from_secs(2));
     start_retransmit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     start_retransmit.tick().await; // consume the immediate first tick
-
-    let mut sent_audio_frames = 0u64;
 
     loop {
         tokio::select! {
@@ -838,39 +888,33 @@ async fn server_loop(
                 }
             }
             _ = start_retransmit.tick() => {
-                send_computer_name(&conn, computer_name.as_deref()).await;
-                #[cfg(feature = "audio")]
-                if audio_sender.is_some() {
-                    send_audio_start(&conn, addr).await;
-                }
+                let _ = metadata_tx.try_send(());
             }
-            // `frame = ...` and not `Some(frame) = ...`: on `None` a
-            // pattern-guarded arm is disabled for the rest of the loop,
-            // so a dead encode thread would leave the session up and
-            // permanently silent with nothing in the log
-            frame = recv_audio_frame(&mut audio_rx) => match frame {
-                Some(frame) => {
-                    send_audio_batch(&conn, addr, &mut audio_rx, frame, &mut sent_audio_frames).await;
+            _ = async {
+                match audio_stopped_rx.as_mut() {
+                    Some(rx) => {
+                        let _ = rx.recv().await;
+                    }
+                    None => std::future::pending().await,
                 }
-                None => {
-                    log::error!(
-                        "audio capture for {addr} ended after {sent_audio_frames} frames; no more audio will be sent on this connection"
-                    );
-                    audio_rx = None;
-                    #[cfg(feature = "audio")]
-                    send_audio_stop(&conn, addr).await;
+            } => {
+                #[cfg(feature = "audio")]
+                {
+                log::error!("audio forwarding task stopped for {addr}; disabling audio retransmission");
+                audio_task = None;
                 }
-            },
+                audio_stopped_rx = None;
+            }
         }
     }
-    log::info!("server disconnected {addr} after sending {sent_audio_frames} audio frames");
-    // best-effort: tell the peer to tear its receiver down; dropping
-    // `audio_sender` at the end of this scope stops the capture
-    // backend and encoder thread with it
     #[cfg(feature = "audio")]
-    if audio_sender.is_some() {
+    if let Some(audio_task) = audio_task {
+        audio_task.abort();
+        let _ = audio_task.await;
         send_audio_stop(&conn, addr).await;
     }
+    metadata_task.abort();
+    let _ = metadata_task.await;
     {
         let mut current = shared.conn.lock().await;
         if matches!(current.as_ref(), Some((a, _)) if *a == addr) {
@@ -969,5 +1013,81 @@ mod test {
             elapsed < Duration::from_millis(10),
             "batching waited {elapsed:?} for frames that had not arrived"
         );
+    }
+
+    #[cfg(feature = "audio")]
+    struct BlockingSendConn {
+        send_started: Arc<tokio::sync::Notify>,
+    }
+
+    #[cfg(feature = "audio")]
+    #[async_trait::async_trait]
+    impl Conn for BlockingSendConn {
+        async fn connect(&self, _addr: SocketAddr) -> webrtc_util::Result<()> {
+            Ok(())
+        }
+        async fn recv(&self, _buf: &mut [u8]) -> webrtc_util::Result<usize> {
+            Ok(1)
+        }
+        async fn recv_from(&self, _buf: &mut [u8]) -> webrtc_util::Result<(usize, SocketAddr)> {
+            std::future::pending().await
+        }
+        async fn send(&self, _buf: &[u8]) -> webrtc_util::Result<usize> {
+            self.send_started.notify_one();
+            std::future::pending().await
+        }
+        async fn send_to(&self, buf: &[u8], _target: SocketAddr) -> webrtc_util::Result<usize> {
+            self.send(buf).await
+        }
+        fn local_addr(&self) -> webrtc_util::Result<SocketAddr> {
+            Ok("127.0.0.1:9".parse().expect("addr"))
+        }
+        fn remote_addr(&self) -> Option<SocketAddr> {
+            None
+        }
+        async fn close(&self) -> webrtc_util::Result<()> {
+            Ok(())
+        }
+        fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+            self
+        }
+    }
+
+    #[cfg(feature = "audio")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocked_audio_send_allows_concurrent_connection_receive() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let send_started = Arc::new(tokio::sync::Notify::new());
+                let conn: ArcConn = Arc::new(BlockingSendConn {
+                    send_started: send_started.clone(),
+                });
+                let (audio_tx, audio_rx) = tokio::sync::mpsc::channel(1);
+                audio_tx
+                    .send((0, 0, vec![0u8; 40]))
+                    .await
+                    .expect("queue audio frame");
+                let audio_task = spawn_local(forward_audio_frames(
+                    conn.clone(),
+                    "127.0.0.1:4242".parse().expect("addr"),
+                    audio_rx,
+                ));
+                tokio::time::timeout(Duration::from_millis(10), send_started.notified())
+                    .await
+                    .expect("audio task did not reach its blocked send");
+
+                let receive_task = spawn_local(async move {
+                    let mut buf = [0; 1];
+                    conn.recv(&mut buf).await
+                });
+                let received = tokio::time::timeout(Duration::from_millis(10), receive_task)
+                    .await
+                    .expect("blocked audio send starved connection receive")
+                    .expect("connection receive task was cancelled")
+                    .expect("connection receive failed");
+                assert_eq!(received, 1);
+                audio_task.abort();
+            })
+            .await;
     }
 }
