@@ -138,6 +138,7 @@ impl Capture {
             next_clipboard_transfer_id: 0,
             clipboard_assembler: Default::default(),
             pending_local_clipboard: None,
+            early_local_clipboard: None,
             last_sent_clipboard_text: None,
             rejected_connections: Default::default(),
             request_rx,
@@ -275,6 +276,9 @@ struct CaptureTask {
     next_clipboard_transfer_id: u32,
     clipboard_assembler: crate::clipboard::ClipboardTextAssembler,
     pending_local_clipboard: Option<String>,
+    /// local clipboard that arrived before this position's `Begin` was
+    /// processed (the two travel on separate channels)
+    early_local_clipboard: Option<(input_capture::Position, String)>,
     last_sent_clipboard_text: Option<String>,
     /// debounce for unauthorized connection attempts
     rejected_connections: HashMap<String, Instant>,
@@ -645,14 +649,17 @@ impl CaptureTask {
                 clipboard = next_clipboard_event(clipboard_events), if self.clipboard_enabled => {
                     match clipboard {
                         Some((pos, text)) => {
-                            if let Some(handle) = self.active_client
-                                && self.get_pos(handle) == pos {
+                            log::debug!("local clipboard text ready ({} bytes) for {pos:?}", text.len());
+                            match self.active_client {
+                                Some(handle) if self.get_pos(handle) == pos => {
                                     if self.state == State::Sending {
                                         self.send_clipboard_text(handle, text);
                                     } else {
                                         self.pending_local_clipboard = Some(text);
                                     }
                                 }
+                                _ => self.early_local_clipboard = Some((pos, text)),
+                            }
                         }
                         None => {
                             self.clipboard_enabled = false;
@@ -692,10 +699,17 @@ impl CaptureTask {
                         ListenEvent::ClipboardText { addr, fragment, payload } => {
                             let active_addr = self.active_client
                                 .and_then(|handle| self.client_manager.active_addr(handle));
+                            if !(self.clipboard_enabled && active_addr == Some(addr)) {
+                                log::debug!(
+                                    "ignoring clipboard text from {addr}: enabled={}, active={active_addr:?}",
+                                    self.clipboard_enabled
+                                );
+                            }
                             if self.clipboard_enabled && active_addr == Some(addr) {
                                 let transfer_id = fragment.transfer_id;
                                 let is_last_fragment = fragment.index + 1 == fragment.count;
                                 if let Some(text) = self.clipboard_assembler.push(&fragment, &payload) {
+                                    log::debug!("applying clipboard text from {addr} ({} bytes)", text.len());
                                     capture.set_clipboard_text(text)?;
                                 }
                                 if is_last_fragment
@@ -783,6 +797,11 @@ impl CaptureTask {
             self.clipboard_assembler.reset();
             self.state = State::WaitingForAck;
             self.active_client.replace(handle);
+            if let Some((pos, text)) = self.early_local_clipboard.take()
+                && pos == self.get_pos(handle)
+            {
+                self.pending_local_clipboard = Some(text);
+            }
             self.event_tx
                 .send(ICaptureEvent::ClientEntered(handle))
                 .expect("channel closed");
@@ -808,6 +827,7 @@ impl CaptureTask {
     }
 
     async fn release_capture(&mut self, capture: &mut InputCapture) -> Result<(), CaptureError> {
+        self.early_local_clipboard = None;
         self.pending_local_clipboard = None;
         self.last_sent_clipboard_text = None;
         self.clipboard_assembler.reset();
@@ -867,6 +887,7 @@ impl CaptureTask {
             return;
         };
         self.last_sent_clipboard_text = Some(text.clone());
+        log::debug!("sending clipboard text to {addr} ({} bytes)", text.len());
         let transfer_id = self.next_clipboard_transfer_id;
         self.next_clipboard_transfer_id = self.next_clipboard_transfer_id.wrapping_add(1);
         if let Some(listener) = &self.listener {

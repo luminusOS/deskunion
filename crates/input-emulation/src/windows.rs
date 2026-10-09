@@ -26,7 +26,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT_0, KEYEVENTF_EXTENDEDKEY, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, SendInput,
 };
-use windows::Win32::UI::WindowsAndMessaging::{XBUTTON1, XBUTTON2};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE, XBUTTON1, XBUTTON2,
+};
 use windows::Win32::{
     Foundation::{GlobalFree, HANDLE},
     System::{
@@ -38,6 +40,7 @@ use windows::Win32::{
         Ole::CF_UNICODETEXT,
     },
 };
+use windows::core::w;
 
 use super::{Emulation, EmulationHandle};
 
@@ -66,6 +69,7 @@ impl WindowsEmulation {
             let notify = clipboard_notify.clone();
             thread::spawn(move || {
                 let mut last_sequence = 0;
+                let mut failed_reads = 0u8;
                 while !stop.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(150));
                     // SAFETY: `GetClipboardSequenceNumber` takes no arguments and has no
@@ -74,8 +78,20 @@ impl WindowsEmulation {
                     if sequence == last_sequence {
                         continue;
                     }
+                    let Some(text) = read_clipboard_text() else {
+                        // the owner may still hold the clipboard right after a
+                        // copy: retry on the next tick instead of losing it
+                        failed_reads += 1;
+                        if failed_reads >= 10 {
+                            last_sequence = sequence;
+                            failed_reads = 0;
+                        }
+                        continue;
+                    };
                     last_sequence = sequence;
-                    if let Some(text) = read_clipboard_text() {
+                    failed_reads = 0;
+                    {
+                        log::debug!("local clipboard changed ({} bytes)", text.len());
                         let is_remote_echo = suppressed
                             .lock()
                             .ok()
@@ -244,7 +260,48 @@ fn write_clipboard_text(text: &str) -> io::Result<()> {
     // bytes, so copying `wide.len()` u16s into the locked pointer is in bounds, and it is
     // freed only on paths where `SetClipboardData` did not take ownership.
     unsafe {
-        OpenClipboard(None).map_err(|error| io::Error::other(error.to_string()))?;
+        // `OpenClipboard(NULL)` makes `EmptyClipboard` leave the clipboard
+        // ownerless, after which `SetClipboardData` fails: own it through a
+        // throwaway message-only window
+        let owner = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!(""),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            None,
+            None,
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        let result = write_clipboard_text_owned(owner, &wide, bytes);
+        let _ = DestroyWindow(owner);
+        result
+    }
+}
+
+/// # Safety
+/// `owner` must be a valid window handle created on the calling thread.
+unsafe fn write_clipboard_text_owned(
+    owner: windows::Win32::Foundation::HWND,
+    wide: &[u16],
+    bytes: usize,
+) -> io::Result<()> {
+    // SAFETY: see `write_clipboard_text`.
+    unsafe {
+        let mut opened = OpenClipboard(Some(owner));
+        for _ in 0..10 {
+            if opened.is_ok() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+            opened = OpenClipboard(Some(owner));
+        }
+        opened.map_err(|error| io::Error::other(error.to_string()))?;
         let close = ClipboardCloseGuard;
         EmptyClipboard().map_err(|error| io::Error::other(error.to_string()))?;
         let memory = GlobalAlloc(GMEM_MOVEABLE, bytes)

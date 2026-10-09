@@ -219,6 +219,7 @@ impl DialTask {
                             let transfer_id = fragment.transfer_id;
                             let is_last_fragment = fragment.index + 1 == fragment.count;
                             if let Some(text) = clipboard_text.push(&fragment, &payload) {
+                                log::debug!("applying clipboard text from {addr} ({} bytes)", text.len());
                                 self.emulation_proxy.set_clipboard_text(addr, text);
                             }
                             if is_last_fragment && clipboard_text.is_completed(transfer_id) {
@@ -249,6 +250,7 @@ impl DialTask {
                 }},
                 event = self.emulation_proxy.event() => match event {
                     EmulationEvent::ClipboardText(text) => {
+                        log::debug!("local clipboard text ready ({} bytes), active={active_addr:?}", text.len());
                         if self.clipboard_enabled {
                             if let Some(addr) = active_addr {
                                 if last_sent_local_clipboard.as_deref() != Some(text.as_str()) {
