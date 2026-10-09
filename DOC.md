@@ -1,5 +1,9 @@
 # General Software Architecture
 
+## Release 0.2.2
+
+Improves input-capture permission handling, audio test reliability, and cross-platform build support.
+
 ## Release 0.2.1
 
 Clipboard sharing is on by default, clients announce their computer name, and the arrangement canvas is reworked.

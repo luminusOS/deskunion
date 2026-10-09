@@ -14,6 +14,11 @@
   <launchable type="desktop-id">io.github.luminusos.DeskUnion.desktop</launchable>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.2" date="2026-10-09">
+      <description>
+        <p>Improves input-capture permission handling, audio test reliability, and cross-platform build support.</p>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-10-08">
       <description>
         <p>Clipboard sharing is now enabled by default and asks permission together with input capture. Clients announce their computer name to the server. The Connections page has a reworked screen arrangement canvas with keyboard support.</p>
