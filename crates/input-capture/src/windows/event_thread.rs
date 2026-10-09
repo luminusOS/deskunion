@@ -80,9 +80,9 @@ impl EventThread {
         let id = self.thread_id;
         // SAFETY: plain Win32 call with by-value arguments; a stale thread id makes it
         // return an error, which is logged below.
-        if let Err(error) =
-            unsafe { PostThreadMessageW(id, WM_USER, WPARAM(event_type as usize), LPARAM(0)) }
-        {
+        let result =
+            unsafe { PostThreadMessageW(id, WM_USER, WPARAM(event_type as usize), LPARAM(0)) };
+        if let Err(error) = result {
             log::warn!("failed to signal Windows capture thread: {error}");
         }
     }
