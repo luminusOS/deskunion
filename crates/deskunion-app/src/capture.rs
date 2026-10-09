@@ -243,7 +243,7 @@ impl Capture {
 /// time since the previous execution is at least `$dur`.
 /// `$prev` is used to keep track of this timestamp
 macro_rules! debounce {
-    ($prev:ident, $dur:expr, $st:stmt) => {
+    ($prev:ident, $dur:expr_2021, $st:stmt) => {
         let exec = match $prev.get() {
             None => true,
             Some(instant) if instant.elapsed() > $dur => true,
@@ -629,15 +629,14 @@ impl CaptureTask {
                 clipboard = next_clipboard_event(clipboard_events), if self.clipboard_enabled => {
                     match clipboard {
                         Some((pos, text)) => {
-                            if let Some(handle) = self.active_client {
-                                if self.get_pos(handle) == pos {
+                            if let Some(handle) = self.active_client
+                                && self.get_pos(handle) == pos {
                                     if self.state == State::Sending {
                                         self.send_clipboard_text(handle, text);
                                     } else {
                                         self.pending_local_clipboard = Some(text);
                                     }
                                 }
-                            }
                         }
                         None => {
                             self.clipboard_enabled = false;
@@ -659,11 +658,10 @@ impl CaptureTask {
                             }) {
                                 log::info!("client @ {addr} acknowledged the connection!");
                                 self.state = State::Sending;
-                                if let Some(handle) = self.active_client {
-                                    if let Some(text) = self.pending_local_clipboard.take() {
+                                if let Some(handle) = self.active_client
+                                    && let Some(text) = self.pending_local_clipboard.take() {
                                         self.send_clipboard_text(handle, text);
                                     }
-                                }
                             }
                         }
                         // client left its device region
@@ -686,11 +684,9 @@ impl CaptureTask {
                                 }
                                 if is_last_fragment
                                     && self.clipboard_assembler.is_completed(transfer_id)
-                                {
-                                    if let Some(listener) = &self.listener {
+                                    && let Some(listener) = &self.listener {
                                         listener.send_clipboard_ack(addr, transfer_id);
                                     }
-                                }
                             }
                         }
                         event => self.handle_listen_event(event).await,

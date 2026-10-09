@@ -82,10 +82,10 @@ impl DnsTask {
 
             /* abort previous dns task */
             let previous_task = self.active_tasks.remove(&handle);
-            if let Some(task) = previous_task {
-                if !task.is_finished() {
-                    task.abort();
-                }
+            if let Some(task) = previous_task
+                && !task.is_finished()
+            {
+                task.abort();
             }
 
             self.event_tx

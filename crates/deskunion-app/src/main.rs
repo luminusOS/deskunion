@@ -107,6 +107,8 @@ fn run() -> Result<(), DeskunionError> {
                 {
                     // on unix we give the service a chance to terminate gracefully
                     let pid = service.id() as libc::pid_t;
+                    // SAFETY: `kill` only sends a signal; `pid` is our own live child
+                    // (not yet waited on), so it cannot name a recycled process.
                     unsafe {
                         libc::kill(pid, libc::SIGINT);
                     }

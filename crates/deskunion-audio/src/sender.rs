@@ -194,8 +194,12 @@ mod test {
         .expect("start sender");
 
         // DummyCapture emits 20ms chunks of silence; give the encode
-        // thread real wall-clock time to accumulate a full frame.
-        thread::sleep(Duration::from_millis(300));
+        // thread real wall-clock time to accumulate a full frame; slow CI
+        // runners need more than a fixed 300 ms.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while frames.lock().expect("lock").is_empty() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
         sender.stop();
 
         let got = frames.lock().expect("lock");

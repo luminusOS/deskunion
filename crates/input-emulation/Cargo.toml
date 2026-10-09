@@ -2,7 +2,7 @@
 name = "input-emulation"
 description = "cross-platform input emulation library used by deskunion"
 version = "0.4.0"
-edition = "2021"
+edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/luminusOS/deskunion"
 
@@ -79,3 +79,6 @@ wlroots = [
 x11 = ["dep:x11"]
 remote_desktop_portal = ["dep:ashpd"]
 libei = ["dep:reis", "dep:ashpd"]
+
+[lints]
+workspace = true

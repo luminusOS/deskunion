@@ -1,3 +1,4 @@
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(super) fn supports_process_loopback(major_version: u32, build_number: u32) -> bool {
     major_version > 10 || (major_version == 10 && build_number >= 20_348)
 }

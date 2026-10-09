@@ -39,6 +39,9 @@ pub fn setup(app: &adw::Application, window: &adw::ApplicationWindow) {
             return;
         }
 
+        // SAFETY: runs on the GTK main thread (AppKit requires it); every Objective-C
+        // receiver is a class or an object returned by AppKit and null-checked, and each
+        // `msg_send_*` declaration matches the argument and return types of its selector.
         unsafe {
             let hold = app.hold();
 
@@ -95,93 +98,125 @@ pub fn setup(app: &adw::Application, window: &adw::ApplicationWindow) {
 // auto-tints the glyph to match the menu bar in light and dark modes.
 // Falls back to the full-color icns, then to "LM" text.
 unsafe fn set_button_image(button: Id) {
-    if let Some(image) = load_menubar_template() {
-        msg_send_void_bool(image, sel(c"setTemplate:"), 1);
-        msg_send_void_id(button, sel(c"setImage:"), image);
-        return;
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe {
+        if let Some(image) = load_menubar_template() {
+            msg_send_void_bool(image, sel(c"setTemplate:"), 1);
+            msg_send_void_id(button, sel(c"setImage:"), image);
+            return;
+        }
+        if let Some(image) = load_app_icon() {
+            msg_send_void_id(button, sel(c"setImage:"), image);
+            return;
+        }
+        log::warn!("no menu bar image available; falling back to text title");
+        msg_send_void_id(button, sel(c"setTitle:"), nsstring(c"LM"));
     }
-    if let Some(image) = load_app_icon() {
-        msg_send_void_id(button, sel(c"setImage:"), image);
-        return;
-    }
-    log::warn!("no menu bar image available; falling back to text title");
-    msg_send_void_id(button, sel(c"setTitle:"), nsstring(c"LM"));
 }
 
 unsafe fn load_menubar_template() -> Option<Id> {
-    load_resource_image(c"menubar-template", c"png", MENUBAR_ICON_SIZE)
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe { load_resource_image(c"menubar-template", c"png", MENUBAR_ICON_SIZE) }
 }
 
 unsafe fn load_app_icon() -> Option<Id> {
-    load_resource_image(c"icon", c"icns", MENUBAR_ICON_SIZE)
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe { load_resource_image(c"icon", c"icns", MENUBAR_ICON_SIZE) }
 }
 
 unsafe fn load_resource_image(name: &CStr, ext: &CStr, size_pt: c_double) -> Option<Id> {
-    let bundle = msg_send_id(class(c"NSBundle"), sel(c"mainBundle"));
-    if bundle.is_null() {
-        return None;
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe {
+        let bundle = msg_send_id(class(c"NSBundle"), sel(c"mainBundle"));
+        if bundle.is_null() {
+            return None;
+        }
+        let path = msg_send_id_id_id(
+            bundle,
+            sel(c"pathForResource:ofType:"),
+            nsstring(name),
+            nsstring(ext),
+        );
+        if path.is_null() {
+            return None;
+        }
+        let image = msg_send_id_id(
+            msg_send_id(class(c"NSImage"), sel(c"alloc")),
+            sel(c"initWithContentsOfFile:"),
+            path,
+        );
+        if image.is_null() {
+            return None;
+        }
+        // Render at menu bar height; 22pt is the full status bar icon height.
+        msg_send_void_size(image, sel(c"setSize:"), size_pt, size_pt);
+        Some(image)
     }
-    let path = msg_send_id_id_id(
-        bundle,
-        sel(c"pathForResource:ofType:"),
-        nsstring(name),
-        nsstring(ext),
-    );
-    if path.is_null() {
-        return None;
-    }
-    let image = msg_send_id_id(
-        msg_send_id(class(c"NSImage"), sel(c"alloc")),
-        sel(c"initWithContentsOfFile:"),
-        path,
-    );
-    if image.is_null() {
-        return None;
-    }
-    // Render at menu bar height; 22pt is the full status bar icon height.
-    msg_send_void_size(image, sel(c"setSize:"), size_pt, size_pt);
-    Some(image)
 }
 
 const MENUBAR_ICON_SIZE: c_double = 22.0;
 
 unsafe fn menu(items: &[Id]) -> Id {
-    let menu = msg_send_id(msg_send_id(class(c"NSMenu"), sel(c"alloc")), sel(c"init"));
-    for item in items {
-        msg_send_void_id(menu, sel(c"addItem:"), *item);
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe {
+        let menu = msg_send_id(msg_send_id(class(c"NSMenu"), sel(c"alloc")), sel(c"init"));
+        for item in items {
+            msg_send_void_id(menu, sel(c"addItem:"), *item);
+        }
+        menu
     }
-    menu
 }
 
 unsafe fn menu_item(title: &CStr, action: &CStr) -> Id {
-    msg_send_id_id_sel_id(
-        msg_send_id(class(c"NSMenuItem"), sel(c"alloc")),
-        sel(c"initWithTitle:action:keyEquivalent:"),
-        nsstring(title),
-        sel(action),
-        nsstring(c""),
-    )
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe {
+        msg_send_id_id_sel_id(
+            msg_send_id(class(c"NSMenuItem"), sel(c"alloc")),
+            sel(c"initWithTitle:action:keyEquivalent:"),
+            nsstring(title),
+            sel(action),
+            nsstring(c""),
+        )
+    }
 }
 
 unsafe fn separator_item() -> Id {
-    msg_send_id(class(c"NSMenuItem"), sel(c"separatorItem"))
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe { msg_send_id(class(c"NSMenuItem"), sel(c"separatorItem")) }
 }
 
 unsafe fn menu_items(menu: Id) -> Vec<Id> {
-    let count = msg_send_usize(menu, sel(c"numberOfItems"));
-    (0..count)
-        .map(|idx| msg_send_id_usize(menu, sel(c"itemAtIndex:"), idx))
-        .collect()
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe {
+        let count = msg_send_usize(menu, sel(c"numberOfItems"));
+        (0..count)
+            .map(|idx| msg_send_id_usize(menu, sel(c"itemAtIndex:"), idx))
+            .collect()
+    }
 }
 
 unsafe fn new_delegate() -> Id {
-    let class = delegate_class();
-    msg_send_id(msg_send_id(class, sel(c"alloc")), sel(c"init"))
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe {
+        let class = delegate_class();
+        msg_send_id(msg_send_id(class, sel(c"alloc")), sel(c"init"))
+    }
 }
 
 fn delegate_class() -> Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
 
+    // SAFETY: the class pair is allocated and registered once (`OnceLock`) under a unique
+    // name; the method IMPs are `extern "C"` fns whose signatures match their type encodings.
     *CLASS.get_or_init(|| unsafe {
         let superclass = class(c"NSObject");
         let class_name = CString::new("DeskunionStatusItemDelegate").unwrap();
@@ -232,6 +267,8 @@ fn present_window() {
             window.present();
         }
 
+        // SAFETY: `NSApplication` is a valid class and `sharedApplication` returns the live
+        // singleton; `activateIgnoringOtherApps:` takes one BOOL.
         unsafe {
             let ns_app = msg_send_id(class(c"NSApplication"), sel(c"sharedApplication"));
             msg_send_void_bool(ns_app, sel(c"activateIgnoringOtherApps:"), 1);
@@ -247,25 +284,29 @@ fn present_window() {
 // re-present the window when the user double-clicks the .app while
 // we're already running.
 unsafe fn install_reopen_handler(delegate: Id) {
-    const K_CORE_EVENT_CLASS: c_uint = 0x6165_7674; // 'aevt'
-    const K_AE_REOPEN_APPLICATION: c_uint = 0x7261_7070; // 'rapp'
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe {
+        const K_CORE_EVENT_CLASS: c_uint = 0x6165_7674; // 'aevt'
+        const K_AE_REOPEN_APPLICATION: c_uint = 0x7261_7070; // 'rapp'
 
-    let manager = msg_send_id(
-        class(c"NSAppleEventManager"),
-        sel(c"sharedAppleEventManager"),
-    );
-    if manager.is_null() {
-        log::warn!("NSAppleEventManager unavailable; re-launch will not re-open window");
-        return;
+        let manager = msg_send_id(
+            class(c"NSAppleEventManager"),
+            sel(c"sharedAppleEventManager"),
+        );
+        if manager.is_null() {
+            log::warn!("NSAppleEventManager unavailable; re-launch will not re-open window");
+            return;
+        }
+        msg_send_void_id_sel_u32_u32(
+            manager,
+            sel(c"setEventHandler:andSelector:forEventClass:andEventID:"),
+            delegate,
+            sel(c"handleReopenEvent:withReplyEvent:"),
+            K_CORE_EVENT_CLASS,
+            K_AE_REOPEN_APPLICATION,
+        );
     }
-    msg_send_void_id_sel_u32_u32(
-        manager,
-        sel(c"setEventHandler:andSelector:forEventClass:andEventID:"),
-        delegate,
-        sel(c"handleReopenEvent:withReplyEvent:"),
-        K_CORE_EVENT_CLASS,
-        K_AE_REOPEN_APPLICATION,
-    );
 }
 
 extern "C" fn quit_deskunion(_this: Id, _cmd: Sel, _sender: Id) {
@@ -277,25 +318,35 @@ extern "C" fn quit_deskunion(_this: Id, _cmd: Sel, _sender: Id) {
 }
 
 unsafe fn class(name: &CStr) -> Class {
-    let class = objc_getClass(name.as_ptr());
-    assert!(!class.is_null(), "missing Objective-C class {name:?}");
-    class
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe {
+        let class = objc_getClass(name.as_ptr());
+        assert!(!class.is_null(), "missing Objective-C class {name:?}");
+        class
+    }
 }
 
 unsafe fn sel(name: &CStr) -> Sel {
-    sel_registerName(name.as_ptr())
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe { sel_registerName(name.as_ptr()) }
 }
 
 unsafe fn nsstring(value: &CStr) -> Id {
-    msg_send_id_ptr(
-        class(c"NSString"),
-        sel(c"stringWithUTF8String:"),
-        value.as_ptr(),
-    )
+    // SAFETY: this function's contract is that the caller passes valid Objective-C objects,
+    // classes and selectors; every call below forwards them to AppKit unchanged.
+    unsafe {
+        msg_send_id_ptr(
+            class(c"NSString"),
+            sel(c"stringWithUTF8String:"),
+            value.as_ptr(),
+        )
+    }
 }
 
 #[link(name = "objc")]
-extern "C" {
+unsafe extern "C" {
     fn objc_allocateClassPair(superclass: Class, name: *const c_char, extra_bytes: usize) -> Class;
     fn objc_getClass(name: *const c_char) -> Class;
     fn objc_registerClassPair(class: Class);
@@ -304,10 +355,10 @@ extern "C" {
 }
 
 #[link(name = "AppKit", kind = "framework")]
-extern "C" {}
+unsafe extern "C" {}
 
 #[link(name = "objc")]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "objc_msgSend"]
     fn msg_send_id(receiver: Id, selector: Sel) -> Id;
     #[link_name = "objc_msgSend"]

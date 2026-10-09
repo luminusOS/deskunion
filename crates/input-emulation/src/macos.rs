@@ -57,6 +57,10 @@ fn drag_event_type(button: u32) -> CGEventType {
     }
 }
 
+// SAFETY: only needed to satisfy the `Emulation: Send` bound. The value is created and
+// driven inside a `spawn_local` task on a current-thread runtime and never moves threads.
+// The repeat task shares an `Rc<Cell<XMods>>` clone with it, and `Rc` is not thread-safe,
+// so sending the value elsewhere while a repeat task is alive would be unsound.
 unsafe impl Send for MacOSEmulation {}
 
 impl MacOSEmulation {
@@ -151,20 +155,22 @@ fn request_macos_emulation_permissions() -> Result<(), MacOSEmulationCreationErr
 fn request_accessibility_permission() -> bool {
     // Silent check. The GUI owns the one-time user-visible prompt at
     // startup (see deskunion_gtk::macos_privacy).
+    // SAFETY: `AXIsProcessTrusted` takes no arguments and has no preconditions.
     unsafe { AXIsProcessTrusted() }
 }
 
 fn request_input_control_permission() -> bool {
+    // SAFETY: `CGPreflightPostEventAccess` takes no arguments and has no preconditions.
     unsafe { CGPreflightPostEventAccess() }
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CGPreflightPostEventAccess() -> bool;
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
 }
 
@@ -219,6 +225,8 @@ fn get_display_at_point(x: CGFloat, y: CGFloat) -> Option<CGDirectDisplayID> {
     let mut display_count: u32 = 0;
     let rect = CGRect::new(&CGPoint::new(x, y), &CGSize::new(0.0, 0.0));
 
+    // SAFETY: the call writes at most 1 entry (the max-displays argument) into `displays`,
+    // which holds 16, and `display_count` is a valid out-pointer for the call.
     let error = unsafe {
         CGGetDisplaysWithRect(
             rect,
@@ -242,6 +250,8 @@ fn get_display_at_point(x: CGFloat, y: CGFloat) -> Option<CGDirectDisplayID> {
 }
 
 fn get_display_bounds(display: CGDirectDisplayID) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
+    // SAFETY: `CGDisplayBounds` takes a display id by value and returns a rect; an unknown
+    // id yields an empty rect rather than undefined behaviour.
     unsafe {
         let bounds = CGDisplayBounds(display);
         let min_x = bounds.origin.x;

@@ -380,7 +380,7 @@ impl AppModel {
         // flow, so it must stay visible regardless of Start/Stop intent
         #[cfg(target_os = "macos")]
         {
-            return self.capture_required() && !self.capture_active;
+            self.capture_required() && !self.capture_active
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -857,10 +857,10 @@ impl AppModel {
                 }
             }
             ClientRowOutput::PortChange(index, port) => {
-                if let Some(row) = self.client_rows.get(index.current_index()) {
-                    if row.port() != port {
-                        self.request(FrontendRequest::UpdatePort(row.handle(), port));
-                    }
+                if let Some(row) = self.client_rows.get(index.current_index())
+                    && row.port() != port
+                {
+                    self.request(FrontendRequest::UpdatePort(row.handle(), port));
                 }
             }
             ClientRowOutput::PositionChange(index, position) => {
@@ -2066,7 +2066,6 @@ impl SimpleComponent for AppModel {
                         return;
                     }
                     macos_privacy::open_accessibility_settings();
-                    return;
                 }
                 #[cfg(not(target_os = "macos"))]
                 self.request(FrontendRequest::EnableCapture);

@@ -1,6 +1,6 @@
 use ashpd::{
     desktop::{
-        Session,
+        PersistMode, Session,
         clipboard::{Clipboard, RequestClipboardOptions, SetSelectionOptions},
         input_capture::{
             Activated, ActivatedBarrier, Barrier, BarrierID, Capabilities, CreateSession2Options,
@@ -206,11 +206,21 @@ async fn create_session(
             } else {
                 false
             };
-            let start_options = StartOptions::default().set_capabilities(requested_capabilities());
+            // Persist the grant so the portal can offer "remember" and skip
+            // the prompt on later launches (the token is single-use).
+            let start_options = StartOptions::default()
+                .set_capabilities(requested_capabilities())
+                .set_persist_mode(PersistMode::ExplicitlyRevoked)
+                .set_restore_token(read_token());
             let response = input_capture
                 .start(&session, None, start_options)
                 .await?
                 .response()?;
+            if let Some(token) = response.restore_token()
+                && let Err(error) = write_token(token)
+            {
+                log::warn!("failed to save InputCapture token: {error}");
+            }
             let clipboard_enabled =
                 clipboard_available(clipboard_requested, response.is_clipboard_enabled());
             if clipboard_requested && !clipboard_enabled {
@@ -226,6 +236,28 @@ async fn create_session(
         }
         Err(error) => Err(error),
     }
+}
+
+fn token_path() -> std::path::PathBuf {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+        });
+    cache.join("deskunion").join("input-capture.token")
+}
+
+fn read_token() -> Option<String> {
+    let token = std::fs::read_to_string(token_path()).ok()?;
+    Some(token.trim().to_string()).filter(|token| !token.is_empty())
+}
+
+fn write_token(token: &str) -> io::Result<()> {
+    let path = token_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, token)
 }
 
 fn supports_create_session2(version: u32) -> bool {
@@ -321,6 +353,8 @@ impl LibeiInputCapture {
     ) -> std::result::Result<Self, LibeiCaptureCreationError> {
         let input_capture = Box::pin(InputCapture::new().await?);
         let input_capture_ptr = input_capture.as_ref().get_ref() as *const InputCapture;
+        // SAFETY: the pointer targets the pinned box held in `input_capture`, which is
+        // alive and not moved for the duration of this call.
         let first_session =
             Some(create_session(unsafe { &*input_capture_ptr }, clipboard_enabled).await?);
 
@@ -373,7 +407,8 @@ async fn do_capture(
     mut clipboard: ClipboardCapture,
     cancellation_token: CancellationToken,
 ) -> Result<(), CaptureError> {
-    /* safety: libei_task does not outlive Self */
+    // SAFETY: the pointer targets the pinned box in `LibeiInputCapture::input_capture`.
+    // This task is awaited in `terminate` or aborted in `Drop` before that box is freed.
     let input_capture = unsafe { &*input_capture };
     let mut active_clients: Vec<Position> = vec![];
     let mut next_barrier_id = NonZeroU32::new(1).expect("id must be non-zero");
@@ -568,54 +603,48 @@ async fn do_capture_session(
         let local_read_notify = Arc::new(Notify::new());
         let transfer_slots = Arc::new(Semaphore::new(4));
         let rejection_slots = Arc::new(Semaphore::new(4));
-        if clipboard_active {
-            if let Some(clipboard) = clipboard.clone() {
-                let pending = local_read_pending.clone();
-                let notify = local_read_notify.clone();
-                let local_text = local_text.clone();
-                let clipboard_revision = clipboard_revision.clone();
-                let current_pos = current_pos.clone();
-                let clipboard_event_tx = events.clipboard.events.clone();
-                let cancellation = clipboard_cancellation.child_token();
-                tokio::task::spawn_local(async move {
+        if clipboard_active && let Some(clipboard) = clipboard.clone() {
+            let pending = local_read_pending.clone();
+            let notify = local_read_notify.clone();
+            let local_text = local_text.clone();
+            let clipboard_revision = clipboard_revision.clone();
+            let current_pos = current_pos.clone();
+            let clipboard_event_tx = events.clipboard.events.clone();
+            let cancellation = clipboard_cancellation.child_token();
+            tokio::task::spawn_local(async move {
+                loop {
+                    tokio::select! {
+                        _ = cancellation.cancelled() => break,
+                        _ = notify.notified() => {},
+                    }
                     loop {
-                        tokio::select! {
-                            _ = cancellation.cancelled() => break,
-                            _ = notify.notified() => {},
+                        let request = pending.borrow_mut().take();
+                        let Some((owner_session, mime_type, revision)) = request else {
+                            break;
+                        };
+                        let Some(text) =
+                            read_portal_text(&clipboard, &owner_session, &mime_type, &cancellation)
+                                .await
+                        else {
+                            continue;
+                        };
+                        if clipboard_revision.get() != revision {
+                            continue;
                         }
-                        loop {
-                            let request = pending.borrow_mut().take();
-                            let Some((owner_session, mime_type, revision)) = request else {
-                                break;
-                            };
-                            let Some(text) = read_portal_text(
-                                &clipboard,
-                                &owner_session,
-                                &mime_type,
-                                &cancellation,
-                            )
-                            .await
-                            else {
-                                continue;
-                            };
-                            if clipboard_revision.get() != revision {
-                                continue;
-                            }
-                            *local_text.borrow_mut() = Some(text.clone());
-                            if let Some(pos) = current_pos.get() {
-                                tokio::select! {
-                                    _ = cancellation.cancelled() => break,
-                                    result = clipboard_event_tx.send((pos, text)) => {
-                                        if result.is_err() {
-                                            break;
-                                        }
+                        *local_text.borrow_mut() = Some(text.clone());
+                        if let Some(pos) = current_pos.get() {
+                            tokio::select! {
+                                _ = cancellation.cancelled() => break,
+                                result = clipboard_event_tx.send((pos, text)) => {
+                                    if result.is_err() {
+                                        break;
                                     }
                                 }
                             }
                         }
                     }
-                });
-            }
+                }
+            });
         }
         let set_selection_worker = async {
             loop {
@@ -658,8 +687,8 @@ async fn do_capture_session(
                             let revision = clipboard_revision.get().wrapping_add(1);
                             clipboard_revision.set(revision);
                             let _ = local_text.borrow_mut().take();
-                            if details.session_is_owner() != Some(true) {
-                                if let Some(mime_type) = select_text_mime(details.mime_types()) {
+                            if details.session_is_owner() != Some(true)
+                                && let Some(mime_type) = select_text_mime(details.mime_types()) {
                                     *local_read_pending.borrow_mut() = Some((
                                         owner_session,
                                         mime_type.to_owned(),
@@ -667,7 +696,6 @@ async fn do_capture_session(
                                     ));
                                     local_read_notify.notify_one();
                                 }
-                            }
                         }
                     } else if clipboard_active {
                         log::warn!("clipboard owner stream closed; disabling clipboard sync");
@@ -689,10 +717,10 @@ async fn do_capture_session(
                         let matching_session = format!("{transfer_session:?}") == format!("{session:?}");
                         if clipboard_active && matching_session {
                             let Ok(permit) = transfer_slots.clone().try_acquire_owned() else {
-                                if let (Some(clipboard), Ok(permit)) = (
+                                match (
                                     clipboard.as_ref().cloned(),
                                     rejection_slots.clone().try_acquire_owned(),
-                                ) {
+                                ) { (Some(clipboard), Ok(permit)) => {
                                     let cancellation = clipboard_cancellation.child_token();
                                     tokio::task::spawn_local(async move {
                                         let _permit = permit;
@@ -713,11 +741,11 @@ async fn do_capture_session(
                                             );
                                         }
                                     });
-                                } else {
+                                } _ => {
                                     log::warn!(
                                         "dropping overloaded portal clipboard request without blocking input capture"
                                     );
-                                }
+                                }}
                                 continue;
                             };
                             let supported = matches!(mime_type.as_str(), "text/plain" | "text/plain;charset=utf-8" | "UTF8_STRING");
@@ -781,8 +809,8 @@ async fn do_capture_session(
                         None => {
                             log::warn!("INVALID BARRIER ID: Id {barrier_id} does not exist!");
                             let id = find_corresponding_client(&barriers, activated.cursor_position().expect("no cursor position reported by compositor"));
-                            let pos = *pos_for_barrier_id.get(&id).expect("invalid barrier id");
-                            pos
+
+                            *pos_for_barrier_id.get(&id).expect("invalid barrier id")
                         },
                     };
                     current_pos.replace(Some(pos));
@@ -1080,8 +1108,11 @@ impl DeskunionInputCapture for LibeiInputCapture {
 impl Drop for LibeiInputCapture {
     fn drop(&mut self) {
         if !self.terminated {
-            /* this workaround is needed until async drop is stabilized */
-            panic!("LibeiInputCapture dropped without being terminated!");
+            // The capture task holds a raw pointer into `input_capture`; abort it
+            // before the box is freed. Panicking here would unwind with the task
+            // still alive (or abort the process), so only log.
+            self.capture_task.abort();
+            log::error!("LibeiInputCapture dropped without being terminated!");
         }
     }
 }

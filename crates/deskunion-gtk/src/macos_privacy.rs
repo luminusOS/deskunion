@@ -18,13 +18,13 @@ use gtk::glib;
 // a `Boolean`-returning function as `-> bool` is technically UB if Apple ever
 // returns a non-canonical true value. Keep these as `c_uchar` and normalize.
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn AXIsProcessTrusted() -> c_uchar;
     fn AXIsProcessTrustedWithOptions(options: *const c_void) -> c_uchar;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     static kCFAllocatorDefault: *const c_void;
     static kCFTypeDictionaryKeyCallBacks: *const c_void;
     static kCFTypeDictionaryValueCallBacks: *const c_void;
@@ -42,12 +42,12 @@ extern "C" {
 
 // kAXTrustedCheckOptionPrompt is a CFStringRef exported from ApplicationServices.
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     static kAXTrustedCheckOptionPrompt: *const c_void;
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CGRequestListenEventAccess() -> c_uchar;
     fn CGRequestPostEventAccess() -> c_uchar;
 
@@ -66,6 +66,7 @@ extern "C" {
 }
 
 pub fn accessibility_granted() -> bool {
+    // SAFETY: `AXIsProcessTrusted` takes no arguments and has no preconditions.
     let raw = unsafe { AXIsProcessTrusted() };
     log::debug!("AXIsProcessTrusted() = {raw}");
     raw != 0
@@ -157,23 +158,27 @@ pub fn relaunch_bundle() {
 /// If permission already exists the tap is created successfully, and we
 /// tear it down immediately so it doesn't intercept events.
 unsafe fn ensure_listed_in_input_monitoring() {
-    let req = CGRequestListenEventAccess();
-    log::debug!("CGRequestListenEventAccess() = {req}");
-    let cb = input_monitoring_noop_tap_callback as *const c_void;
-    // Use kCGSessionEventTap (1), NOT kCGHIDEventTap (0). The HID tap sits
-    // below window-server input and requires Accessibility in addition to
-    // Input Monitoring, so attempting it when Accessibility isn't granted
-    // surfaces an Accessibility prompt as a side effect — which is confusing
-    // on top of the real Accessibility prompt we already fire explicitly.
-    // The session tap requires only Input Monitoring, so its failure is a
-    // clean "Input Monitoring missing" signal that TCC uses to list the
-    // bundle under the Input Monitoring pane.
-    // kCGHeadInsertEventTap = 0, kCGEventTapOptionListenOnly = 1,
-    // mask kCGEventKeyDown = 1 << 10.
-    let tap = CGEventTapCreate(1, 0, 1, 1 << 10, cb, std::ptr::null());
-    log::debug!("CGEventTapCreate(kCGSessionEventTap) -> {tap:?}");
-    if !tap.is_null() {
-        CFRelease(tap);
+    // SAFETY: this function's contract is that the caller may use the CoreGraphics event-tap APIs;
+    // it only passes a valid callback and a null `user_info`, and releases the tap it creates.
+    unsafe {
+        let req = CGRequestListenEventAccess();
+        log::debug!("CGRequestListenEventAccess() = {req}");
+        let cb = input_monitoring_noop_tap_callback as *const c_void;
+        // Use kCGSessionEventTap (1), NOT kCGHIDEventTap (0). The HID tap sits
+        // below window-server input and requires Accessibility in addition to
+        // Input Monitoring, so attempting it when Accessibility isn't granted
+        // surfaces an Accessibility prompt as a side effect — which is confusing
+        // on top of the real Accessibility prompt we already fire explicitly.
+        // The session tap requires only Input Monitoring, so its failure is a
+        // clean "Input Monitoring missing" signal that TCC uses to list the
+        // bundle under the Input Monitoring pane.
+        // kCGHeadInsertEventTap = 0, kCGEventTapOptionListenOnly = 1,
+        // mask kCGEventKeyDown = 1 << 10.
+        let tap = CGEventTapCreate(1, 0, 1, 1 << 10, cb, std::ptr::null());
+        log::debug!("CGEventTapCreate(kCGSessionEventTap) -> {tap:?}");
+        if !tap.is_null() {
+            CFRelease(tap);
+        }
     }
 }
 
@@ -205,6 +210,7 @@ fn open_url(url: &str) {
 /// than once in a process (reactivation, window presentation) and we
 /// must not re-pop the TCC alert on each activation — that looks like a
 /// bug to the user.
+#[allow(dead_code)] // no caller today; keeps the prompt helpers compiled until it is wired in
 pub fn fire_initial_prompts() {
     static FIRED: Once = Once::new();
     FIRED.call_once(fire_initial_prompts_inner);
@@ -221,6 +227,9 @@ fn fire_initial_prompts_inner() {
         // check). Once the user grants Accessibility and relaunches, this
         // branch is skipped and we register the other grants cleanly below.
         log::info!("firing first-launch Accessibility prompt");
+        // SAFETY: the key, value and callback statics are CoreFoundation/ApplicationServices
+        // globals valid for the process lifetime; the dictionary is created with one
+        // key/value pair, used once, and released exactly once.
         unsafe {
             let key = kAXTrustedCheckOptionPrompt;
             let value = kCFBooleanTrue;
@@ -244,12 +253,15 @@ fn fire_initial_prompts_inner() {
     // inherit the grant but the bundle is never listed for the user to
     // toggle persistently).
     log::info!("ensuring Deskunion is listed under Input Monitoring");
+    // SAFETY: the function only calls CoreGraphics request/tap-create APIs with a valid
+    // callback and a null `user_info`, and releases the tap it creates.
     unsafe {
         ensure_listed_in_input_monitoring();
     }
     // Same for Post Event: now that Accessibility is present, this call is
     // safe — it won't surface the generic Accessibility prompt.
     log::info!("ensuring Deskunion is listed under Accessibility > Post Event");
+    // SAFETY: `CGRequestPostEventAccess` takes no arguments and has no preconditions.
     unsafe {
         CGRequestPostEventAccess();
     }

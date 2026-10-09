@@ -109,10 +109,10 @@ impl ClientRowModel {
         };
         let ip = addr.rsplit_once(':').map(|(ip, _)| ip).unwrap_or(addr);
         let mut parts = vec![ip.to_string()];
-        if self.audio_active {
-            if let Some(ms) = self.audio_latency_ms {
-                parts.push(format!("audio buffer {ms} ms"));
-            }
+        if self.audio_active
+            && let Some(ms) = self.audio_latency_ms
+        {
+            parts.push(format!("audio buffer {ms} ms"));
         }
         parts.push("TLS active".to_string());
         if self.audio_active {

@@ -68,6 +68,8 @@ impl WindowsEmulation {
                 let mut last_sequence = 0;
                 while !stop.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(150));
+                    // SAFETY: `GetClipboardSequenceNumber` takes no arguments and has no
+                    // preconditions.
                     let sequence = unsafe { GetClipboardSequenceNumber() };
                     if sequence == last_sequence {
                         continue;
@@ -201,6 +203,9 @@ impl Emulation for WindowsEmulation {
 
 fn read_clipboard_text() -> Option<String> {
     const MAX_CLIPBOARD_TEXT_BYTES: usize = 64 * 1024;
+    // SAFETY: the clipboard is opened for the whole block and closed on every path. The
+    // `GlobalLock` pointer is non-null, the slice is capped at `GlobalSize` bytes and read
+    // only while the lock is held, and every exit after locking unlocks it.
     unsafe {
         if OpenClipboard(None).is_err() {
             return None;
@@ -235,6 +240,9 @@ fn write_clipboard_text(text: &str) -> io::Result<()> {
     let mut wide = text.encode_utf16().collect::<Vec<_>>();
     wide.push(0);
     let bytes = wide.len() * std::mem::size_of::<u16>();
+    // SAFETY: the clipboard stays open until `close` drops. The allocation holds `bytes`
+    // bytes, so copying `wide.len()` u16s into the locked pointer is in bounds, and it is
+    // freed only on paths where `SetClipboardData` did not take ownership.
     unsafe {
         OpenClipboard(None).map_err(|error| io::Error::other(error.to_string()))?;
         let close = ClipboardCloseGuard;
@@ -261,6 +269,7 @@ struct ClipboardCloseGuard;
 
 impl Drop for ClipboardCloseGuard {
     fn drop(&mut self) {
+        // SAFETY: the guard is only created after `OpenClipboard` succeeded on this thread.
         unsafe {
             let _ = CloseClipboard();
         }
@@ -289,6 +298,8 @@ impl WindowsEmulation {
 }
 
 fn send_input_safe(input: INPUT) {
+    // SAFETY: the slice holds one fully initialised `INPUT` and the size argument is
+    // `size_of::<INPUT>()`.
     unsafe {
         // Never spin here: SendInput can legitimately be rejected by UIPI
         // (for example when the target window has a higher integrity level).

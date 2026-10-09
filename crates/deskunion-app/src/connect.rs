@@ -246,10 +246,10 @@ impl DeskunionConnection {
         log::trace!("reply {event} >->->->->- {addr}");
         let (buf, len): ([u8; MAX_EVENT_SIZE], usize) = event.into();
         let conn = self.shared.conn.lock().await;
-        if let Some((a, conn)) = conn.as_ref() {
-            if *a == addr {
-                let _ = conn.send(&buf[..len]).await;
-            }
+        if let Some((a, conn)) = conn.as_ref()
+            && *a == addr
+        {
+            let _ = conn.send(&buf[..len]).await;
         }
     }
 
@@ -337,10 +337,10 @@ impl DeskunionConnection {
             };
             if let Some(conn) = conn {
                 let mut packet = [0u8; 5];
-                if let Ok(len) = encode_into(DatagramRef::ClipboardAck(transfer_id), &mut packet) {
-                    if let Err(error) = conn.send(&packet[..len]).await {
-                        log::debug!("clipboard ack to {addr} failed: {error}");
-                    }
+                if let Ok(len) = encode_into(DatagramRef::ClipboardAck(transfer_id), &mut packet)
+                    && let Err(error) = conn.send(&packet[..len]).await
+                {
+                    log::debug!("clipboard ack to {addr} failed: {error}");
                 }
             }
         });
@@ -400,14 +400,14 @@ impl DeskunionConnection {
     /// loop redials while a target is configured.
     pub(crate) async fn close(&self, addr: SocketAddr) {
         let conn = self.shared.conn.lock().await;
-        if let Some((a, conn)) = conn.as_ref() {
-            if *a == addr {
-                #[cfg(feature = "audio")]
-                send_audio_stop(conn, addr).await;
-                log::info!("closing connection to {addr}");
-                let _ = conn.close().await;
-                // the entry is removed by `server_loop` when its recv errors
-            }
+        if let Some((a, conn)) = conn.as_ref()
+            && *a == addr
+        {
+            #[cfg(feature = "audio")]
+            send_audio_stop(conn, addr).await;
+            log::info!("closing connection to {addr}");
+            let _ = conn.close().await;
+            // the entry is removed by `server_loop` when its recv errors
         }
     }
 
@@ -610,10 +610,10 @@ fn local_computer_name() -> Option<String> {
 async fn send_computer_name(conn: &ArcConn, name: Option<&str>) {
     let Some(name) = name else { return };
     let mut out = [0; 1 + deskunion_proto::MAX_COMPUTER_NAME_SIZE];
-    if let Ok(len) = encode_into(DatagramRef::ComputerName(name), &mut out) {
-        if let Err(error) = conn.send(&out[..len]).await {
-            log::debug!("computer name send failed: {error}");
-        }
+    if let Ok(len) = encode_into(DatagramRef::ComputerName(name), &mut out)
+        && let Err(error) = conn.send(&out[..len]).await
+    {
+        log::debug!("computer name send failed: {error}");
     }
 }
 

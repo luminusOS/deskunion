@@ -306,6 +306,7 @@ fn draw_screen(
     let rounded = gsk::RoundedRect::from_rect(*rect, CORNER_RADIUS);
     snapshot.push_rounded_clip(&rounded);
     snapshot.append_color(style.fill, rect);
+    snapshot.pop();
     if style.hovered && !style.selected {
         snapshot.push_rounded_clip(&rounded);
         snapshot.append_color(&with_alpha(style.text, 0.08), rect);

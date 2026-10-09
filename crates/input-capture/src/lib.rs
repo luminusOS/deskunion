@@ -300,6 +300,7 @@ impl Stream for InputCapture {
     }
 }
 
+#[allow(clippy::double_must_use)] // newer clippy flags async_trait's generated fns
 #[async_trait]
 trait Capture: Stream<Item = Result<(Position, CaptureEvent), CaptureError>> + Unpin {
     /// create a new client with the given id
@@ -325,7 +326,7 @@ trait Capture: Stream<Item = Result<(Position, CaptureEvent), CaptureError>> + U
 
 async fn create_backend(
     backend: Backend,
-    clipboard_enabled: bool,
+    #[cfg_attr(not(libei), allow(unused_variables))] clipboard_enabled: bool,
 ) -> Result<
     Box<dyn Capture<Item = Result<(Position, CaptureEvent), CaptureError>>>,
     CaptureCreationError,

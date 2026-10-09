@@ -2,7 +2,7 @@
 name = "deskunion-app"
 description = "Software KVM Switch / mouse & keyboard sharing software for Local Area Networks"
 version = "0.2.1"
-edition = "2021"
+edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/luminusOS/deskunion"
 
@@ -121,3 +121,6 @@ icon = ["../../target/icon.icns", "../deskunion-gtk/resources/io.github.luminuso
 identifier = "io.github.luminusos.DeskUnion"
 deb_depends = ["libadwaita-1-0"]
 resources = ["../../target/menubar-template.png"]
+
+[lints]
+workspace = true

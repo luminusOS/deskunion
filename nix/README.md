@@ -20,19 +20,6 @@ inputs = {
 }
 ```
 
-Optional: add [our binary cache](https://app.cachix.org/cache/deskunion) to allow a faster package install.
-
-```nix
-nixConfig = {
-    extra-substituters = [
-        "https://deskunion.cachix.org/"
-    ];
-    extra-trusted-public-keys = [
-      "deskunion.cachix.org-1:KlE2AEZUgkzNKM7BIzMQo8w9yJYqUpor1CAUNRY6OyM="
-    ];
-};
-```
-
 Enable deskunion:
 
 ``` nix

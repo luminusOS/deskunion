@@ -54,6 +54,7 @@ fn configure_windows_runtime() {
         // cannot expose a usable native surface (common with virtual GPUs).
         // Cairo keeps the UI functional, while an explicit user setting can
         // still opt back into a hardware renderer.
+        // SAFETY: called once from `run`, before the GTK thread is spawned.
         unsafe { env::set_var("GSK_RENDERER", "cairo") };
     }
 
@@ -176,15 +177,18 @@ fn configure_macos_bundle_environment() {
     }
 
     let schemas = share.join("glib-2.0").join("schemas");
-    if schemas.exists() {
-        env::set_var("GSETTINGS_SCHEMA_DIR", schemas);
-    }
+    // SAFETY: this runs once at startup, before GTK and any worker thread exist.
+    unsafe {
+        if schemas.exists() {
+            env::set_var("GSETTINGS_SCHEMA_DIR", schemas);
+        }
 
-    env::set_var("XDG_DATA_DIRS", &share);
-    env::set_var(
-        "GTK_DATA_PREFIX",
-        contents.join("Resources").to_string_lossy().as_ref(),
-    );
+        env::set_var("XDG_DATA_DIRS", &share);
+        env::set_var(
+            "GTK_DATA_PREFIX",
+            contents.join("Resources").to_string_lossy().as_ref(),
+        );
+    }
 }
 
 fn load_css() {

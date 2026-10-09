@@ -117,10 +117,10 @@ fn supports_config(
 /// supported: the device default if it's f32, otherwise the
 /// highest-rate f32 range on offer.
 fn fallback_config(device: &cpal::Device) -> Option<cpal::StreamConfig> {
-    if let Ok(default) = device.default_output_config() {
-        if default.sample_format() == cpal::SampleFormat::F32 {
-            return Some(default.config());
-        }
+    if let Ok(default) = device.default_output_config()
+        && default.sample_format() == cpal::SampleFormat::F32
+    {
+        return Some(default.config());
     }
     device
         .supported_output_configs()
@@ -575,7 +575,11 @@ mod test {
                 Box::new(SilentSource),
             )
             .expect("start");
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // wait for real wall-clock ticks; slow CI runners need more than a fixed 100 ms
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while metrics.clock_ticks() < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         playback.stop();
 
         assert!(metrics.clock_ticks() >= 3);

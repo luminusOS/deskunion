@@ -979,10 +979,10 @@ impl Service {
             return;
         };
 
-        if let Some(other) = self.client_manager.client_at(pos) {
-            if other != handle {
-                self.deactivate_client(other);
-            }
+        if let Some(other) = self.client_manager.client_at(pos)
+            && other != handle
+        {
+            self.deactivate_client(other);
         }
 
         /* activate the client */

@@ -128,6 +128,12 @@ fn test_audio_settings() -> crate::config::AudioSettings {
     }
 }
 
+// Wall-clock test (10 s of 20 ms frames): GitHub's macOS and Windows runners cannot hold the
+// frame rate (125-380 of ~500 frames received), so it only runs where the timing is reliable.
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "needs reliable 20 ms timers; CI macOS/Windows runners cannot provide them"
+)]
 #[tokio::test]
 async fn audio_keeps_flowing_through_the_whole_pipeline() {
     tokio::task::LocalSet::new()

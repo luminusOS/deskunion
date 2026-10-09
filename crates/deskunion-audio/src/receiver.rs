@@ -254,8 +254,11 @@ mod test {
         }
 
         // give the dummy device's clock real wall-clock time to pull
-        // the buffer dry
-        thread::sleep(Duration::from_millis(300));
+        // the buffer dry; slow CI runners need more than a fixed 300 ms
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while receiver.occupancy() != 0 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
 
         assert_eq!(
             receiver.occupancy(),

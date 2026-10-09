@@ -106,10 +106,10 @@ async fn get_ei_fd() -> Result<(RemoteDesktop, Session<RemoteDesktop>, OwnedFd),
         .response()?;
 
     // The restore token is only valid once, we need to re-save it each time
-    if let Some(token_str) = start_response.restore_token() {
-        if let Err(e) = write_token(token_str) {
-            log::warn!("failed to save RemoteDesktop token: {}", e);
-        }
+    if let Some(token_str) = start_response.restore_token()
+        && let Err(e) = write_token(token_str)
+    {
+        log::warn!("failed to save RemoteDesktop token: {}", e);
     }
 
     let fd = remote_desktop

@@ -169,11 +169,11 @@ impl InputCaptureState {
                 self.active_clients.insert(p);
             }
             ProducerEvent::Destroy(p) => {
-                if let Some(current) = self.current_pos {
-                    if current == p {
-                        self.show_cursor()?;
-                        self.current_pos = None;
-                    };
+                if let Some(current) = self.current_pos
+                    && current == p
+                {
+                    self.show_cursor()?;
+                    self.current_pos = None;
                 }
                 self.active_clients.remove(&p);
             }
@@ -455,6 +455,8 @@ fn create_event_tap<'a>(
             // cursor pop back to the local screen mid-session.
             if let Some(&port) = tap_mach_port_cb.get() {
                 log::warn!("CGEventTap disabled by timeout — re-enabling");
+                // SAFETY: `port` is the tap's mach port stored in `create_event_tap`; the
+                // tap outlives its callback because both live on the event-tap thread.
                 unsafe {
                     CGEventTapEnable(port as *mut c_void, true);
                 }
@@ -565,6 +567,8 @@ fn create_event_tap<'a>(
         .create_runloop_source(0)
         .expect("Failed creating loop source");
 
+    // SAFETY: `kCFRunLoopCommonModes` is a CoreFoundation constant valid for the process
+    // lifetime, and `tap_source` is a live source created just above.
     unsafe {
         CFRunLoop::get_current().add_source(&tap_source, kCFRunLoopCommonModes);
     }
@@ -601,6 +605,8 @@ fn event_tap_thread(
     // so the C side has a stable user_info pointer; reclaim it after
     // the run loop exits.
     let display_user_info = Box::into_raw(Box::new(display_notify_tx)) as *mut c_void;
+    // SAFETY: `display_user_info` points to the leaked `Sender` Box, which stays allocated
+    // until the callback is removed below, after the run loop has stopped.
     unsafe {
         CGDisplayRegisterReconfigurationCallback(
             display_reconfiguration_callback,
@@ -612,6 +618,9 @@ fn event_tap_thread(
     CFRunLoop::run_current();
     log::debug!("event tap thread exiting!...");
 
+    // SAFETY: the callback is unregistered before the Box is reclaimed, so it cannot fire
+    // afterwards; `display_user_info` came from `Box::into_raw` of a `Sender` above and is
+    // reclaimed exactly once.
     unsafe {
         CGDisplayRemoveReconfigurationCallback(display_reconfiguration_callback, display_user_info);
         // Reclaim the leaked sender Box so we don't leak a tokio
@@ -665,6 +674,8 @@ impl MacOSInputCapture {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (tap_exit_tx, mut tap_exit_rx) = oneshot::channel();
 
+        // SAFETY: `configure_cf_settings` only calls CoreGraphics/CoreFoundation functions
+        // with arguments it creates itself; it has no caller-side preconditions.
         unsafe {
             configure_cf_settings()?;
         }
@@ -736,11 +747,13 @@ fn request_accessibility_permission() -> bool {
     // startup (see deskunion_gtk::macos_privacy) so retries triggered by
     // clicking the "Reenable" button don't pop a fresh Accessibility
     // alert every time.
+    // SAFETY: `AXIsProcessTrusted` takes no arguments and has no preconditions.
     unsafe { AXIsProcessTrusted() }
 }
 
 fn request_input_monitoring_permission() -> bool {
     // Silent check, same reasoning as above.
+    // SAFETY: `CGPreflightListenEventAccess` takes no arguments and has no preconditions.
     unsafe { CGPreflightListenEventAccess() }
 }
 
@@ -800,7 +813,7 @@ impl Stream for MacOSInputCapture {
 type CGSConnectionID = u32;
 
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CGSSetConnectionProperty(
         cid: CGSConnectionID,
         targetCID: CGSConnectionID,
@@ -810,7 +823,7 @@ extern "C" {
     fn _CGSDefaultConnection() -> CGSConnectionID;
 }
 
-extern "C" {
+unsafe extern "C" {
     fn CGEventSourceSetLocalEventsSuppressionInterval(
         event_source: CGEventSource,
         seconds: CFTimeInterval,
@@ -837,38 +850,41 @@ extern "C" {
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
 }
 
 unsafe fn configure_cf_settings() -> Result<(), MacosCaptureCreationError> {
-    // When we warp the cursor using CGWarpMouseCursorPosition local events are suppressed for a short time
-    // this leeds to the cursor not flowing when crossing back from a clinet, set this to to 0 stops the warp
-    // from working, set a low value by trial and error, 0.05s seems good. 0.25s is the default
-    let event_source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-        .map_err(|_| MacosCaptureCreationError::EventSourceCreation)?;
-    CGEventSourceSetLocalEventsSuppressionInterval(event_source, 0.05);
-    // FIXME Memory Leak
+    // SAFETY: the CoreGraphics/CoreFoundation arguments are created locally in this function.
+    unsafe {
+        // When we warp the cursor using CGWarpMouseCursorPosition local events are suppressed for a short time
+        // this leeds to the cursor not flowing when crossing back from a clinet, set this to to 0 stops the warp
+        // from working, set a low value by trial and error, 0.05s seems good. 0.25s is the default
+        let event_source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .map_err(|_| MacosCaptureCreationError::EventSourceCreation)?;
+        CGEventSourceSetLocalEventsSuppressionInterval(event_source, 0.05);
+        // FIXME Memory Leak
 
-    // This is a private settings that allows the cursor to be hidden while in the background.
-    // It is used by Barrier and other apps.
-    let key = CString::new("SetsCursorInBackground").unwrap();
-    let cf_key = CFStringCreateWithCString(
-        kCFAllocatorDefault,
-        key.as_ptr() as *const c_char,
-        kCFStringEncodingUTF8,
-    );
-    if CGSSetConnectionProperty(
-        _CGSDefaultConnection(),
-        _CGSDefaultConnection(),
-        cf_key,
-        kCFBooleanTrue,
-    ) != kCGErrorSuccess
-    {
-        return Err(MacosCaptureCreationError::CGCursorProperty);
+        // This is a private settings that allows the cursor to be hidden while in the background.
+        // It is used by Barrier and other apps.
+        let key = CString::new("SetsCursorInBackground").unwrap();
+        let cf_key = CFStringCreateWithCString(
+            kCFAllocatorDefault,
+            key.as_ptr() as *const c_char,
+            kCFStringEncodingUTF8,
+        );
+        if CGSSetConnectionProperty(
+            _CGSDefaultConnection(),
+            _CGSDefaultConnection(),
+            cf_key,
+            kCFBooleanTrue,
+        ) != kCGErrorSuccess
+        {
+            return Err(MacosCaptureCreationError::CGCursorProperty);
+        }
+        CFRelease(cf_key as *const c_void);
+        Ok(())
     }
-    CFRelease(cf_key as *const c_void);
-    Ok(())
 }
 
 // From X11/X.h
