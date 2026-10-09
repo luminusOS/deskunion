@@ -360,60 +360,68 @@ fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
 }
 
 unsafe extern "system" fn mouse_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // Windows requires negative hook codes to be forwarded immediately.
-    // In that case lParam is not ours to inspect and may not be a valid
-    // MSLLHOOKSTRUCT pointer.
-    if ncode < 0 {
-        return CallNextHookEx(None, ncode, wparam, lparam);
+    // SAFETY: Windows calls this with its own hook/window-procedure arguments, and the calls
+    // below forward them unchanged.
+    unsafe {
+        // Windows requires negative hook codes to be forwarded immediately.
+        // In that case lParam is not ours to inspect and may not be a valid
+        // MSLLHOOKSTRUCT pointer.
+        if ncode < 0 {
+            return CallNextHookEx(None, ncode, wparam, lparam);
+        }
+
+        let active = check_client_activation(wparam, lparam);
+
+        /* no client was active */
+        if !active {
+            return CallNextHookEx(None, ncode, wparam, lparam);
+        }
+
+        /* get active client if any */
+        let Some(pos) = ACTIVE_CLIENT.get() else {
+            return LRESULT(1);
+        };
+
+        /* convert to deskunion event */
+        let Some(pointer_event) = to_mouse_event(wparam, lparam) else {
+            return LRESULT(1);
+        };
+
+        /* notify mainthread (drop events if sending too fast) */
+        if let Err(e) = try_send_event(pos, CaptureEvent::Input(Event::Pointer(pointer_event))) {
+            log::warn!("e: {e}");
+        }
+
+        /* don't pass event to applications */
+        LRESULT(1)
     }
-
-    let active = check_client_activation(wparam, lparam);
-
-    /* no client was active */
-    if !active {
-        return CallNextHookEx(None, ncode, wparam, lparam);
-    }
-
-    /* get active client if any */
-    let Some(pos) = ACTIVE_CLIENT.get() else {
-        return LRESULT(1);
-    };
-
-    /* convert to deskunion event */
-    let Some(pointer_event) = to_mouse_event(wparam, lparam) else {
-        return LRESULT(1);
-    };
-
-    /* notify mainthread (drop events if sending too fast) */
-    if let Err(e) = try_send_event(pos, CaptureEvent::Input(Event::Pointer(pointer_event))) {
-        log::warn!("e: {e}");
-    }
-
-    /* don't pass event to applications */
-    LRESULT(1)
 }
 
 unsafe extern "system" fn kybrd_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if ncode < 0 {
-        return CallNextHookEx(None, ncode, wparam, lparam);
+    // SAFETY: Windows calls this with its own hook/window-procedure arguments, and the calls
+    // below forward them unchanged.
+    unsafe {
+        if ncode < 0 {
+            return CallNextHookEx(None, ncode, wparam, lparam);
+        }
+
+        /* get active client if any */
+        let Some(client) = ACTIVE_CLIENT.get() else {
+            return CallNextHookEx(None, ncode, wparam, lparam);
+        };
+
+        /* convert to key event */
+        let Some(key_event) = to_key_event(wparam, lparam) else {
+            return LRESULT(1);
+        };
+
+        if let Err(e) = try_send_event(client, CaptureEvent::Input(Event::Keyboard(key_event))) {
+            log::warn!("e: {e}");
+        }
+
+        /* don't pass event to applications */
+        LRESULT(1)
     }
-
-    /* get active client if any */
-    let Some(client) = ACTIVE_CLIENT.get() else {
-        return CallNextHookEx(None, ncode, wparam, lparam);
-    };
-
-    /* convert to key event */
-    let Some(key_event) = to_key_event(wparam, lparam) else {
-        return LRESULT(1);
-    };
-
-    if let Err(e) = try_send_event(client, CaptureEvent::Input(Event::Keyboard(key_event))) {
-        log::warn!("e: {e}");
-    }
-
-    /* don't pass event to applications */
-    LRESULT(1)
 }
 
 unsafe extern "system" fn window_proc(
@@ -422,11 +430,15 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if uint == WM_DISPLAYCHANGE {
-        log::debug!("display resolution changed");
-        DISPLAY_RESOLUTION_GENERATION.fetch_add(1, Ordering::Release);
+    // SAFETY: Windows calls this with its own hook/window-procedure arguments, and the calls
+    // below forward them unchanged.
+    unsafe {
+        if uint == WM_DISPLAYCHANGE {
+            log::debug!("display resolution changed");
+            DISPLAY_RESOLUTION_GENERATION.fetch_add(1, Ordering::Release);
+        }
+        DefWindowProcW(hwnd, uint, wparam, lparam)
     }
-    DefWindowProcW(hwnd, uint, wparam, lparam)
 }
 
 static DISPLAY_RESOLUTION_GENERATION: AtomicI32 = AtomicI32::new(1);
@@ -493,10 +505,10 @@ fn update_clients(request: ClientUpdate) {
             CLIENTS.with_borrow_mut(|clients| clients.insert(pos));
         }
         ClientUpdate::Destroy(pos) => {
-            if let Some(active_pos) = ACTIVE_CLIENT.get() {
-                if pos == active_pos {
-                    let _ = ACTIVE_CLIENT.take();
-                }
+            if let Some(active_pos) = ACTIVE_CLIENT.get()
+                && pos == active_pos
+            {
+                let _ = ACTIVE_CLIENT.take();
             }
             CLIENTS.with_borrow_mut(|clients| clients.remove(&pos));
         }

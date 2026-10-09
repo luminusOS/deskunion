@@ -855,33 +855,36 @@ unsafe extern "C" {
 }
 
 unsafe fn configure_cf_settings() -> Result<(), MacosCaptureCreationError> {
-    // When we warp the cursor using CGWarpMouseCursorPosition local events are suppressed for a short time
-    // this leeds to the cursor not flowing when crossing back from a clinet, set this to to 0 stops the warp
-    // from working, set a low value by trial and error, 0.05s seems good. 0.25s is the default
-    let event_source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-        .map_err(|_| MacosCaptureCreationError::EventSourceCreation)?;
-    CGEventSourceSetLocalEventsSuppressionInterval(event_source, 0.05);
-    // FIXME Memory Leak
+    // SAFETY: the CoreGraphics/CoreFoundation arguments are created locally in this function.
+    unsafe {
+        // When we warp the cursor using CGWarpMouseCursorPosition local events are suppressed for a short time
+        // this leeds to the cursor not flowing when crossing back from a clinet, set this to to 0 stops the warp
+        // from working, set a low value by trial and error, 0.05s seems good. 0.25s is the default
+        let event_source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .map_err(|_| MacosCaptureCreationError::EventSourceCreation)?;
+        CGEventSourceSetLocalEventsSuppressionInterval(event_source, 0.05);
+        // FIXME Memory Leak
 
-    // This is a private settings that allows the cursor to be hidden while in the background.
-    // It is used by Barrier and other apps.
-    let key = CString::new("SetsCursorInBackground").unwrap();
-    let cf_key = CFStringCreateWithCString(
-        kCFAllocatorDefault,
-        key.as_ptr() as *const c_char,
-        kCFStringEncodingUTF8,
-    );
-    if CGSSetConnectionProperty(
-        _CGSDefaultConnection(),
-        _CGSDefaultConnection(),
-        cf_key,
-        kCFBooleanTrue,
-    ) != kCGErrorSuccess
-    {
-        return Err(MacosCaptureCreationError::CGCursorProperty);
+        // This is a private settings that allows the cursor to be hidden while in the background.
+        // It is used by Barrier and other apps.
+        let key = CString::new("SetsCursorInBackground").unwrap();
+        let cf_key = CFStringCreateWithCString(
+            kCFAllocatorDefault,
+            key.as_ptr() as *const c_char,
+            kCFStringEncodingUTF8,
+        );
+        if CGSSetConnectionProperty(
+            _CGSDefaultConnection(),
+            _CGSDefaultConnection(),
+            cf_key,
+            kCFBooleanTrue,
+        ) != kCGErrorSuccess
+        {
+            return Err(MacosCaptureCreationError::CGCursorProperty);
+        }
+        CFRelease(cf_key as *const c_void);
+        Ok(())
     }
-    CFRelease(cf_key as *const c_void);
-    Ok(())
 }
 
 // From X11/X.h
