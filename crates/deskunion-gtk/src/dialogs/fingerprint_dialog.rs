@@ -31,44 +31,33 @@ impl SimpleComponent for FingerprintDialogModel {
     view! {
         #[name(root)]
         adw::AlertDialog {
-            set_heading: Some("Add Certificate Fingerprint"),
-            set_body: "The certificate fingerprint serves as a unique identifier for your device.\nA client shows it on its Connection page.",
-            add_response: ("confirm", "Confirm"),
+            set_heading: Some("Add authorized device"),
+            set_body: "Enter the certificate fingerprint shown on the other device.",
+            add_response: ("cancel", "_Cancel"),
+            add_response: ("confirm", "C_onfirm"),
             set_response_appearance: ("confirm", adw::ResponseAppearance::Suggested),
             set_default_response: Some("confirm"),
+            set_close_response: "cancel",
 
             #[wrap(Some)]
             set_extra_child = &gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
                 set_spacing: 18,
+                set_width_request: 360,
 
                 adw::PreferencesGroup {
-                    set_title: "description",
-
-                    add = &adw::ActionRow {
-                        #[wrap(Some)]
-                        #[name(description)]
-                        set_child = &gtk::Text {
-                            set_margin_all: 10,
-                            set_enable_undo: true,
-                            set_hexpand: true,
-                        },
+                    #[name(description)]
+                    add = &adw::EntryRow {
+                        set_title: "Description",
+                        set_enable_undo: true,
                     },
-                },
 
-                adw::PreferencesGroup {
-                    set_title: "sha256 fingerprint",
-
-                    add = &adw::ActionRow {
-                        #[wrap(Some)]
-                        #[name(fingerprint)]
-                        set_child = &gtk::Text {
-                            set_margin_all: 10,
-                            set_enable_undo: true,
-                            set_hexpand: true,
-                            set_text: model.prefilled_fingerprint.as_deref().unwrap_or(""),
-                            set_editable: model.prefilled_fingerprint.is_none(),
-                        },
+                    #[name(fingerprint)]
+                    add = &adw::EntryRow {
+                        set_title: "SHA-256 fingerprint",
+                        set_enable_undo: true,
+                        set_text: model.prefilled_fingerprint.as_deref().unwrap_or(""),
+                        set_editable: model.prefilled_fingerprint.is_none(),
                     },
                 },
             },
@@ -84,6 +73,16 @@ impl SimpleComponent for FingerprintDialogModel {
             prefilled_fingerprint: init.fingerprint,
         };
         let widgets = view_output!();
+
+        let sync_confirm = glib::clone!(
+            #[weak(rename_to = dialog)]
+            widgets.root,
+            move |entry: &adw::EntryRow| {
+                dialog.set_response_enabled("confirm", !entry.text().trim().is_empty());
+            }
+        );
+        sync_confirm(&widgets.fingerprint);
+        widgets.fingerprint.connect_changed(sync_confirm);
 
         widgets.root.connect_response(
             None,

@@ -32,28 +32,29 @@ impl SimpleComponent for AuthorizationDialogModel {
     view! {
         #[name(root)]
         adw::AlertDialog {
-            set_heading: Some("Allow This Computer?"),
-            set_body: "A computer is asking to use this computer's keyboard and mouse. Allow it only if the fingerprint below matches the one shown on that computer.",
-            add_response: ("cancel", "Don't Allow"),
-            add_response: ("authorize", "Allow"),
-            set_response_appearance: ("authorize", adw::ResponseAppearance::Suggested),
-            set_default_response: Some("authorize"),
+            set_heading: Some("Allow this device to connect?"),
+            set_body: "Another computer wants to share this computer's keyboard and mouse. Allow it only if the fingerprint matches the one shown on that computer.",
+            add_response: ("cancel", "_Cancel"),
+            add_response: ("authorize", "_Allow"),
+            set_default_response: Some("cancel"),
             set_close_response: "cancel",
 
             #[wrap(Some)]
             set_extra_child = &adw::PreferencesGroup {
-                set_title: "sha256 fingerprint",
+                set_title: "SHA-256 fingerprint",
 
                 add = &adw::ActionRow {
                     #[wrap(Some)]
                     set_child = &gtk::Label {
                         set_label: &model.fingerprint,
+                        set_selectable: true,
+                        add_css_class: "monospace",
                         set_wrap: true,
                         set_wrap_mode: gtk::pango::WrapMode::WordChar,
                         set_justify: gtk::Justification::Center,
                         set_property: ("xalign", 0.5f32),
                         set_margin_all: 10,
-                        set_width_chars: 64,
+                        set_max_width_chars: 64,
                     },
                 },
             },

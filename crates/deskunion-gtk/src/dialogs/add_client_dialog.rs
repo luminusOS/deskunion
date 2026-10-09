@@ -8,14 +8,7 @@ pub struct AddClientDialogInit {
     pub parent: adw::ApplicationWindow,
 }
 
-pub struct AddClientDialogModel {
-    error: Option<String>,
-}
-
-#[derive(Debug)]
-pub enum AddClientDialogInput {
-    Invalid(String),
-}
+pub struct AddClientDialogModel;
 
 #[derive(Debug)]
 pub enum AddClientDialogOutput {
@@ -36,15 +29,15 @@ fn pairing_config(
     fingerprint: &adw::EntryRow,
     name: &adw::EntryRow,
     position: &adw::ComboRow,
-) -> Result<ClientConfig, String> {
+) -> Option<ClientConfig> {
     let fingerprint = fingerprint.text().trim().to_owned();
     if fingerprint.is_empty() {
-        return Err("Enter the device's certificate fingerprint.".to_owned());
+        return None;
     }
 
     let name = name.text().trim().to_owned();
 
-    Ok(ClientConfig {
+    Some(ClientConfig {
         hostname: (!name.is_empty()).then_some(name),
         pos: position_from_selected(position.selected()),
         fingerprint: Some(fingerprint),
@@ -55,16 +48,16 @@ fn pairing_config(
 #[relm4::component(pub)]
 impl SimpleComponent for AddClientDialogModel {
     type Init = AddClientDialogInit;
-    type Input = AddClientDialogInput;
+    type Input = ();
     type Output = AddClientDialogOutput;
 
     view! {
         #[name(root)]
         adw::AlertDialog {
-            set_heading: Some("Add a Client"),
+            set_heading: Some("Add a client"),
             set_body: "Pair an authorized device by its certificate fingerprint. A client shows its fingerprint on its Connection page.",
-            add_response: ("cancel", "Cancel"),
-            add_response: ("add", "Add"),
+            add_response: ("cancel", "_Cancel"),
+            add_response: ("add", "_Add"),
             set_response_appearance: ("add", adw::ResponseAppearance::Suggested),
             set_default_response: Some("add"),
             set_close_response: "cancel",
@@ -99,16 +92,6 @@ impl SimpleComponent for AddClientDialogModel {
                         set_selected: 1,
                     },
                 },
-
-                gtk::Label {
-                    #[watch]
-                    set_label: model.error.as_deref().unwrap_or(""),
-                    #[watch]
-                    set_visible: model.error.is_some(),
-                    set_wrap: true,
-                    set_xalign: 0.0,
-                    add_css_class: "error",
-                },
             },
         }
     }
@@ -118,8 +101,15 @@ impl SimpleComponent for AddClientDialogModel {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let model = Self { error: None };
+        let model = Self;
         let widgets = view_output!();
+
+        widgets.root.set_response_enabled("add", false);
+        widgets.fingerprint.connect_changed(glib::clone!(
+            #[weak(rename_to = dialog)]
+            widgets.root,
+            move |entry| dialog.set_response_enabled("add", !entry.text().trim().is_empty())
+        ));
 
         widgets.root.connect_response(
             None,
@@ -134,11 +124,12 @@ impl SimpleComponent for AddClientDialogModel {
                 widgets.position,
                 move |_dialog, response| match response {
                     "add" =>
-                        match pairing_config(&fingerprint_widget, &name_widget, &position_widget) {
-                            Ok(config) => sender
+                        if let Some(config) =
+                            pairing_config(&fingerprint_widget, &name_widget, &position_widget)
+                        {
+                            sender
                                 .output(AddClientDialogOutput::PairRequested(config))
-                                .unwrap(),
-                            Err(error) => sender.input(AddClientDialogInput::Invalid(error)),
+                                .unwrap();
                         },
                     _ => sender.output(AddClientDialogOutput::Cancelled).unwrap(),
                 }
@@ -147,12 +138,6 @@ impl SimpleComponent for AddClientDialogModel {
 
         widgets.root.present(Some(&init.parent));
         ComponentParts { model, widgets }
-    }
-
-    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
-        match message {
-            AddClientDialogInput::Invalid(error) => self.error = Some(error),
-        }
     }
 }
 
