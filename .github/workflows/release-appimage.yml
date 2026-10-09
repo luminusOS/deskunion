@@ -98,6 +98,10 @@ jobs:
             -o target/io.github.luminusos.DeskUnion.png
           (
             cd crates/deskunion-app
+            # cargo-appimage 2.4.0 cannot resolve virtual-workspace lint inheritance.
+            cp Cargo.toml Cargo.toml.appimage
+            trap 'mv Cargo.toml.appimage Cargo.toml' EXIT
+            python3 -c 'from pathlib import Path; manifest = Path("Cargo.toml"); manifest.write_text(manifest.read_text().replace("\n[lints]\nworkspace = true\n", "\n"), encoding="utf-8")'
             APPIMAGE_EXTRACT_AND_RUN=1 cargo appimage --locked
           )
           mkdir -p dist
