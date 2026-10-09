@@ -1,5 +1,11 @@
 # General Software Architecture
 
+## Release 0.2.3
+
+Keeps remote mouse and keyboard input responsive while audio streams, shows the
+real connection state in the screen arrangement, and moves clipboard sharing to
+Settings.
+
 ## Release 0.2.2
 
 Improves input-capture permission handling, audio test reliability, and cross-platform build support.
@@ -15,7 +21,7 @@ process-loopback audio capture that is independent of master output volume on
 supported builds, and clearer audio/clipboard controls in the GTK frontend.
 
 Clipboard sharing is enabled by default. Opt out on a device from
-**Audio → Clipboard** and restart DeskUnion so the platform backends start with
+**Settings → Clipboard** and restart DeskUnion so the platform backends start with
 the setting disabled.
 
 ## Release workflow

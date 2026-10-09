@@ -14,6 +14,11 @@
   <launchable type="desktop-id">io.github.luminusos.DeskUnion.desktop</launchable>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.3" date="2026-10-09">
+      <description>
+        <p>Keeps remote mouse and keyboard input responsive while audio streams, shows the real connection state in the screen arrangement, and moves clipboard sharing to Settings.</p>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-10-09">
       <description>
         <p>Improves input-capture permission handling, audio test reliability, and cross-platform build support.</p>
