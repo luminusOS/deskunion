@@ -575,7 +575,11 @@ mod test {
                 Box::new(SilentSource),
             )
             .expect("start");
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // wait for real wall-clock ticks; slow CI runners need more than a fixed 100 ms
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while metrics.clock_ticks() < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         playback.stop();
 
         assert!(metrics.clock_ticks() >= 3);
