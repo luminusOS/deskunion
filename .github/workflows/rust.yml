@@ -25,6 +25,9 @@ jobs:
   ci:
     name: ${{ matrix.job }} ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.os == 'windows-latest' && 'msys2 {0}' || 'bash' }}
     strategy:
       fail-fast: false
       matrix:
@@ -58,35 +61,35 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: ${{ env.MACOS_LIB_VER }}
-      - name: Install Windows Dependencies - create gtk dir
+      - name: Set up MSYS2
         if: runner.os == 'Windows'
-        run: mkdir C:\gtk-build\gtk\x64\release
-      - name: Install Windows Dependencies - install gtk from cache
-        uses: actions/cache@v3
-        if: runner.os == 'Windows'
-        id: cache
+        uses: msys2/setup-msys2@v2
         with:
-          path: c:/gtk-build/gtk/x64/release/**
-          key: gtk-windows-build
-          restore-keys: gtk-windows-build
-      - name: Install Windows Dependencies - update PATH
+          msystem: CLANG64
+          path-type: inherit
+          update: true
+          install: >-
+            git
+            mingw-w64-clang-x86_64-gtk4
+            mingw-w64-clang-x86_64-libadwaita
+            mingw-w64-clang-x86_64-librsvg
+            mingw-w64-clang-x86_64-opus
+            mingw-w64-clang-x86_64-pkg-config
+            mingw-w64-clang-x86_64-toolchain
+      - name: Install Rust (Windows gnullvm)
         if: runner.os == 'Windows'
         run: |
-          echo "PKG_CONFIG=C:\gtk-build\gtk\x64\release\bin\pkgconf.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "C:\pkg-config-lite-0.28-1\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "C:\gtk-build\gtk\x64\release\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo $env:GITHUB_PATH
-          echo $env:PATH
-      - name: Install Windows dependencies - build gtk
-        if: runner.os == 'Windows' && steps.cache.outputs.cache-hit != 'true'
-        run: |
-          # choco install msys2
-          # choco install visualstudio2022-workload-vctools
-          # choco install pkgconfiglite
-          py -m venv .venv
-          .venv\Scripts\activate.ps1
-          py -m pip install gvsbuild
-          gvsbuild build --msys-dir=C:\msys64 gtk4 libadwaita librsvg
+          set -euo pipefail
+          rustup toolchain install stable-x86_64-pc-windows-gnullvm --profile minimal -c clippy
+          # gnullvm host too: build scripts (glib-build-tools) must link against MSYS2 GLib, not MSVC.
+          {
+            echo "RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnullvm"
+            echo "PKG_CONFIG_PATH=/clang64/lib/pkgconfig"
+            echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=clang"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+            echo "OPUS_LIB_DIR=$(cygpath -m /clang64)"
+            echo "CMAKE_POLICY_VERSION_MINIMUM=3.5"
+          } >> "$(cygpath -u "$GITHUB_ENV")"
       - name: cargo build
         if: matrix.job == 'build'
         run: cargo build
@@ -111,6 +114,6 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - uses: clechasseur/rs-clippy-check@v4
-        if: matrix.job == 'clippy'
+        if: matrix.job == 'clippy' && runner.os != 'Windows'
         with:
           args: --workspace --all-targets --all-features
