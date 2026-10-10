@@ -1,5 +1,9 @@
 # General Software Architecture
 
+## Release 0.2.5
+
+Redesigns the screen arrangement as a compact numbered layout sharing one card with the client list, adds a persistent error banner, remembers the selected audio devices and tidies interface wording.
+
 ## Release 0.2.4
 
 Closes the listener when the server is stopped so audio and connections end, fixes clipboard writes on Windows, and refreshes the interface: accessible names, confirmed deletion, a persistent error banner, remembered audio devices and clearer client rows.

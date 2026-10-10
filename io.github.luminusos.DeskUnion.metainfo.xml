@@ -47,6 +47,11 @@
   <launchable type="desktop-id">io.github.luminusos.DeskUnion.desktop</launchable>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.5" date="2026-10-10">
+      <description>
+        <p>Redesigns the screen arrangement as a compact numbered layout sharing one card with the client list, adds a persistent error banner, remembers the selected audio devices and tidies interface wording.</p>
+      </description>
+    </release>
     <release version="0.2.4" date="2026-10-10">
       <description>
         <p>Closes the listener when the server is stopped so audio and connections end, fixes clipboard writes on Windows, and refreshes the interface: accessible names, confirmed deletion, a persistent error banner, remembered audio devices and clearer client rows.</p>
