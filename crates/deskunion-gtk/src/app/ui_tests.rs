@@ -285,21 +285,37 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     settle();
     assert_eq!(
         controller.widgets().screen_arrangement.height_request(),
-        220
+        190
     );
     controller.emit(AppMsg::ToggleArrangementSize);
     settle();
     assert_eq!(
         controller.widgets().screen_arrangement.height_request(),
-        360
+        320
     );
     controller.emit(AppMsg::ToggleArrangementSize);
     settle();
     assert_eq!(
         controller.widgets().screen_arrangement.height_request(),
-        220
+        190
     );
     assert!(controller.model().server_connection_error.is_none());
+    for (handle, name, pos) in [(1, "Biah", Position::Top), (2, "Laptop", Position::Right)] {
+        controller.emit(AppMsg::Frontend(FrontendEvent::Created(
+            handle,
+            ClientConfig {
+                hostname: Some(name.to_string()),
+                pos,
+                ..Default::default()
+            },
+            ClientState {
+                active: true,
+                active_addr: (handle == 1).then(|| "192.168.1.4:50798".parse().unwrap()),
+                ..Default::default()
+            },
+        )));
+    }
+    settle();
     capture(window, "screens-server-dark");
     assert_eq!(controller.model().status_text(), "Sharing stopped");
     assert!(

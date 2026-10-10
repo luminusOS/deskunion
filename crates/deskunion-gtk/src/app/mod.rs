@@ -400,37 +400,37 @@ impl AppModel {
 
     fn capture_row_title(&self) -> &'static str {
         if self.operation_mode == OperationMode::Client {
-            return "edge handoff is disabled";
+            return "Edge handoff is disabled";
         }
         #[cfg(target_os = "macos")]
         {
             if crate::macos_privacy::accessibility_granted() {
-                "relaunch required"
+                "Relaunch required"
             } else {
-                "input capture is disabled"
+                "Input capture is disabled"
             }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            "input capture is disabled"
+            "Input capture is disabled"
         }
     }
 
     fn capture_row_subtitle(&self) -> &'static str {
         if self.operation_mode == OperationMode::Client {
-            return "capture permission is needed only while returning the pointer to the server";
+            return "Capture permission is needed only while returning the pointer to the server";
         }
         #[cfg(target_os = "macos")]
         {
             if crate::macos_privacy::accessibility_granted() {
                 "Accessibility granted — restart to activate capture and emulation"
             } else {
-                "grant Accessibility permission to enable"
+                "Grant Accessibility permission to enable"
             }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            "required for outgoing and incoming connections"
+            "Required for outgoing and incoming connections"
         }
     }
 
@@ -445,7 +445,7 @@ impl AppModel {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            "Reenable"
+            "Re-enable"
         }
     }
 
@@ -1194,7 +1194,7 @@ impl SimpleComponent for AppModel {
 
                                         adw::PreferencesGroup {
                                             set_title: "Screen arrangement",
-                                            set_description: Some("Drag a device to the edge of this computer where its screen sits, or select it and use the arrow keys."),
+                                            set_description: Some("Drag a numbered screen to the edge where it sits, or select it and use the arrow keys."),
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Server,
 
@@ -1208,16 +1208,32 @@ impl SimpleComponent for AppModel {
                                                 connect_clicked => AppMsg::ToggleArrangementSize,
                                             },
 
-                                            gtk::Frame {
+                                            gtk::Box {
+                                                set_orientation: gtk::Orientation::Vertical,
+                                                set_overflow: gtk::Overflow::Hidden,
                                                 add_css_class: "card",
-                                                #[wrap(Some)]
-                                                set_child: screen_arrangement = &ScreenArrangement {
+                                                add_css_class: "arrangement-card",
+
+                                                #[name(screen_arrangement)]
+                                                ScreenArrangement {
                                                     #[watch]
-                                                    set_height_request: if model.arrangement_expanded { 360 } else { 220 },
+                                                    set_height_request: if model.arrangement_expanded { 320 } else { 190 },
+                                                    set_vexpand: false,
                                                     set_margin_all: 12,
                                                     set_host_label: &model.hostname,
                                                     #[watch]
                                                     set_items: model.screen_items(),
+                                                },
+
+                                                gtk::Separator {
+                                                    #[watch]
+                                                    set_visible: !model.client_rows.is_empty(),
+                                                },
+
+                                                #[local_ref]
+                                                client_list -> gtk::ListBox {
+                                                    set_selection_mode: gtk::SelectionMode::None,
+                                                    add_css_class: "arrangement-list",
                                                 },
                                             },
                                         },
@@ -1399,17 +1415,6 @@ impl SimpleComponent for AppModel {
                                             },
                                         },
 
-                                        adw::PreferencesGroup {
-                                            set_title: "Clients",
-                                            #[watch]
-                                            set_visible: model.operation_mode == OperationMode::Server && !model.client_rows.is_empty(),
-
-                                            #[local_ref]
-                                            client_list -> gtk::ListBox {
-                                                set_selection_mode: gtk::SelectionMode::None,
-                                                add_css_class: "boxed-list",
-                                            },
-                                        },
                                     },
                                 },
                             } -> {
@@ -1847,14 +1852,7 @@ impl SimpleComponent for AppModel {
     ) -> ComponentParts<Self> {
         let client_list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(["boxed-list"])
             .build();
-        client_list.set_placeholder(Some(
-            &adw::ActionRow::builder()
-                .title("No Paired Clients")
-                .subtitle("Choose Add Client to pair another computer")
-                .build(),
-        ));
         let client_rows = FactoryVecDeque::<ClientRowModel>::builder()
             .launch(client_list.clone())
             .forward(sender.input_sender(), AppMsg::ClientRow);
@@ -1865,7 +1863,7 @@ impl SimpleComponent for AppModel {
             .build();
         authorized_list.set_placeholder(Some(
             &adw::ActionRow::builder()
-                .title("No Authorized Devices")
+                .title("No authorized devices")
                 .subtitle("Authorize a device using its certificate fingerprint")
                 .build(),
         ));

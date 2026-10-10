@@ -12,18 +12,18 @@ use deskunion_ipc::Position;
 use super::ScreenItem;
 
 // 16:10 tiles, like the monitors in GNOME Settings → Displays
-const HOST_W: f64 = 136.0;
-const HOST_H: f64 = 85.0;
-const SAT_W: f64 = 120.0;
-const SAT_H: f64 = 75.0;
-const GAP: f64 = 28.0;
+const HOST_W: f64 = 104.0;
+const HOST_H: f64 = 65.0;
+const SAT_W: f64 = 88.0;
+const SAT_H: f64 = 55.0;
+const GAP: f64 = 18.0;
 const CANVAS_PADDING: f64 = 16.0;
 const MIN_DRAG_DISTANCE: f64 = 6.0;
 /// perpendicular offset applied to the 2nd, 3rd, ... screen stacked at
 /// the same border (only possible for *configured*, not *active*,
 /// clients — the protocol allows one active client per border)
-const STACK_OFFSET: f64 = 12.0;
-const CORNER_RADIUS: f32 = 10.0;
+const STACK_OFFSET: f64 = 10.0;
+const CORNER_RADIUS: f32 = 8.0;
 const BADGE_RADIUS: f64 = 5.0;
 
 struct Layout {
@@ -33,7 +33,9 @@ struct Layout {
 }
 
 struct ScreenStyle<'a> {
-    subtitle: &'a str,
+    /// 1-based position shown in the tile, matching the client list below
+    number: usize,
+    badge_text: &'a gdk::RGBA,
     fill: &'a gdk::RGBA,
     text: &'a gdk::RGBA,
     success: &'a gdk::RGBA,
@@ -152,7 +154,7 @@ impl WidgetImpl for ScreenArrangement {
     fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
         let size = match orientation {
             gtk::Orientation::Horizontal => 280,
-            _ => 200,
+            _ => 120,
         };
         (size, size, -1, -1)
     }
@@ -192,6 +194,10 @@ impl WidgetImpl for ScreenArrangement {
         let success = style
             .lookup_color("success_color")
             .unwrap_or(gdk::RGBA::new(0.2, 0.7, 0.3, 1.0));
+        #[allow(deprecated)]
+        let card_bg = style
+            .lookup_color("window_bg_color")
+            .unwrap_or(gdk::RGBA::new(0.2, 0.2, 0.2, 1.0));
         let muted = with_alpha(&fg, 0.08);
         let active = with_alpha(&success, 0.16);
         let dim = with_alpha(&fg, 0.7);
@@ -216,18 +222,13 @@ impl WidgetImpl for ScreenArrangement {
             }
         }
 
-        let host_label = self.host_label.borrow();
         draw_screen(
             widget,
             snapshot,
             &layout.host,
-            if host_label.is_empty() {
-                "This computer"
-            } else {
-                &host_label
-            },
             &ScreenStyle {
-                subtitle: "This computer",
+                number: 1,
+                badge_text: &accent,
                 fill: &accent,
                 text: &accent_fg,
                 success: &success,
@@ -265,20 +266,14 @@ impl WidgetImpl for ScreenArrangement {
             };
 
             let Some(item) = items.get(i) else { continue };
-            let label = device_name(item);
-
             let color = if item.connected { &active } else { &muted };
             draw_screen(
                 widget,
                 snapshot,
                 &rect,
-                &label,
                 &ScreenStyle {
-                    subtitle: if item.audio_active {
-                        "Streaming audio"
-                    } else {
-                        connection_status(item.active, item.connected)
-                    },
+                    number: i + 2,
+                    badge_text: &card_bg,
                     fill: color,
                     text: &fg,
                     success: &success,
@@ -350,7 +345,6 @@ fn draw_screen(
     widget: &gtk::Widget,
     snapshot: &gtk::Snapshot,
     rect: &Rect,
-    label: &str,
     style: &ScreenStyle<'_>,
 ) {
     let rounded = gsk::RoundedRect::from_rect(*rect, CORNER_RADIUS);
@@ -370,31 +364,31 @@ fn draw_screen(
     };
     snapshot.append_border(&rounded, &[border_width; 4], &[outline; 4]);
 
-    let inner_width = (rect.width() - 16.0).max(1.0);
-    let make_layout = |text: &str, bold: bool| {
-        let layout = widget.create_pango_layout(Some(text));
-        layout.set_width((inner_width * gtk::pango::SCALE as f32) as i32);
-        layout.set_alignment(gtk::pango::Alignment::Center);
-        layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        let attrs = gtk::pango::AttrList::new();
-        if bold {
-            attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
-        } else {
-            attrs.insert(gtk::pango::AttrFloat::new_scale(0.85));
-        }
-        layout.set_attributes(Some(&attrs));
-        layout
-    };
-    let title = make_layout(label, true);
-    let subtitle = make_layout(style.subtitle, false);
-    let (_, title_h) = title.pixel_size();
-    let (_, subtitle_h) = subtitle.pixel_size();
-    let text_y = rect.y() + (rect.height() - (title_h + subtitle_h) as f32) / 2.0;
+    let radius = 11.0_f32;
+    let center = Point::new(
+        rect.x() + rect.width() / 2.0,
+        rect.y() + rect.height() / 2.0,
+    );
+    let disc = Rect::new(
+        center.x() - radius,
+        center.y() - radius,
+        radius * 2.0,
+        radius * 2.0,
+    );
+    snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(disc, radius));
+    snapshot.append_color(style.text, &disc);
+    snapshot.pop();
+    let number = widget.create_pango_layout(Some(&style.number.to_string()));
+    let attrs = gtk::pango::AttrList::new();
+    attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
+    number.set_attributes(Some(&attrs));
+    let (number_w, number_h) = number.pixel_size();
     snapshot.save();
-    snapshot.translate(&Point::new(rect.x() + 8.0, text_y));
-    snapshot.append_layout(&title, style.text);
-    snapshot.translate(&Point::new(0.0, title_h as f32));
-    snapshot.append_layout(&subtitle, &with_alpha(style.text, 0.75));
+    snapshot.translate(&Point::new(
+        center.x() - number_w as f32 / 2.0,
+        center.y() - number_h as f32 / 2.0,
+    ));
+    snapshot.append_layout(&number, style.badge_text);
     snapshot.restore();
 
     if style.active {
@@ -521,7 +515,14 @@ impl ScreenArrangement {
         } else {
             let devices: Vec<String> = items
                 .iter()
-                .map(|item| format!("{} on the {} edge", device_name(item), item.position))
+                .map(|item| {
+                    format!(
+                        "{}, {}, on the {} edge",
+                        device_name(item),
+                        connection_status(item.active, item.connected).to_lowercase(),
+                        item.position
+                    )
+                })
                 .collect();
             format!("{host} with {}.", devices.join(", "))
         };

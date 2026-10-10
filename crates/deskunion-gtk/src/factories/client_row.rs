@@ -20,6 +20,7 @@ pub struct ClientRowInit {
 }
 
 pub struct ClientRowModel {
+    index: DynamicIndex,
     handle: ClientHandle,
     hostname: Option<String>,
     port: u32,
@@ -134,9 +135,12 @@ impl FactoryComponent for ClientRowModel {
             set_use_markup: true,
             #[watch]
             set_subtitle: &self.connection_subtitle(),
-            add_prefix = &gtk::Image {
-                set_icon_name: Some("computer-symbolic"),
-                set_pixel_size: 24,
+            add_prefix = &gtk::Label {
+                set_valign: gtk::Align::Center,
+                add_css_class: "screen-number",
+                #[watch]
+                set_label: &(self.index.current_index() + 2).to_string(),
+                update_property: &[gtk::accessible::Property::Label("Screen number")],
             },
 
             add_suffix = &gtk::Image {
@@ -260,13 +264,14 @@ impl FactoryComponent for ClientRowModel {
         }
     }
 
-    fn init_model(init: Self::Init, _index: &DynamicIndex, _sender: FactorySender<Self>) -> Self {
+    fn init_model(init: Self::Init, index: &DynamicIndex, _sender: FactorySender<Self>) -> Self {
         let ClientRowInit {
             handle,
             config,
             state,
         } = init;
         Self {
+            index: index.clone(),
             handle,
             hostname: config.hostname,
             port: config.port as u32,

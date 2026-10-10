@@ -41,3 +41,22 @@
     border-top-left-radius: 0;
     border-top-right-radius: 0;
 }
+
+.arrangement-card list,
+.arrangement-card list > row {
+  background: transparent;
+}
+
+.arrangement-card list > row:not(:first-child) {
+  border-top: 1px solid alpha(currentColor, 0.1);
+}
+
+.screen-number {
+  min-width: 22px;
+  min-height: 22px;
+  border-radius: 999px;
+  background: @window_fg_color;
+  color: @window_bg_color;
+  font-weight: bold;
+  font-size: 0.85em;
+}
