@@ -1,9 +1,8 @@
 use adw::prelude::*;
-use gtk::glib;
 use relm4::factory::{DynamicIndex, FactoryComponent, FactorySender};
 use relm4::prelude::*;
 
-use deskunion_ipc::{ClientConfig, ClientHandle, ClientState, DEFAULT_PORT, Position};
+use deskunion_ipc::{ClientConfig, ClientHandle, ClientState, Position};
 
 fn position_from_selected(selected: u32) -> Position {
     match selected {
@@ -85,16 +84,13 @@ impl ClientRowModel {
     /// and (via `ScreenArrangement`) the canvas satellite label.
     fn display_title(&self) -> String {
         self.hostname.clone().unwrap_or_else(|| {
-            "<span font_style=\"italic\" font_weight=\"light\" foreground=\"darkgrey\">no hostname!</span>".to_string()
+            "<span font_style=\"italic\" font_weight=\"light\" foreground=\"darkgrey\">No hostname</span>".to_string()
         })
     }
 
-    fn port_text(&self) -> String {
-        if self.port == DEFAULT_PORT as u32 {
-            String::new()
-        } else {
-            self.port.to_string()
-        }
+    fn ip(&self) -> Option<&str> {
+        let addr = self.active_addr.as_deref()?;
+        Some(addr.rsplit_once(':').map_or(addr, |(ip, _)| ip))
     }
 
     fn connected(&self) -> bool {
@@ -170,78 +166,51 @@ impl FactoryComponent for ClientRowModel {
                 set_visible: self.connected(),
             },
 
-            add_row = &adw::ActionRow {
+            add_row = &adw::SwitchRow {
                 set_title: "Enabled",
                 set_subtitle: "Route input events to this client",
+                #[watch]
+                #[block_signal(active_handler)]
+                set_active: self.active,
+                connect_active_notify[sender, index] => move |row| {
+                    sender.output(ClientRowOutput::Activate(index.clone(), row.is_active())).unwrap();
+                } @active_handler,
+            },
 
-                add_suffix = &gtk::Switch {
-                    set_valign: gtk::Align::Center,
-                    set_halign: gtk::Align::End,
-                    #[watch]
-                    #[block_signal(active_handler)]
-                    set_state: self.active,
-                    #[watch]
-                    #[block_signal(active_handler)]
-                    set_active: self.active,
-                    connect_state_set[sender, index] => move |_, state| {
-                        sender.output(ClientRowOutput::Activate(index.clone(), state)).unwrap();
-                        glib::Propagation::Proceed
-                    } @active_handler,
+            add_row = &adw::EntryRow {
+                set_title: "Hostname or IP address",
+                set_show_apply_button: true,
+                #[watch]
+                set_text: self.hostname.as_deref().unwrap_or(""),
+                connect_apply[sender, index] => move |row| {
+                    sender.output(ClientRowOutput::HostnameChange(index.clone(), row.text().trim().to_string())).unwrap();
+                },
+            },
+
+            add_row = &adw::EntryRow {
+                set_title: "Port",
+                set_show_apply_button: true,
+                set_input_purpose: gtk::InputPurpose::Digits,
+                #[watch]
+                set_text: &self.port.to_string(),
+                connect_apply[sender, index] => move |row| {
+                    match row.text().trim().parse::<u16>() {
+                        Ok(port) if port != 0 => {
+                            row.remove_css_class("error");
+                            sender.output(ClientRowOutput::PortChange(index.clone(), port)).unwrap();
+                        }
+                        _ => row.add_css_class("error"),
+                    }
                 },
             },
 
             add_row = &adw::ActionRow {
-                set_title: "Hostname",
+                set_title: "Connected from",
+                set_subtitle_selectable: true,
                 #[watch]
-                set_subtitle: &self.port_text(),
-
-                add_suffix = &gtk::Entry {
-                    set_property: ("xalign", 0.5f32),
-                    set_valign: gtk::Align::Center,
-                    set_placeholder_text: Some("Hostname"),
-                    update_property: &[gtk::accessible::Property::Label("Client hostname")],
-                    set_width_chars: -1,
-                    #[watch]
-                    set_text: self.hostname.as_deref().unwrap_or(""),
-                    connect_activate[sender, index] => move |entry| {
-                        sender.output(ClientRowOutput::HostnameChange(index.clone(), entry.text().to_string())).unwrap();
-                    },
-                    connect_has_focus_notify[sender, index] => move |entry| {
-                        if !entry.has_focus() {
-                            sender.output(ClientRowOutput::HostnameChange(index.clone(), entry.text().to_string())).unwrap();
-                        }
-                    },
-                },
-
-                add_suffix = &gtk::Entry {
-                    set_max_width_chars: 5,
-                    set_input_purpose: gtk::InputPurpose::Number,
-                    set_property: ("xalign", 0.5f32),
-                    set_valign: gtk::Align::Center,
-                    set_placeholder_text: Some("4242"),
-                    update_property: &[gtk::accessible::Property::Label("Client port")],
-                    set_width_chars: 5,
-                    #[watch]
-                    set_text: &self.port_text(),
-                    connect_activate[sender, index] => move |entry| {
-                        if let Ok(port) = entry.text().parse::<u16>() {
-                            sender.output(ClientRowOutput::PortChange(index.clone(), port)).unwrap();
-                        }
-                    },
-                    connect_has_focus_notify[sender, index] => move |entry| {
-                        if !entry.has_focus() {
-                            let text = entry.text();
-                            let port = if text.is_empty() {
-                                Some(DEFAULT_PORT)
-                            } else {
-                                text.parse::<u16>().ok()
-                            };
-                            if let Some(port) = port.filter(|port| *port != 0) {
-                                sender.output(ClientRowOutput::PortChange(index.clone(), port)).unwrap();
-                            }
-                        }
-                    },
-                },
+                set_subtitle: self.ip().unwrap_or_default(),
+                #[watch]
+                set_visible: self.connected(),
             },
 
             add_row = &adw::ComboRow {
