@@ -267,6 +267,9 @@ pub enum FrontendEvent {
         receive: bool,
         bitrate: u32,
         buffer_ms: u32,
+        /// selected devices; `None` is the system default
+        capture_device: Option<String>,
+        playback_device: Option<String>,
         /// false when the OS backend can't do system-output loopback
         /// (e.g. macOS < 14.6) — the UI shows a warning banner
         loopback_supported: bool,

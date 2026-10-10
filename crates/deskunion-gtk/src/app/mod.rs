@@ -40,7 +40,10 @@ use crate::factories::{
 };
 use crate::screen_arrangement::{ScreenArrangement, ScreenItem};
 
-use audio::{AUDIO_BITRATES, audio_bitrate_index, audio_device_model, selected_audio_device};
+use audio::{
+    AUDIO_BITRATES, audio_bitrate_index, audio_device_index, audio_device_model,
+    selected_audio_device,
+};
 pub use logs::LogCategory;
 use logs::LogState;
 
@@ -139,6 +142,7 @@ pub enum AppMsg {
     LogFilterChanged(Option<LogCategory>),
     LogCopy,
     LogClear,
+    DismissError,
 
     ClientRow(ClientRowOutput),
     KeyRow(KeyRowOutput),
@@ -212,6 +216,7 @@ pub struct AppModel {
     pending_server_test: Option<(u64, String, u16)>,
     next_test_id: u64,
     server_connection_error: Option<String>,
+    last_error: Option<String>,
 
     /// suppresses audio-page change handlers while an incoming
     /// `AudioStatus`/`AudioDevices` event is being applied to the
@@ -222,6 +227,8 @@ pub struct AppModel {
     audio_bitrate: u32,
     audio_buffer_ms: u32,
     audio_loopback_supported: bool,
+    audio_capture_device: Option<String>,
+    audio_playback_device: Option<String>,
     audio_capture_devices: Vec<AudioDeviceInfo>,
     audio_playback_devices: Vec<AudioDeviceInfo>,
     clipboard_enabled: bool,
@@ -615,7 +622,7 @@ impl AppModel {
                     self.upsert_client(handle, config, state);
                 }
             }
-            FrontendEvent::Error(e) => self.toast_overlay.add_toast(adw::Toast::new(&e)),
+            FrontendEvent::Error(e) => self.last_error = Some(e),
             FrontendEvent::CaptureStatus(status) => {
                 self.capture_active = status == Status::Enabled;
                 if self.capture_active {
@@ -776,8 +783,12 @@ impl AppModel {
                 receive,
                 bitrate,
                 buffer_ms,
+                capture_device,
+                playback_device,
                 loopback_supported,
             } => {
+                self.audio_capture_device = capture_device;
+                self.audio_playback_device = playback_device;
                 self.updating_audio_ui = true;
                 self.audio_send = send;
                 self.audio_receive = receive;
@@ -797,7 +808,7 @@ impl AppModel {
                     Some(addr) => format!("audio error ({addr}): {message}"),
                     None => format!("audio error: {message}"),
                 };
-                self.toast_overlay.add_toast(adw::Toast::new(&msg));
+                self.last_error = Some(msg);
             }
             FrontendEvent::ClipboardStatus {
                 enabled,
@@ -1127,6 +1138,15 @@ impl SimpleComponent for AppModel {
                             },
                         },
 
+                        adw::Banner {
+                            #[watch]
+                            set_title: model.last_error.as_deref().unwrap_or(""),
+                            #[watch]
+                            set_revealed: model.last_error.is_some(),
+                            set_button_label: Some("Dismiss"),
+                            connect_button_clicked => AppMsg::DismissError,
+                        },
+
                         #[name(page_stack)]
                         adw::ViewStack {
                             set_vexpand: true,
@@ -1439,6 +1459,9 @@ impl SimpleComponent for AppModel {
                                                 #[watch]
                                                 #[block_signal(audio_playback_handler)]
                                                 set_model: Some(&audio_device_model(&model.audio_playback_devices)),
+                                                #[watch]
+                                                #[block_signal(audio_playback_handler)]
+                                                set_selected: audio_device_index(&model.audio_playback_devices, model.audio_playback_device.as_deref()),
                                                 connect_selected_notify[sender] => move |row| {
                                                     sender.input(AppMsg::AudioPlaybackDeviceChanged(row.selected()));
                                                 } @audio_playback_handler,
@@ -1466,6 +1489,9 @@ impl SimpleComponent for AppModel {
                                                 #[watch]
                                                 #[block_signal(audio_capture_handler)]
                                                 set_model: Some(&audio_device_model(&model.audio_capture_devices)),
+                                                #[watch]
+                                                #[block_signal(audio_capture_handler)]
+                                                set_selected: audio_device_index(&model.audio_capture_devices, model.audio_capture_device.as_deref()),
                                                 connect_selected_notify[sender] => move |row| {
                                                     sender.input(AppMsg::AudioCaptureDeviceChanged(row.selected()));
                                                 } @audio_capture_handler,
@@ -1562,10 +1588,21 @@ impl SimpleComponent for AppModel {
 
                                 gtk::Separator {},
 
-                                gtk::ScrolledWindow {
-                                    set_hscrollbar_policy: gtk::PolicyType::Never,
+                                gtk::Overlay {
                                     set_vexpand: true,
-                                    set_child: Some(&log_list_box),
+
+                                    gtk::ScrolledWindow {
+                                        set_hscrollbar_policy: gtk::PolicyType::Never,
+                                        set_child: Some(&log_list_box),
+                                    },
+
+                                    add_overlay = &adw::StatusPage {
+                                        set_icon_name: Some("text-x-generic-symbolic"),
+                                        set_title: "No log entries",
+                                        set_description: Some("Connection, audio and error events appear here."),
+                                        #[watch]
+                                        set_visible: !model.log.has_visible(),
+                                    },
                                 },
                             } -> {
                                 set_name: Some(Page::Logs.name()),
@@ -1586,6 +1623,25 @@ impl SimpleComponent for AppModel {
                                     set_child = &gtk::Box {
                                         set_orientation: gtk::Orientation::Vertical,
                                         set_spacing: 24,
+
+                                        adw::PreferencesGroup {
+                                            set_title: "Operation mode",
+
+                                            adw::ComboRow {
+                                                set_title: "Use this computer as",
+                                                set_model: Some(&gtk::StringList::new(&["Server", "Client"])),
+                                                #[watch]
+                                                #[block_signal(mode_handler)]
+                                                set_selected: u32::from(model.operation_mode == OperationMode::Client),
+                                                connect_selected_notify[sender] => move |row| {
+                                                    sender.input(AppMsg::SetOperationMode(if row.selected() == 1 {
+                                                        OperationMode::Client
+                                                    } else {
+                                                        OperationMode::Server
+                                                    }));
+                                                } @mode_handler,
+                                            },
+                                        },
 
                                         adw::PreferencesGroup {
                                             set_title: "Identity",
@@ -1911,12 +1967,15 @@ impl SimpleComponent for AppModel {
             pending_server_test: None,
             next_test_id: 0,
             server_connection_error: None,
+            last_error: None,
             updating_audio_ui: false,
             audio_send: false,
             audio_receive: false,
             audio_bitrate: 96_000,
             audio_buffer_ms: 80,
             audio_loopback_supported: true,
+            audio_capture_device: None,
+            audio_playback_device: None,
             audio_capture_devices: Vec::new(),
             audio_playback_devices: Vec::new(),
             clipboard_enabled: true,
@@ -2160,9 +2219,15 @@ impl SimpleComponent for AppModel {
                 let text = self.log.copy_visible();
                 if let Some(display) = gtk::gdk::Display::default() {
                     display.clipboard().set_text(&text);
+                    self.toast_overlay
+                        .add_toast(adw::Toast::new("Log copied to clipboard"));
                 }
             }
-            AppMsg::LogClear => self.log.clear(),
+            AppMsg::LogClear => {
+                self.log.clear();
+                self.toast_overlay.add_toast(adw::Toast::new("Log cleared"));
+            }
+            AppMsg::DismissError => self.last_error = None,
 
             AppMsg::ClientRow(output) => self.handle_client_row_output(output),
             AppMsg::ParkedDeviceRow(ParkedDeviceRowOutput::Assign(index)) => {

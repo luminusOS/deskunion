@@ -28,6 +28,11 @@ pub fn audio_device_model(devices: &[AudioDeviceInfo]) -> gtk::StringList {
     gtk::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
+pub fn audio_device_index(devices: &[AudioDeviceInfo], id: Option<&str>) -> u32 {
+    id.and_then(|id| devices.iter().position(|d| d.id == id))
+        .map_or(0, |i| i as u32 + 1)
+}
+
 /// combo index 0 is the synthetic "System Default" entry (`None`);
 /// index `i` for `i >= 1` maps to `devices[i - 1]`.
 pub fn selected_audio_device(devices: &[AudioDeviceInfo], selected: u32) -> Option<String> {

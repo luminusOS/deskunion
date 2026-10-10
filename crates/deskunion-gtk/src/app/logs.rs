@@ -232,6 +232,10 @@ impl LogState {
             .join("\n")
     }
 
+    pub fn has_visible(&self) -> bool {
+        self.entries.iter().any(|e| e.label.is_visible())
+    }
+
     pub fn clear(&mut self) {
         for entry in self.entries.drain(..) {
             self.list_box.remove(&entry.label);

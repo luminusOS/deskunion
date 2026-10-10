@@ -368,6 +368,8 @@ impl Service {
             receive: audio.receive,
             bitrate: audio.bitrate,
             buffer_ms: audio.buffer_ms,
+            capture_device: audio.capture_device,
+            playback_device: audio.playback_device,
             // cpal covers loopback capture natively on Linux (PipeWire
             // host) and macOS (CoreAudio, on OS versions new enough to
             // support it) — see the audio plan's §3.5 spike. We don't
