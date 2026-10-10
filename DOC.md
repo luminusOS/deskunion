@@ -1,5 +1,9 @@
 # General Software Architecture
 
+## Release 0.2.4
+
+Closes the listener when the server is stopped so audio and connections end, fixes clipboard writes on Windows, and refreshes the interface: accessible names, confirmed deletion, a persistent error banner, remembered audio devices and clearer client rows.
+
 ## Release 0.2.3
 
 Keeps remote mouse and keyboard input responsive while audio streams, shows the
