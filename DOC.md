@@ -25,6 +25,10 @@ default and reconnect.
 Changes to Windows capture require updating the Windows client, not just the Linux
 server. Linux-only test results do not establish that a Teams call is fixed.
 
+## Release 0.2.6
+
+Adds a tray icon on Linux (StatusNotifierItem, with Flatpak Background Apps support) and Windows so the window can be closed while DeskUnion keeps running, validates ports and fingerprints with explicit feedback, keeps unapplied client edits, lets a cancelled authorization be retried, reports audio startup errors in the banner, adds endpoint loopback selection for Windows audio capture and shows the application version in About.
+
 ## Release 0.2.5
 
 Redesigns the screen arrangement as a compact numbered layout sharing one card with the client list, adds a persistent error banner, remembers the selected audio devices and tidies interface wording.
