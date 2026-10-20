@@ -86,6 +86,15 @@ Most current desktop environments and operating systems are fully supported, thi
 - Windows
 - MacOS
 
+### Tray icon
+
+Closing the window keeps DeskUnion running in the background while a tray icon is available:
+
+- **Linux**: a StatusNotifierItem (KDE Plasma and other hosts). GNOME needs the AppIndicator extension; without a tray host, closing the window quits the app. In a Flatpak the Background Apps portal keeps the app running and GNOME lists it under Background Apps.
+- **Windows**: a notification area icon.
+- **macOS**: a menu bar item.
+
+Click the icon to show or hide the window, or use its menu to open or quit DeskUnion.
 
 ### Caveats / Known Issues
 

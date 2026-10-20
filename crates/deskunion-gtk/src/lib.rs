@@ -6,6 +6,8 @@ mod macos_privacy;
 #[cfg(target_os = "macos")]
 mod macos_status_item;
 mod screen_arrangement;
+#[cfg(not(target_os = "macos"))]
+mod tray;
 
 use std::{env, process, str};
 
@@ -254,6 +256,11 @@ fn setup_menu(app: &adw::Application) {
 }
 
 fn build_ui(app: &Application) {
+    if let Some(window) = app.windows().first() {
+        window.present();
+        return;
+    }
+
     log::debug!("connecting to deskunion-socket");
     let (mut frontend_rx, writer) = match deskunion_ipc::connect() {
         Ok(conn) => conn,
@@ -341,7 +348,10 @@ fn build_ui(app: &Application) {
     }
 
     #[cfg(not(target_os = "macos"))]
-    window.present();
+    {
+        tray::setup(app, &window);
+        window.present();
+    }
 
     // On macOS, default to presenting the main window on every launch
     // so the user gets a visible confirmation that the app is running
