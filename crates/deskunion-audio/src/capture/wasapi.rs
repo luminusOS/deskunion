@@ -22,7 +22,7 @@ use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use super::process_loopback::supports_process_loopback;
+use super::process_loopback::{supports_process_loopback, use_process_loopback};
 use super::{AudioCapture, CaptureCallback};
 use crate::codec::SAMPLE_RATE;
 use crate::{AudioDevice, AudioError, AudioFormat};
@@ -139,13 +139,16 @@ impl Default for WasapiCapture {
 impl AudioCapture for WasapiCapture {
     fn devices(&self) -> Result<Vec<AudioDevice>, AudioError> {
         ensure_com_initialized()?;
-        if windows_version().is_ok_and(|(major, build)| supports_process_loopback(major, build)) {
-            return Ok(vec![AudioDevice {
+        let process_supported =
+            windows_version().is_ok_and(|(major, build)| supports_process_loopback(major, build));
+        let mut out = Vec::new();
+        if process_supported {
+            out.push(AudioDevice {
                 id: "process-loopback".to_owned(),
                 name: "All application audio (master-volume independent)".to_owned(),
                 is_monitor: true,
                 is_default: true,
-            }]);
+            });
         }
         let enumerator = DeviceEnumerator::new().map_err(AudioError::from)?;
         let default_id = enumerator
@@ -154,13 +157,13 @@ impl AudioCapture for WasapiCapture {
             .and_then(|d| d.get_id().ok());
         let collection = enumerator.get_device_collection(&Direction::Render)?;
         let count = collection.get_nbr_devices()?;
-        let mut out = Vec::with_capacity(count as usize);
+        out.reserve(count as usize);
         for i in 0..count {
             let device = collection.get_device_at_index(i)?;
             let id = device.get_id()?;
             let name = device.get_friendlyname()?;
             out.push(AudioDevice {
-                is_default: default_id.as_deref() == Some(id.as_str()),
+                is_default: !process_supported && default_id.as_deref() == Some(id.as_str()),
                 id,
                 name,
                 // every entry here is a render endpoint opened in
@@ -190,8 +193,12 @@ impl AudioCapture for WasapiCapture {
             }
 
             let source = match windows_version() {
-                Ok((major, build)) if supports_process_loopback(major, build) => {
+                Ok((major, build)) if use_process_loopback(major, build, device_id.as_deref()) => {
                     CaptureSource::ProcessLoopback
+                }
+                Ok((major, build)) if supports_process_loopback(major, build) => {
+                    log::info!("using explicitly selected Windows render endpoint");
+                    CaptureSource::EndpointLoopback
                 }
                 Ok((major, build)) => {
                     log::warn!(
@@ -291,20 +298,16 @@ fn run_capture(
         CaptureSource::EndpointLoopback => {
             let enumerator = DeviceEnumerator::new()?;
             let device = match device_id {
+                Some("process-loopback") | None => {
+                    enumerator.get_default_device(&Direction::Render)?
+                }
                 Some(id) => match enumerator.get_device(id) {
                     Ok(device) => device,
                     Err(error) => {
-                        // Older DeskUnion builds enumerated CPAL input
-                        // devices on Windows. Their persisted IDs are not
-                        // render endpoint IDs, so keep upgrades working by
-                        // falling back to the default output.
-                        log::warn!(
-                            "configured Windows audio endpoint is unavailable ({error}); using the default output"
-                        );
-                        enumerator.get_default_device(&Direction::Render)?
+                        log::warn!("configured Windows audio endpoint is unavailable ({error})");
+                        return Err(AudioError::from(error));
                     }
                 },
-                None => enumerator.get_default_device(&Direction::Render)?,
             };
             device.get_iaudioclient()?
         }

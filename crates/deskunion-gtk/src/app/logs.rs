@@ -189,6 +189,7 @@ impl LogState {
             .label(format!("{ts}  [{tag}]  {message}"))
             .xalign(0.0)
             .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
             .selectable(true)
             .build();
         label.add_css_class("monospace");

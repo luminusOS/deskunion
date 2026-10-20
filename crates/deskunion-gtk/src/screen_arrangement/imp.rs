@@ -19,10 +19,12 @@ const SAT_H: f64 = 55.0;
 const GAP: f64 = 18.0;
 const CANVAS_PADDING: f64 = 16.0;
 const MIN_DRAG_DISTANCE: f64 = 6.0;
+const KEYBOARD_HELP: &str =
+    "Page Up/Down or Home/End choose a device; arrow keys move it; Escape cancels a drag.";
 /// perpendicular offset applied to the 2nd, 3rd, ... screen stacked at
 /// the same border (only possible for *configured*, not *active*,
 /// clients — the protocol allows one active client per border)
-const STACK_OFFSET: f64 = 10.0;
+const EDGE_GAP: f64 = 8.0;
 const CORNER_RADIUS: f32 = 8.0;
 const BADGE_RADIUS: f64 = 5.0;
 
@@ -52,8 +54,7 @@ pub struct ScreenArrangement {
     items: RefCell<Vec<ScreenItem>>,
     /// label for the local (blue) screen; empty falls back to "This device"
     host_label: RefCell<String>,
-    /// index into `items` of the screen currently being dragged
-    dragging: Cell<Option<usize>>,
+    dragging: Cell<Option<u64>>,
     drag_start: Cell<(f64, f64)>,
     drag_offset: Cell<(f64, f64)>,
     drop_position: Cell<Option<Position>>,
@@ -75,9 +76,9 @@ impl ObjectImpl for ScreenArrangement {
         obj.set_hexpand(true);
         obj.set_vexpand(true);
         obj.set_focusable(true);
-        obj.set_tooltip_text(Some(
-            "Drag a device to choose the screen edge used to reach it",
-        ));
+        obj.set_tooltip_text(Some(&format!(
+            "Drag a device to choose its screen edge. {KEYBOARD_HELP}"
+        )));
         obj.update_property(&[gtk::accessible::Property::Label("Device arrangement")]);
         self.update_accessibility();
 
@@ -151,12 +152,30 @@ impl ObjectImpl for ScreenArrangement {
 }
 
 impl WidgetImpl for ScreenArrangement {
-    fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
-        let size = match orientation {
-            gtk::Orientation::Horizontal => 280,
-            _ => 120,
-        };
-        (size, size, -1, -1)
+    fn request_mode(&self) -> gtk::SizeRequestMode {
+        gtk::SizeRequestMode::HeightForWidth
+    }
+
+    fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+        let positions = self
+            .items
+            .borrow()
+            .iter()
+            .map(|item| item.position)
+            .collect::<Vec<_>>();
+        let (min_x, max_x, min_y, max_y) = geometry_bounds(&positions, self.card_scale());
+        let width = max_x - min_x + CANVAS_PADDING * 2.0;
+        if orientation == gtk::Orientation::Horizontal {
+            (280, width.ceil().max(280.0) as i32, -1, -1)
+        } else {
+            let fit = if for_size > 0 {
+                ((for_size as f64 - CANVAS_PADDING * 2.0).max(1.0) / (max_x - min_x)).min(1.0)
+            } else {
+                1.0
+            };
+            let height = ((max_y - min_y) * fit + CANVAS_PADDING * 2.0).ceil() as i32;
+            (height, height, -1, -1)
+        }
     }
 
     fn snapshot(&self, snapshot: &gtk::Snapshot) {
@@ -247,13 +266,16 @@ impl WidgetImpl for ScreenArrangement {
         let items = self.items.borrow();
         let mut screens = layout.screens;
         screens.sort_by_key(|(index, ..)| {
-            dragging == Some(*index)
+            dragging
+                .is_some_and(|handle| items.get(*index).is_some_and(|item| item.handle == handle))
                 || items
                     .get(*index)
                     .is_some_and(|item| selected == Some(item.handle))
         });
         for (i, _, rect) in screens {
-            let rect = if dragging == Some(i) {
+            let rect = if dragging
+                .is_some_and(|handle| items.get(i).is_some_and(|item| item.handle == handle))
+            {
                 let (ox, oy) = self.drag_offset.get();
                 Rect::new(
                     rect.x() + ox as f32,
@@ -272,7 +294,7 @@ impl WidgetImpl for ScreenArrangement {
                 snapshot,
                 &rect,
                 &ScreenStyle {
-                    number: i + 2,
+                    number: screen_number(i),
                     badge_text: &card_bg,
                     fill: color,
                     text: &fg,
@@ -364,7 +386,15 @@ fn draw_screen(
     };
     snapshot.append_border(&rounded, &[border_width; 4], &[outline; 4]);
 
-    let radius = 11.0_f32;
+    let number = widget.create_pango_layout(Some(&style.number.to_string()));
+    let attrs = gtk::pango::AttrList::new();
+    attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
+    number.set_attributes(Some(&attrs));
+    let (number_w, number_h) = number.pixel_size();
+    let (radius, text_scale) = number_badge_metrics(rect, number_w as f32, number_h as f32);
+    attrs.insert(gtk::pango::AttrFloat::new_scale(text_scale as f64));
+    number.set_attributes(Some(&attrs));
+    let (number_w, number_h) = number.pixel_size();
     let center = Point::new(
         rect.x() + rect.width() / 2.0,
         rect.y() + rect.height() / 2.0,
@@ -378,11 +408,6 @@ fn draw_screen(
     snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(disc, radius));
     snapshot.append_color(style.text, &disc);
     snapshot.pop();
-    let number = widget.create_pango_layout(Some(&style.number.to_string()));
-    let attrs = gtk::pango::AttrList::new();
-    attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
-    number.set_attributes(Some(&attrs));
-    let (number_w, number_h) = number.pixel_size();
     snapshot.save();
     snapshot.translate(&Point::new(
         center.x() - number_w as f32 / 2.0,
@@ -488,6 +513,21 @@ impl ScreenArrangement {
     }
 
     pub(super) fn set_items(&self, items: Vec<ScreenItem>) {
+        let geometry_changed = self
+            .items
+            .borrow()
+            .iter()
+            .map(|item| item.position)
+            .ne(items.iter().map(|item| item.position));
+        self.hovered.set(None);
+        if reconcile_drag(self.dragging.get(), items.iter().map(|item| item.handle))
+            != self.dragging.get()
+        {
+            self.dragging.set(None);
+            self.drag_offset.set((0.0, 0.0));
+            self.drop_position.set(None);
+            self.obj().set_cursor_from_name(None);
+        }
         if self
             .selected
             .get()
@@ -496,6 +536,9 @@ impl ScreenArrangement {
             self.selected.set(None);
         }
         self.items.replace(items);
+        if geometry_changed {
+            self.obj().queue_resize();
+        }
         self.obj().queue_draw();
         self.update_accessibility();
     }
@@ -517,7 +560,13 @@ impl ScreenArrangement {
                 .iter()
                 .map(|item| {
                     format!(
-                        "{}, {}, on the {} edge",
+                        "screen {}, {}, {}, on the {} edge",
+                        screen_number(
+                            items
+                                .iter()
+                                .position(|candidate| candidate.handle == item.handle)
+                                .unwrap_or(0)
+                        ),
                         device_name(item),
                         connection_status(item.active, item.connected).to_lowercase(),
                         item.position
@@ -530,95 +579,40 @@ impl ScreenArrangement {
             .iter()
             .find(|item| self.selected.get() == Some(item.handle))
         {
-            text.push_str(&format!(" Selected: {}.", device_name(item)));
+            let number = screen_number(
+                items
+                    .iter()
+                    .position(|candidate| candidate.handle == item.handle)
+                    .unwrap_or(0),
+            );
+            text.push_str(&format!(
+                " Selected: screen {number}, {}.",
+                device_name(item)
+            ));
         }
         if !items.is_empty() {
-            text.push_str(
-                " Page Up and Page Down choose a device, arrow keys move it to another edge.",
-            );
+            text.push(' ');
+            text.push_str(KEYBOARD_HELP);
         }
         self.obj()
             .update_property(&[gtk::accessible::Property::Description(&text)]);
     }
 
-    /// (index, position, rect) for every screen currently laid out —
-    /// shared between `snapshot()` and the drag hit-testing/geometry.
+    fn card_scale(&self) -> f64 {
+        let number = self.obj().create_pango_layout(Some(
+            &screen_number(self.items.borrow().len()).max(99).to_string(),
+        ));
+        let attrs = gtk::pango::AttrList::new();
+        attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
+        number.set_attributes(Some(&attrs));
+        let (w, h) = number.pixel_size();
+        1.0_f64.max(((w as f64).hypot(h as f64) + 12.0) / (SAT_H - 8.0))
+    }
+
     fn layout(&self, width: f64, height: f64) -> Layout {
         let items = self.items.borrow();
-        let mut totals: std::collections::HashMap<Position, usize> = Default::default();
-        for item in items.iter() {
-            *totals.entry(item.position).or_default() += 1;
-        }
-        let mut seen_per_position: std::collections::HashMap<Position, usize> = Default::default();
-        let mut base_rects = Vec::new();
-        for (i, item) in items.iter().enumerate() {
-            let position = item.position;
-            let seen = seen_per_position.entry(position).or_default();
-            let total = totals[&position];
-            let stack = (*seen as f64 - (total.saturating_sub(1)) as f64 / 2.0) * STACK_OFFSET;
-            *seen += 1;
-
-            let (x, y) = match position {
-                Position::Left => (-HOST_W / 2.0 - GAP - SAT_W, -SAT_H / 2.0 + stack),
-                Position::Right => (HOST_W / 2.0 + GAP, -SAT_H / 2.0 + stack),
-                Position::Top => (-SAT_W / 2.0 + stack, -HOST_H / 2.0 - GAP - SAT_H),
-                Position::Bottom => (-SAT_W / 2.0 + stack, HOST_H / 2.0 + GAP),
-            };
-            base_rects.push((
-                i,
-                position,
-                Rect::new(x as f32, y as f32, SAT_W as f32, SAT_H as f32),
-            ));
-        }
-
-        // Keep the transform stable while devices move, like GNOME's
-        // display arrangement. All four possible drop zones are part of
-        // the bounds even when no client currently occupies an edge.
-        let mut min_x = -HOST_W / 2.0 - GAP - SAT_W;
-        let mut max_x = HOST_W / 2.0 + GAP + SAT_W;
-        let mut min_y = -HOST_H / 2.0 - GAP - SAT_H;
-        let mut max_y = HOST_H / 2.0 + GAP + SAT_H;
-        for (_, _, rect) in &base_rects {
-            min_x = min_x.min(rect.x() as f64);
-            max_x = max_x.max((rect.x() + rect.width()) as f64);
-            min_y = min_y.min(rect.y() as f64);
-            max_y = max_y.max((rect.y() + rect.height()) as f64);
-        }
-
-        let available_w = (width - CANVAS_PADDING * 2.0).max(1.0);
-        let available_h = (height - CANVAS_PADDING * 2.0).max(1.0);
-        let scale = (available_w / (max_x - min_x))
-            .min(available_h / (max_y - min_y))
-            .min(1.0);
-        let content_cx = (min_x + max_x) / 2.0;
-        let content_cy = (min_y + max_y) / 2.0;
-        let translate_x = width / 2.0 - content_cx * scale;
-        let translate_y = height / 2.0 - content_cy * scale;
-
-        let transform = |rect: &Rect| {
-            Rect::new(
-                (rect.x() as f64 * scale + translate_x) as f32,
-                (rect.y() as f64 * scale + translate_y) as f32,
-                (rect.width() as f64 * scale) as f32,
-                (rect.height() as f64 * scale) as f32,
-            )
-        };
-        let host = transform(&Rect::new(
-            (-HOST_W / 2.0) as f32,
-            (-HOST_H / 2.0) as f32,
-            HOST_W as f32,
-            HOST_H as f32,
-        ));
-        let screens = base_rects
-            .into_iter()
-            .map(|(index, position, rect)| (index, position, transform(&rect)))
-            .collect();
-
-        Layout {
-            host,
-            screens,
-            scale,
-        }
+        let positions = items.iter().map(|item| item.position).collect::<Vec<_>>();
+        canvas_layout(&positions, width, height, self.card_scale())
     }
 
     fn layout_rects(&self, width: f64, height: f64) -> Vec<(usize, Position, Rect)> {
@@ -628,7 +622,8 @@ impl ScreenArrangement {
     fn on_drag_begin(&self, x: f64, y: f64) {
         let obj = self.obj();
         let hit = self.hit_test(x, y);
-        self.dragging.set(hit);
+        self.dragging
+            .set(hit.and_then(|index| self.items.borrow().get(index).map(|item| item.handle)));
         obj.grab_focus();
         if let Some(index) = hit {
             if let Some(item) = self.items.borrow().get(index) {
@@ -661,7 +656,7 @@ impl ScreenArrangement {
     }
 
     fn on_drag_end(&self, offset_x: f64, offset_y: f64) {
-        let Some(index) = self.dragging.take() else {
+        let Some(handle) = self.dragging.take() else {
             return;
         };
         self.drag_offset.set((0.0, 0.0));
@@ -681,7 +676,7 @@ impl ScreenArrangement {
         let Some(position) = drop_position else {
             return;
         };
-        self.set_position(index, position);
+        self.set_position_by_handle(handle, position);
     }
 
     fn set_position(&self, index: usize, position: Position) {
@@ -697,7 +692,19 @@ impl ScreenArrangement {
         obj.queue_draw();
         self.update_accessibility();
         if changed {
+            obj.queue_resize();
             obj.emit_by_name::<()>("position-changed", &[&handle, &position.to_string()]);
+        }
+    }
+
+    fn set_position_by_handle(&self, handle: u64, position: Position) {
+        let index = self
+            .items
+            .borrow()
+            .iter()
+            .position(|item| item.handle == handle);
+        if let Some(index) = index {
+            self.set_position(index, position);
         }
     }
 
@@ -805,6 +812,118 @@ fn nearest_position(x: f64, y: f64, width: f64, height: f64) -> Position {
     }
 }
 
+fn screen_number(index: usize) -> usize {
+    index + 2
+}
+
+fn number_badge_metrics(rect: &Rect, text_w: f32, text_h: f32) -> (f32, f32) {
+    let diagonal = text_w.hypot(text_h).max(1.0);
+    let radius = (diagonal / 2.0 + 6.0)
+        .max(11.0)
+        .min((rect.width().min(rect.height()) / 2.0 - 2.0).max(0.5));
+    let text_scale = ((radius * 2.0 - 8.0).max(1.0) / diagonal).min(1.0);
+    (radius, text_scale)
+}
+
+fn geometry_bounds(positions: &[Position], card_scale: f64) -> (f64, f64, f64, f64) {
+    let mut min_x = (-HOST_W / 2.0 - GAP - SAT_W) * card_scale;
+    let mut max_x = -min_x;
+    let mut min_y = (-HOST_H / 2.0 - GAP - SAT_H) * card_scale;
+    let mut max_y = -min_y;
+    for (_, _, rect) in layout_geometry(positions, card_scale) {
+        min_x = min_x.min(rect.x() as f64);
+        max_x = max_x.max((rect.x() + rect.width()) as f64);
+        min_y = min_y.min(rect.y() as f64);
+        max_y = max_y.max((rect.y() + rect.height()) as f64);
+    }
+    (min_x, max_x, min_y, max_y)
+}
+
+fn canvas_layout(positions: &[Position], width: f64, height: f64, card_scale: f64) -> Layout {
+    let (min_x, max_x, min_y, max_y) = geometry_bounds(positions, card_scale);
+    let scale = ((width - CANVAS_PADDING * 2.0).max(1.0) / (max_x - min_x))
+        .min((height - CANVAS_PADDING * 2.0).max(1.0) / (max_y - min_y))
+        .min(1.0);
+    let translate_x = width / 2.0 - (min_x + max_x) / 2.0 * scale;
+    let translate_y = height / 2.0 - (min_y + max_y) / 2.0 * scale;
+    let transform = |rect: Rect| {
+        Rect::new(
+            (rect.x() as f64 * scale + translate_x) as f32,
+            (rect.y() as f64 * scale + translate_y) as f32,
+            (rect.width() as f64 * scale) as f32,
+            (rect.height() as f64 * scale) as f32,
+        )
+    };
+    Layout {
+        host: transform(Rect::new(
+            (-HOST_W / 2.0 * card_scale) as f32,
+            (-HOST_H / 2.0 * card_scale) as f32,
+            (HOST_W * card_scale) as f32,
+            (HOST_H * card_scale) as f32,
+        )),
+        screens: layout_geometry(positions, card_scale)
+            .into_iter()
+            .map(|(i, p, rect)| (i, p, transform(rect)))
+            .collect(),
+        scale: scale * card_scale,
+    }
+}
+
+fn layout_geometry(positions: &[Position], card_scale: f64) -> Vec<(usize, Position, Rect)> {
+    let (tile_w, tile_h) = (SAT_W * card_scale, SAT_H * card_scale);
+    let (host_w, host_h, gap) = (HOST_W * card_scale, HOST_H * card_scale, GAP * card_scale);
+    let mut seen = std::collections::HashMap::<Position, usize>::new();
+    let totals = positions
+        .iter()
+        .fold(std::collections::HashMap::new(), |mut totals, p| {
+            *totals.entry(*p).or_insert(0usize) += 1;
+            totals
+        });
+    let mut result: Vec<(usize, Position, Rect)> = Vec::new();
+    for (index, position) in positions.iter().copied().enumerate() {
+        let lane_index = seen.entry(position).or_default();
+        let stack = (*lane_index as f64 - (totals[&position].saturating_sub(1)) as f64 / 2.0)
+            * (if matches!(position, Position::Left | Position::Right) {
+                tile_h
+            } else {
+                tile_w
+            } + EDGE_GAP);
+        *lane_index += 1;
+        let (mut x, mut y) = match position {
+            Position::Left => (-host_w / 2.0 - gap - tile_w, -tile_h / 2.0 + stack),
+            Position::Right => (host_w / 2.0 + gap, -tile_h / 2.0 + stack),
+            Position::Top => (-tile_w / 2.0 + stack, -host_h / 2.0 - gap - tile_h),
+            Position::Bottom => (-tile_w / 2.0 + stack, host_h / 2.0 + gap),
+        };
+        let mut rect = Rect::new(x as f32, y as f32, tile_w as f32, tile_h as f32);
+        let horizontal_lane = matches!(position, Position::Top | Position::Bottom);
+        while result
+            .iter()
+            .any(|(_, _, other)| rectangles_overlap(&rect, other))
+        {
+            if horizontal_lane {
+                x += tile_w + EDGE_GAP;
+            } else {
+                y += tile_h + EDGE_GAP;
+            }
+            rect = Rect::new(x as f32, y as f32, tile_w as f32, tile_h as f32);
+        }
+        result.push((index, position, rect));
+    }
+    result
+}
+
+fn rectangles_overlap(a: &Rect, b: &Rect) -> bool {
+    a.x() < b.x() + b.width()
+        && b.x() < a.x() + a.width()
+        && a.y() < b.y() + b.height()
+        && b.y() < a.y() + a.height()
+}
+
+fn reconcile_drag(handles: Option<u64>, available: impl IntoIterator<Item = u64>) -> Option<u64> {
+    handles.filter(|dragging| available.into_iter().any(|handle| handle == *dragging))
+}
+
 fn drop_zone_rect(layout: &Layout, position: Position) -> Rect {
     let gap = GAP * layout.scale;
     let width = SAT_W * layout.scale;
@@ -857,5 +976,72 @@ mod tests {
     #[test]
     fn connected_device_is_shown_as_connected() {
         assert_eq!(connection_status(true, true), "Connected");
+    }
+
+    #[test]
+    fn same_edge_screens_have_non_overlapping_tiles() {
+        let edges = [
+            Position::Left,
+            Position::Right,
+            Position::Top,
+            Position::Bottom,
+        ];
+        for left in 1..=3 {
+            for right in 1..=3 {
+                for top in 1..=3 {
+                    for bottom in 1..=3 {
+                        let positions = edges
+                            .iter()
+                            .zip([left, right, top, bottom])
+                            .flat_map(|(edge, count)| std::iter::repeat_n(*edge, count))
+                            .collect::<Vec<_>>();
+                        let rects = layout_geometry(&positions, 1.0);
+                        for first in 0..rects.len() {
+                            for second in first + 1..rects.len() {
+                                assert!(
+                                    !rectangles_overlap(&rects[first].2, &rects[second].2),
+                                    "overlap for counts {left}/{right}/{top}/{bottom}: {first} and {second}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dragging_identity_survives_reordering() {
+        assert_eq!(reconcile_drag(Some(42), [9, 77, 42]), Some(42));
+        assert_eq!(reconcile_drag(Some(42), [9, 77]), None);
+    }
+
+    #[test]
+    fn displayed_screen_numbers_follow_item_order() {
+        assert_eq!((0..3).map(screen_number).collect::<Vec<_>>(), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn fitted_layout_and_number_badges_stay_inside_small_canvas() {
+        let positions = [
+            Position::Top,
+            Position::Top,
+            Position::Right,
+            Position::Left,
+            Position::Bottom,
+        ];
+        for card_scale in [1.0, 1.5, 2.0] {
+            let layout = canvas_layout(&positions, 320.0, 160.0, card_scale);
+            for rect in
+                std::iter::once(&layout.host).chain(layout.screens.iter().map(|(_, _, rect)| rect))
+            {
+                assert!(rect.x() >= 0.0 && rect.y() >= 0.0);
+                assert!(rect.x() + rect.width() <= 320.01);
+                assert!(rect.y() + rect.height() <= 160.01);
+                let (radius, text_scale) = number_badge_metrics(rect, 40.0, 30.0);
+                assert!(radius * 2.0 <= rect.width().min(rect.height()));
+                assert!(50.0 * text_scale <= radius * 2.0);
+            }
+        }
     }
 }

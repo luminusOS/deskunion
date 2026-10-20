@@ -458,6 +458,14 @@ impl Service {
 
     fn handle_emulation_event(&mut self, event: EmulationEvent) {
         match event {
+            #[cfg(feature = "audio")]
+            EmulationEvent::AudioError { addr, error } => {
+                log::warn!("could not start audio capture for {addr}: {error}");
+                self.notify_frontend(FrontendEvent::AudioError {
+                    addr: Some(addr),
+                    message: format!("Could not start audio capture: {error}"),
+                });
+            }
             EmulationEvent::Entered {
                 addr,
                 pos,
@@ -515,6 +523,14 @@ impl Service {
 
     fn handle_capture_event(&mut self, event: ICaptureEvent) {
         match event {
+            #[cfg(feature = "audio")]
+            ICaptureEvent::AudioError { addr, error } => {
+                log::warn!("could not start audio playback for {addr}: {error}");
+                self.notify_frontend(FrontendEvent::AudioError {
+                    addr: Some(addr),
+                    message: format!("Could not start audio playback: {error}"),
+                });
+            }
             ICaptureEvent::CaptureBegin(handle) => {
                 // we entered the capture zone for an incoming connection
                 // => notify it that its capture should be released
@@ -697,6 +713,9 @@ impl Service {
     /// the entry if needed, and adopt its parked connection as the
     /// client's active address so it becomes enterable.
     fn assign_position(&mut self, fingerprint: String, pos: Position) {
+        let Some(fingerprint) = self.checked_fingerprint(&fingerprint) else {
+            return;
+        };
         let handle = match self.client_manager.get_client_by_fingerprint(&fingerprint) {
             Some(handle) => {
                 self.update_pos(handle, pos);
@@ -928,6 +947,9 @@ impl Service {
     }
 
     fn add_authorized_key(&mut self, desc: String, fp: String) {
+        let Some(fp) = self.checked_fingerprint(&fp) else {
+            return;
+        };
         self.authorized_keys.write().expect("lock").insert(fp, desc);
         let keys = self.authorized_keys.read().expect("lock").clone();
         self.notify_frontend(FrontendEvent::AuthorizedUpdated(keys));
@@ -951,7 +973,25 @@ impl Service {
         self.notify_frontend(FrontendEvent::Created(handle, c, s));
     }
 
-    fn add_configured_client(&mut self, config: deskunion_ipc::ClientConfig, active: bool) {
+    fn checked_fingerprint(&mut self, input: &str) -> Option<String> {
+        match deskunion_ipc::normalize_fingerprint(input) {
+            Ok(fingerprint) => Some(fingerprint),
+            Err(error) => {
+                self.notify_frontend(FrontendEvent::Error(format!(
+                    "Invalid certificate fingerprint: {error}"
+                )));
+                None
+            }
+        }
+    }
+
+    fn add_configured_client(&mut self, mut config: deskunion_ipc::ClientConfig, active: bool) {
+        if let Some(fingerprint) = config.fingerprint.as_deref() {
+            let Some(fingerprint) = self.checked_fingerprint(fingerprint) else {
+                return;
+            };
+            config.fingerprint = Some(fingerprint);
+        }
         let handle = self.client_manager.add_client();
         self.client_manager.set_config(handle, config);
         log::info!("added configured client {handle}");

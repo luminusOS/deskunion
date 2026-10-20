@@ -230,7 +230,7 @@ fn setup_actions(app: &adw::Application) {
             let dialog = adw::AboutDialog::builder()
                 .application_name("DeskUnion")
                 .application_icon("io.github.luminusos.DeskUnion")
-                .version(env!("CARGO_PKG_VERSION"))
+                .version(env!("DESKUNION_APP_VERSION"))
                 .developer_name("LuminusOS")
                 .website("https://github.com/luminusOS/deskunion")
                 .issue_url("https://github.com/luminusOS/deskunion/issues")

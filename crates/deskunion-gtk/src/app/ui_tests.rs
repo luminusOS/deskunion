@@ -89,6 +89,7 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     )));
     settle();
     capture(window, "first-run-after");
+    assert_eq!(controller.widgets().operation_mode_combo.selected(), 0);
 
     let mut buffer = [0; 4096];
     let count = connection.read(&mut buffer).unwrap();
@@ -98,7 +99,84 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
         "first run must not choose a role: {requests}"
     );
 
-    controller.emit(AppMsg::SetOperationMode(OperationMode::Client));
+    let fingerprint = (0..32)
+        .map(|n| format!("{n:02x}"))
+        .collect::<Vec<_>>()
+        .join(":");
+    controller.emit(AppMsg::Frontend(FrontendEvent::ConnectionAttempt {
+        fingerprint: fingerprint.clone(),
+    }));
+    settle();
+    controller.emit(AppMsg::AuthorizationConfirmed(
+        controller.model().authorization_dialog_generation,
+        fingerprint.clone(),
+    ));
+    settle();
+    controller
+        .model()
+        .fingerprint_dialog
+        .as_ref()
+        .unwrap()
+        .widget()
+        .close();
+    settle();
+    assert!(
+        controller
+            .model()
+            .pending_authorization_fingerprint
+            .is_none()
+    );
+    controller.emit(AppMsg::Frontend(FrontendEvent::ConnectionAttempt {
+        fingerprint,
+    }));
+    settle();
+    assert!(controller.model().authorization_dialog.is_some());
+    let device_a = controller
+        .model()
+        .pending_authorization_fingerprint
+        .clone()
+        .unwrap();
+    controller.emit(AppMsg::AuthorizationConfirmed(
+        controller.model().authorization_dialog_generation,
+        device_a,
+    ));
+    settle();
+    let device_b = (1..33)
+        .map(|n| format!("{n:02x}"))
+        .collect::<Vec<_>>()
+        .join(":");
+    controller.emit(AppMsg::Frontend(FrontendEvent::ConnectionAttempt {
+        fingerprint: device_b.clone(),
+    }));
+    settle();
+    controller
+        .model()
+        .fingerprint_dialog
+        .as_ref()
+        .unwrap()
+        .widget()
+        .close();
+    settle();
+    assert_eq!(
+        controller
+            .model()
+            .pending_authorization_fingerprint
+            .as_deref(),
+        Some(device_b.as_str())
+    );
+    controller.emit(AppMsg::AuthorizationCancelled(
+        controller.model().authorization_dialog_generation,
+    ));
+    settle();
+    assert!(
+        window.visible_dialog().is_none(),
+        "cancelled authorization must not leave a modal open"
+    );
+
+    controller.widgets().operation_mode_combo.set_selected(1);
+    settle();
+    assert_eq!(controller.model().operation_mode, OperationMode::Server);
+    controller.widgets().operation_mode_combo.set_selected(2);
     settle();
     assert_eq!(controller.model().operation_mode, OperationMode::Client);
     assert!(!controller.widgets().server_connect_button.is_sensitive());
@@ -154,8 +232,12 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     settle();
     assert!(
         window.width() <= 600,
-        "window did not shrink: {}",
-        window.width()
+        "window did not shrink: {}, minimum {:?}, default {}, resizable {}, dialog {:?}",
+        window.width(),
+        window.measure(gtk::Orientation::Horizontal, -1),
+        window.default_width(),
+        window.is_resizable(),
+        window.visible_dialog()
     );
     assert!(controller.widgets().split_view.is_collapsed());
     assert!(!controller.widgets().split_view.shows_sidebar());
@@ -223,7 +305,14 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
                     .measure(gtk::Orientation::Horizontal, -1)
                     .0
                     <= window.width(),
-                "audio page content must fit a narrow window"
+                "audio page content must fit a narrow window: min {:?}, width {}, collapsed {}, dialogs {}",
+                controller
+                    .widgets()
+                    .toast_overlay
+                    .measure(gtk::Orientation::Horizontal, -1),
+                window.width(),
+                controller.widgets().split_view.is_collapsed(),
+                window.dialogs().n_items()
             );
         }
         if page == Page::Settings {
@@ -317,6 +406,11 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     }
     settle();
     capture(window, "screens-server-dark");
+    settings.set_gtk_font_name(Some("Cantarell 20"));
+    settle();
+    capture(window, "screens-server-large-text-dark");
+    settings.set_gtk_font_name(font.as_deref());
+    settle();
     assert_eq!(controller.model().status_text(), "Sharing stopped");
     assert!(
         controller

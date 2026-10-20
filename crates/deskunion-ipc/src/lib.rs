@@ -439,6 +439,77 @@ pub fn default_socket_path() -> Result<PathBuf, SocketPathError> {
         .join(DESKUNION_SOCKET_NAME))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum FingerprintError {
+    #[error("fingerprint cannot be empty")]
+    Empty,
+    #[error("fingerprint must be 32 colon-separated hex bytes or 64 hex characters")]
+    InvalidLength,
+    #[error("fingerprint contains invalid hexadecimal characters")]
+    InvalidHex,
+    #[error("invalid fingerprint format (expected 2 hex characters per colon-separated byte)")]
+    InvalidFormat,
+}
+
+/// Validates and normalizes a SHA-256 certificate fingerprint into protocol format:
+/// 32 lowercase hexadecimal bytes separated by colons (e.g. `aa:bb:cc:...`).
+///
+/// Accepts:
+/// - 32 hex bytes separated by colons (case-insensitive, e.g. `AA:BB:...` or `aa:bb:...`)
+/// - 64 continuous hexadecimal characters (case-insensitive, e.g. `aabb...`)
+///
+/// Rejects:
+/// - Empty strings / whitespace-only
+/// - Non-hexadecimal or non-ASCII characters
+/// - Incorrect lengths or segment lengths
+/// - Arbitrary text
+pub fn normalize_fingerprint(input: &str) -> Result<String, FingerprintError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(FingerprintError::Empty);
+    }
+    if !trimmed.is_ascii() {
+        return Err(FingerprintError::InvalidHex);
+    }
+
+    if trimmed.contains(':') {
+        let parts: Vec<&str> = trimmed.split(':').collect();
+        if parts.len() != 32 {
+            return Err(FingerprintError::InvalidLength);
+        }
+        let mut normalized = String::with_capacity(32 * 3 - 1);
+        for (i, part) in parts.iter().enumerate() {
+            if part.len() != 2 {
+                return Err(FingerprintError::InvalidFormat);
+            }
+            if !part.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(FingerprintError::InvalidHex);
+            }
+            if i > 0 {
+                normalized.push(':');
+            }
+            normalized.push_str(&part.to_ascii_lowercase());
+        }
+        Ok(normalized)
+    } else {
+        if trimmed.len() != 64 {
+            return Err(FingerprintError::InvalidLength);
+        }
+        if !trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(FingerprintError::InvalidHex);
+        }
+        let mut normalized = String::with_capacity(32 * 3 - 1);
+        for (i, chunk) in trimmed.as_bytes().chunks(2).enumerate() {
+            if i > 0 {
+                normalized.push(':');
+            }
+            normalized.push((chunk[0] as char).to_ascii_lowercase());
+            normalized.push((chunk[1] as char).to_ascii_lowercase());
+        }
+        Ok(normalized)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,6 +580,128 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<FrontendRequest>(&json).expect("deserialize request"),
             request
+        );
+    }
+
+    #[test]
+    fn normalize_fingerprint_colon_separated() {
+        let raw = "01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef";
+        let normalized = normalize_fingerprint(raw).expect("valid colon hex");
+        assert_eq!(normalized, raw);
+
+        let uppercase = "01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF";
+        assert_eq!(normalize_fingerprint(uppercase).unwrap(), raw);
+
+        let mixed = "  01:23:45:67:89:Ab:cD:eF:01:23:45:67:89:aB:Cd:Ef:01:23:45:67:89:AB:cd:EF:01:23:45:67:89:ab:CD:ef  ";
+        assert_eq!(normalize_fingerprint(mixed).unwrap(), raw);
+    }
+
+    #[test]
+    fn normalize_fingerprint_plain_64_hex() {
+        let plain = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let expected = "01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef";
+        assert_eq!(normalize_fingerprint(plain).unwrap(), expected);
+
+        let plain_upper = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+        assert_eq!(normalize_fingerprint(plain_upper).unwrap(), expected);
+
+        let plain_padded = "  0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  ";
+        assert_eq!(normalize_fingerprint(plain_padded).unwrap(), expected);
+    }
+
+    #[test]
+    fn normalize_fingerprint_rejects_empty() {
+        assert_eq!(normalize_fingerprint(""), Err(FingerprintError::Empty));
+        assert_eq!(
+            normalize_fingerprint("   \t\n  "),
+            Err(FingerprintError::Empty)
+        );
+    }
+
+    #[test]
+    fn normalize_fingerprint_rejects_invalid_length() {
+        // arbitrary strings
+        assert_eq!(
+            normalize_fingerprint("invalid"),
+            Err(FingerprintError::InvalidLength)
+        );
+        assert_eq!(
+            normalize_fingerprint("aa:bb"),
+            Err(FingerprintError::InvalidLength)
+        );
+
+        // 31 colon hex parts
+        let short_colon = "01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f:10:11:12:13:14:15:16:17:18:19:1a:1b:1c:1d:1e:1f";
+        assert_eq!(
+            normalize_fingerprint(short_colon),
+            Err(FingerprintError::InvalidLength)
+        );
+
+        // 33 colon hex parts
+        let long_colon = "01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f:10:11:12:13:14:15:16:17:18:19:1a:1b:1c:1d:1e:1f:20:21";
+        assert_eq!(
+            normalize_fingerprint(long_colon),
+            Err(FingerprintError::InvalidLength)
+        );
+
+        // 63 plain hex chars
+        let short_plain = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde";
+        assert_eq!(
+            normalize_fingerprint(short_plain),
+            Err(FingerprintError::InvalidLength)
+        );
+
+        // 65 plain hex chars
+        let long_plain = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0";
+        assert_eq!(
+            normalize_fingerprint(long_plain),
+            Err(FingerprintError::InvalidLength)
+        );
+    }
+
+    #[test]
+    fn normalize_fingerprint_rejects_invalid_format() {
+        // 32 parts, but first has 1 character
+        let bad_part = "1:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef";
+        assert_eq!(
+            normalize_fingerprint(bad_part),
+            Err(FingerprintError::InvalidFormat)
+        );
+
+        // 32 parts, but first has 3 characters
+        let bad_part3 = "001:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef";
+        assert_eq!(
+            normalize_fingerprint(bad_part3),
+            Err(FingerprintError::InvalidFormat)
+        );
+
+        // empty segment
+        let empty_segment = ":23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:00";
+        assert_eq!(
+            normalize_fingerprint(empty_segment),
+            Err(FingerprintError::InvalidLength)
+        );
+    }
+
+    #[test]
+    fn normalize_fingerprint_rejects_non_hex() {
+        let non_hex_colon = "01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:zz";
+        assert_eq!(
+            normalize_fingerprint(non_hex_colon),
+            Err(FingerprintError::InvalidHex)
+        );
+
+        let non_hex_plain = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdzz";
+        assert_eq!(
+            normalize_fingerprint(non_hex_plain),
+            Err(FingerprintError::InvalidHex)
+        );
+
+        // non-ascii characters
+        let non_ascii = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdöö";
+        assert_eq!(
+            normalize_fingerprint(non_ascii),
+            Err(FingerprintError::InvalidHex)
         );
     }
 }

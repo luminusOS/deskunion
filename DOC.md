@@ -1,5 +1,30 @@
 # General Software Architecture
 
+## Pending UI and audio fixes
+
+Client edits retain unapplied text across connection and audio updates. Invalid
+ports and certificate fingerprints receive explicit validation feedback, and
+cancelled authorization can be retried. Audio startup errors reach the persistent
+banner; unavailable configured devices are distinguished from the system default.
+The arrangement preserves device identity during changes and supports numbered,
+keyboard-accessible layouts with large text. About reports the application version.
+
+Missing Teams participant audio still requires verification on the Windows client.
+Record the Windows build and the `Windows audio capture mode` startup log. On
+supported builds, process loopback captures applications independently of the
+physical output endpoint; older Windows uses render-endpoint loopback, so the
+Teams speaker and the captured endpoint must match. This is not microphone sharing.
+On supported Windows builds the capture source picker also lists physical render
+endpoints. Selecting one explicitly requests endpoint loopback; choosing the
+system default or “All application audio” retains process loopback. To diagnose
+missing Teams voices, select the same output used by Teams and reconnect sharing.
+Endpoint loopback follows that endpoint's volume and mute settings.
+If an explicitly selected endpoint disappears, capture reports an error instead
+of silently recording a different output; select an available source or the system
+default and reconnect.
+Changes to Windows capture require updating the Windows client, not just the Linux
+server. Linux-only test results do not establish that a Teams call is fixed.
+
 ## Release 0.2.5
 
 Redesigns the screen arrangement as a compact numbered layout sharing one card with the client list, adds a persistent error banner, remembers the selected audio devices and tidies interface wording.

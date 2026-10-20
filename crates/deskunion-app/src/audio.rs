@@ -39,9 +39,9 @@ fn capture_backend() -> capture::Backend {
 /// the stream) and a channel of encoded frames to forward to the peer.
 pub(crate) fn start_sender(
     settings: &AudioSettings,
-) -> Option<(AudioSender, Receiver<EncodedFrame>)> {
+) -> Result<Option<(AudioSender, Receiver<EncodedFrame>)>, deskunion_audio::AudioError> {
     if !settings.send {
-        return None;
+        return Ok(None);
     }
     let (tx, rx) = channel(AUDIO_QUEUE_FRAMES);
     let backend = capture_backend();
@@ -73,11 +73,8 @@ pub(crate) fn start_sender(
             }
         }),
     ) {
-        Ok(sender) => Some((sender, rx)),
-        Err(e) => {
-            log::warn!("failed to start audio sender: {e}");
-            None
-        }
+        Ok(sender) => Ok(Some((sender, rx))),
+        Err(e) => Err(e),
     }
 }
 
@@ -89,9 +86,9 @@ pub(crate) fn start_receiver(
     settings: &AudioSettings,
     sample_rate: u32,
     channels: u8,
-) -> Option<AudioReceiver> {
+) -> Result<Option<AudioReceiver>, deskunion_audio::AudioError> {
     if !settings.receive {
-        return None;
+        return Ok(None);
     }
     match AudioReceiver::start(
         playback::Backend::Cpal,
@@ -100,11 +97,8 @@ pub(crate) fn start_receiver(
         channels as u16,
         settings.buffer_ms,
     ) {
-        Ok(receiver) => Some(receiver),
-        Err(e) => {
-            log::warn!("failed to start audio receiver: {e}");
-            None
-        }
+        Ok(receiver) => Ok(Some(receiver)),
+        Err(e) => Err(e),
     }
 }
 
@@ -141,4 +135,30 @@ fn to_ipc_devices(
             is_default: d.is_default,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> AudioSettings {
+        AudioSettings {
+            send: false,
+            receive: false,
+            bitrate: 64_000,
+            buffer_ms: 100,
+            capture_device: None,
+            playback_device: None,
+        }
+    }
+
+    #[test]
+    fn disabled_sender_returns_none_without_opening_capture() {
+        assert!(start_sender(&settings()).unwrap().is_none());
+    }
+
+    #[test]
+    fn disabled_receiver_returns_none_without_opening_playback() {
+        assert!(start_receiver(&settings(), 48_000, 2).unwrap().is_none());
+    }
 }

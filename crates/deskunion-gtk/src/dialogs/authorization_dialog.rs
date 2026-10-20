@@ -17,10 +17,20 @@ pub struct AuthorizationDialogModel {
     fingerprint: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AuthorizationDialogOutput {
     Confirmed(String),
     Cancelled,
+}
+
+pub(crate) fn evaluate_authorization_response(
+    response: &str,
+    fingerprint: &str,
+) -> AuthorizationDialogOutput {
+    match response {
+        "authorize" => AuthorizationDialogOutput::Confirmed(fingerprint.to_string()),
+        _ => AuthorizationDialogOutput::Cancelled,
+    }
 }
 
 #[relm4::component(pub)]
@@ -66,8 +76,10 @@ impl SimpleComponent for AuthorizationDialogModel {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let fingerprint = deskunion_ipc::normalize_fingerprint(&init.fingerprint)
+            .unwrap_or_else(|_| init.fingerprint.clone());
         let model = AuthorizationDialogModel {
-            fingerprint: init.fingerprint.clone(),
+            fingerprint: fingerprint.clone(),
         };
         let widgets = view_output!();
 
@@ -75,17 +87,13 @@ impl SimpleComponent for AuthorizationDialogModel {
         // leading `detail: Option<&str>` filter arg before the closure —
         // the `view!{}` macro's single-arg `connect_NAME => closure` sugar
         // isn't built for that, so wire it manually.
-        let fingerprint = init.fingerprint;
         widgets.root.connect_response(
             None,
             glib::clone!(
                 #[strong]
                 sender,
                 move |_dialog, response| {
-                    let output = match response {
-                        "authorize" => AuthorizationDialogOutput::Confirmed(fingerprint.clone()),
-                        _ => AuthorizationDialogOutput::Cancelled,
-                    };
+                    let output = evaluate_authorization_response(response, &fingerprint);
                     sender.output(output).unwrap();
                 }
             ),
@@ -94,5 +102,36 @@ impl SimpleComponent for AuthorizationDialogModel {
         widgets.root.present(Some(&init.parent));
 
         ComponentParts { model, widgets }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evaluate_authorization_response_confirmed_on_authorize() {
+        let fp = "01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef";
+        assert_eq!(
+            evaluate_authorization_response("authorize", fp),
+            AuthorizationDialogOutput::Confirmed(fp.to_string())
+        );
+    }
+
+    #[test]
+    fn evaluate_authorization_response_cancelled_on_other_responses() {
+        let fp = "01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef";
+        assert_eq!(
+            evaluate_authorization_response("cancel", fp),
+            AuthorizationDialogOutput::Cancelled
+        );
+        assert_eq!(
+            evaluate_authorization_response("close", fp),
+            AuthorizationDialogOutput::Cancelled
+        );
+        assert_eq!(
+            evaluate_authorization_response("", fp),
+            AuthorizationDialogOutput::Cancelled
+        );
     }
 }

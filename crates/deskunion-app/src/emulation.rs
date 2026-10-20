@@ -39,6 +39,8 @@ pub(crate) enum EmulationEvent {
     },
     /// connection to the server closed
     Disconnected { addr: SocketAddr },
+    #[cfg(feature = "audio")]
+    AudioError { addr: SocketAddr, error: String },
     /// result of a dial-out test requested by the frontend
     ConnectionTested {
         request_id: u64,
@@ -247,6 +249,10 @@ impl DialTask {
                         }
                         self.event_tx.send(EmulationEvent::Disconnected { addr }).expect("channel closed");
                     }
+                    #[cfg(feature = "audio")]
+                    ConnectionEvent::AudioError { addr, error } => {
+                        let _ = self.event_tx.send(audio_error_event(addr, error));
+                    }
                 }},
                 event = self.emulation_proxy.event() => match event {
                     EmulationEvent::ClipboardText(text) => {
@@ -322,6 +328,26 @@ impl DialTask {
         }
         self.conn.terminate().await;
         self.emulation_proxy.terminate().await;
+    }
+}
+
+#[cfg(feature = "audio")]
+fn audio_error_event(addr: SocketAddr, error: String) -> EmulationEvent {
+    EmulationEvent::AudioError { addr, error }
+}
+
+#[cfg(all(test, feature = "audio"))]
+mod audio_error_tests {
+    use super::*;
+
+    #[test]
+    fn sender_start_failure_is_forwarded_as_emulation_event() {
+        let addr = "127.0.0.1:4242".parse().unwrap();
+        let event = audio_error_event(addr, "capture unavailable".to_owned());
+
+        assert!(
+            matches!(event, EmulationEvent::AudioError { addr: event_addr, error } if event_addr == addr && error == "capture unavailable")
+        );
     }
 }
 

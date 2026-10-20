@@ -75,6 +75,11 @@ pub(crate) enum ConnectionEvent {
     Disconnected {
         addr: SocketAddr,
     },
+    #[cfg(feature = "audio")]
+    AudioError {
+        addr: SocketAddr,
+        error: String,
+    },
 }
 
 /// the capture-side endpoint the emulation side dials
@@ -818,8 +823,15 @@ async fn server_loop(
 
     #[cfg(feature = "audio")]
     let (audio_sender, audio_rx) = match crate::audio::start_sender(&audio) {
-        Some((sender, rx)) => (Some(sender), Some(rx)),
-        None => (None, None),
+        Ok(Some((sender, rx))) => (Some(sender), Some(rx)),
+        Ok(None) => (None, None),
+        Err(error) => {
+            let _ = tx.send(ConnectionEvent::AudioError {
+                addr,
+                error: error.to_string(),
+            });
+            (None, None)
+        }
     };
     let mut audio_stopped_rx: Option<tokio::sync::mpsc::Receiver<()>> = None;
     #[cfg(feature = "audio")]

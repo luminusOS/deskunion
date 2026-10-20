@@ -86,6 +86,11 @@ pub(crate) enum ListenEvent {
         packets_lost: u64,
         level: f32,
     },
+    #[cfg(feature = "audio")]
+    AudioError {
+        addr: SocketAddr,
+        error: String,
+    },
 }
 
 pub(crate) struct DeskunionListener {
@@ -553,12 +558,39 @@ pub(crate) struct AudioRxState {
     /// lazy receiver creation already failed once; don't retry (and
     /// re-log) for every single incoming frame
     lazy_failed: bool,
+    last_start_error: Option<String>,
     received: u64,
     dropped: u64,
 }
 
 #[cfg(feature = "audio")]
 impl AudioRxState {
+    fn apply_start_result(
+        &mut self,
+        result: Result<Option<deskunion_audio::AudioReceiver>, deskunion_audio::AudioError>,
+        tx: &Sender<ListenEvent>,
+        addr: SocketAddr,
+    ) {
+        match result {
+            Ok(receiver) => {
+                self.lazy_failed = receiver.is_none();
+                self.receiver = receiver;
+                self.last_start_error = None;
+            }
+            Err(error) => {
+                self.lazy_failed = true;
+                let error = error.to_string();
+                if self.last_start_error.as_deref() != Some(&error) {
+                    let _ = tx.send(ListenEvent::AudioError {
+                        addr,
+                        error: error.clone(),
+                    });
+                    self.last_start_error = Some(error);
+                }
+            }
+        }
+    }
+
     /// push every frame of a decoded `Audio`/`AudioBatch` datagram
     /// (payload ranges into `buf`) into the receiver
     pub(crate) fn on_frames(
@@ -605,10 +637,17 @@ impl AudioRxState {
                 sample_rate,
                 channels,
             } => {
+                if self.last_start_format != Some((sample_rate, channels)) {
+                    self.last_start_error = None;
+                }
                 self.last_start_format = Some((sample_rate, channels));
                 self.lazy_failed = false;
                 if self.receiver.is_none() {
-                    self.receiver = crate::audio::start_receiver(audio, sample_rate, channels);
+                    self.apply_start_result(
+                        crate::audio::start_receiver(audio, sample_rate, channels),
+                        tx,
+                        addr,
+                    );
                     if self.receiver.is_some() {
                         tx.send(ListenEvent::AudioStream {
                             addr,
@@ -625,6 +664,7 @@ impl AudioRxState {
                 self.receiver = None;
                 self.last_start_format = None;
                 self.lazy_failed = false;
+                self.last_start_error = None;
                 tx.send(ListenEvent::AudioStream {
                     addr,
                     active: false,
@@ -653,7 +693,11 @@ impl AudioRxState {
         log::debug!(
             "audio frames from {addr} arrived without an active receiver; starting one lazily ({sample_rate} Hz, {channels} ch)"
         );
-        self.receiver = crate::audio::start_receiver(audio, sample_rate, channels);
+        self.apply_start_result(
+            crate::audio::start_receiver(audio, sample_rate, channels),
+            tx,
+            addr,
+        );
         if self.receiver.is_some() {
             tx.send(ListenEvent::AudioStream {
                 addr,
@@ -860,6 +904,29 @@ async fn read_loop(
 
 #[cfg(test)]
 mod test {
+    #[cfg(feature = "audio")]
+    #[test]
+    fn repeated_receiver_start_failures_are_reported_once_until_recovery() {
+        use futures::FutureExt;
+        let (tx, mut rx) = local_channel::mpsc::channel();
+        let addr = "127.0.0.1:4242".parse().unwrap();
+        let mut state = super::AudioRxState::default();
+        for _ in 0..3 {
+            state.apply_start_result(Err(deskunion_audio::AudioError::BackendClosed), &tx, addr);
+        }
+        assert!(
+            matches!(rx.recv().now_or_never(), Some(Some(super::ListenEvent::AudioError { addr: peer, .. })) if peer == addr)
+        );
+        assert!(rx.recv().now_or_never().is_none());
+        assert!(state.lazy_failed);
+        state.apply_start_result(Ok(None), &tx, addr);
+        state.apply_start_result(Err(deskunion_audio::AudioError::BackendClosed), &tx, addr);
+        assert!(matches!(
+            rx.recv().now_or_never(),
+            Some(Some(super::ListenEvent::AudioError { .. }))
+        ));
+    }
+
     use super::*;
 
     /// a connection whose reads fail (so `read_loop` exits) while

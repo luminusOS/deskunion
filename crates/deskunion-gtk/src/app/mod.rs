@@ -55,6 +55,14 @@ fn parse_listening_port(text: &str) -> Option<u16> {
         text.parse::<u16>().ok().filter(|port| *port != 0)
     }
 }
+
+fn operation_mode_index(mode: OperationMode) -> u32 {
+    match mode {
+        OperationMode::Unconfigured => 0,
+        OperationMode::Server => 1,
+        OperationMode::Client => 2,
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Screens,
@@ -148,9 +156,10 @@ pub enum AppMsg {
     KeyRow(KeyRowOutput),
     ParkedDeviceRow(ParkedDeviceRowOutput),
 
-    AuthorizationConfirmed(String),
-    AuthorizationCancelled,
-    FingerprintConfirmed(String, String),
+    AuthorizationConfirmed(u64, String),
+    AuthorizationCancelled(u64),
+    FingerprintConfirmed(u64, String, String),
+    FingerprintCancelled(u64, Option<String>),
 
     #[cfg(target_os = "macos")]
     MacosAccessibilityGranted,
@@ -238,8 +247,10 @@ pub struct AppModel {
     log: LogState,
 
     authorization_dialog: Option<Controller<AuthorizationDialogModel>>,
+    authorization_dialog_generation: u64,
     pending_authorization_fingerprint: Option<String>,
     fingerprint_dialog: Option<Controller<FingerprintDialogModel>>,
+    fingerprint_dialog_generation: u64,
     add_client_dialog: Option<Controller<AddClientDialogModel>>,
 }
 
@@ -493,6 +504,9 @@ impl AppModel {
         sender: &ComponentSender<Self>,
         fingerprint: Option<String>,
     ) {
+        self.fingerprint_dialog_generation = self.fingerprint_dialog_generation.wrapping_add(1);
+        let generation = self.fingerprint_dialog_generation;
+        let fingerprint_context = fingerprint.clone();
         if let Some(existing) = self.fingerprint_dialog.take() {
             existing.widget().force_close();
         }
@@ -501,9 +515,12 @@ impl AppModel {
                 fingerprint,
                 parent: self.root.clone(),
             })
-            .forward(sender.input_sender(), |out| match out {
+            .forward(sender.input_sender(), move |out| match out {
                 FingerprintDialogOutput::Confirmed(desc, fp) => {
-                    AppMsg::FingerprintConfirmed(desc, fp)
+                    AppMsg::FingerprintConfirmed(generation, desc, fp)
+                }
+                FingerprintDialogOutput::Cancelled => {
+                    AppMsg::FingerprintCancelled(generation, fingerprint_context.clone())
                 }
             });
         self.fingerprint_dialog = Some(controller);
@@ -514,6 +531,8 @@ impl AppModel {
             return;
         }
         self.pending_authorization_fingerprint = Some(fingerprint.clone());
+        self.authorization_dialog_generation = self.authorization_dialog_generation.wrapping_add(1);
+        let generation = self.authorization_dialog_generation;
         if let Some(existing) = self.authorization_dialog.take() {
             existing.widget().force_close();
         }
@@ -522,9 +541,11 @@ impl AppModel {
                 fingerprint,
                 parent: self.root.clone(),
             })
-            .forward(sender.input_sender(), |out| match out {
-                AuthorizationDialogOutput::Confirmed(fp) => AppMsg::AuthorizationConfirmed(fp),
-                AuthorizationDialogOutput::Cancelled => AppMsg::AuthorizationCancelled,
+            .forward(sender.input_sender(), move |out| match out {
+                AuthorizationDialogOutput::Confirmed(fp) => {
+                    AppMsg::AuthorizationConfirmed(generation, fp)
+                }
+                AuthorizationDialogOutput::Cancelled => AppMsg::AuthorizationCancelled(generation),
             });
         self.authorization_dialog = Some(controller);
     }
@@ -1194,7 +1215,7 @@ impl SimpleComponent for AppModel {
 
                                         adw::PreferencesGroup {
                                             set_title: "Screen arrangement",
-                                            set_description: Some("Drag a numbered screen to the edge where it sits, or select it and use the arrow keys."),
+                                            set_description: Some("Drag a numbered screen to its edge. With the keyboard, use Page Up or Page Down to select a device, arrow keys to move it, and Escape to cancel a drag."),
                                             #[watch]
                                             set_visible: model.operation_mode == OperationMode::Server,
 
@@ -1463,7 +1484,7 @@ impl SimpleComponent for AppModel {
                                                 set_title: "Output device",
                                                 #[watch]
                                                 #[block_signal(audio_playback_handler)]
-                                                set_model: Some(&audio_device_model(&model.audio_playback_devices)),
+                                                set_model: Some(&audio_device_model(&model.audio_playback_devices, model.audio_playback_device.as_deref())),
                                                 #[watch]
                                                 #[block_signal(audio_playback_handler)]
                                                 set_selected: audio_device_index(&model.audio_playback_devices, model.audio_playback_device.as_deref()),
@@ -1493,7 +1514,7 @@ impl SimpleComponent for AppModel {
                                                 set_title: "Capture source",
                                                 #[watch]
                                                 #[block_signal(audio_capture_handler)]
-                                                set_model: Some(&audio_device_model(&model.audio_capture_devices)),
+                                                set_model: Some(&audio_device_model(&model.audio_capture_devices, model.audio_capture_device.as_deref())),
                                                 #[watch]
                                                 #[block_signal(audio_capture_handler)]
                                                 set_selected: audio_device_index(&model.audio_capture_devices, model.audio_capture_device.as_deref()),
@@ -1632,17 +1653,18 @@ impl SimpleComponent for AppModel {
                                         adw::PreferencesGroup {
                                             set_title: "Operation mode",
 
+                                            #[name(operation_mode_combo)]
                                             adw::ComboRow {
                                                 set_title: "Use this computer as",
-                                                set_model: Some(&gtk::StringList::new(&["Server", "Client"])),
+                                                set_model: Some(&gtk::StringList::new(&["Not configured", "Server", "Client"])),
                                                 #[watch]
                                                 #[block_signal(mode_handler)]
-                                                set_selected: u32::from(model.operation_mode == OperationMode::Client),
+                                                set_selected: operation_mode_index(model.operation_mode),
                                                 connect_selected_notify[sender] => move |row| {
-                                                    sender.input(AppMsg::SetOperationMode(if row.selected() == 1 {
-                                                        OperationMode::Client
-                                                    } else {
-                                                        OperationMode::Server
+                                                    sender.input(AppMsg::SetOperationMode(match row.selected() {
+                                                        1 => OperationMode::Server,
+                                                        2 => OperationMode::Client,
+                                                        _ => OperationMode::Unconfigured,
                                                     }));
                                                 } @mode_handler,
                                             },
@@ -1981,8 +2003,10 @@ impl SimpleComponent for AppModel {
             arrangement_expanded: false,
             log: LogState::new(log_list_box.clone()),
             authorization_dialog: None,
+            authorization_dialog_generation: 0,
             pending_authorization_fingerprint: None,
             fingerprint_dialog: None,
+            fingerprint_dialog_generation: 0,
             add_client_dialog: None,
         };
 
@@ -2173,13 +2197,21 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::AudioCaptureDeviceChanged(selected) => {
                 if !self.updating_audio_ui {
-                    let device = selected_audio_device(&self.audio_capture_devices, selected);
+                    let device = selected_audio_device(
+                        &self.audio_capture_devices,
+                        selected,
+                        self.audio_capture_device.as_deref(),
+                    );
                     self.request(FrontendRequest::SetAudioCaptureDevice(device));
                 }
             }
             AppMsg::AudioPlaybackDeviceChanged(selected) => {
                 if !self.updating_audio_ui {
-                    let device = selected_audio_device(&self.audio_playback_devices, selected);
+                    let device = selected_audio_device(
+                        &self.audio_playback_devices,
+                        selected,
+                        self.audio_playback_device.as_deref(),
+                    );
                     self.request(FrontendRequest::SetAudioPlaybackDevice(device));
                 }
             }
@@ -2250,23 +2282,48 @@ impl SimpleComponent for AppModel {
                 }
             }
 
-            AppMsg::AuthorizationConfirmed(fingerprint) => {
+            AppMsg::AuthorizationConfirmed(generation, fingerprint) => {
+                if generation != self.authorization_dialog_generation
+                    || self.authorization_dialog.is_none()
+                {
+                    return;
+                }
                 if let Some(dialog) = self.authorization_dialog.take() {
                     dialog.widget().force_close();
                 }
                 self.open_fingerprint_dialog(&sender, Some(fingerprint));
             }
-            AppMsg::AuthorizationCancelled => {
+            AppMsg::AuthorizationCancelled(generation) => {
+                if generation != self.authorization_dialog_generation
+                    || self.authorization_dialog.is_none()
+                {
+                    return;
+                }
                 if let Some(dialog) = self.authorization_dialog.take() {
                     dialog.widget().force_close();
                 }
                 self.pending_authorization_fingerprint = None;
             }
-            AppMsg::FingerprintConfirmed(desc, fp) => {
+            AppMsg::FingerprintConfirmed(generation, desc, fp) => {
+                if generation != self.fingerprint_dialog_generation {
+                    return;
+                }
                 if let Some(dialog) = self.fingerprint_dialog.take() {
                     dialog.widget().force_close();
                 }
+                if self.pending_authorization_fingerprint.as_deref() == Some(fp.as_str()) {
+                    self.pending_authorization_fingerprint = None;
+                }
                 self.request(FrontendRequest::AuthorizeKey(desc, fp));
+            }
+            AppMsg::FingerprintCancelled(generation, fingerprint) => {
+                if generation != self.fingerprint_dialog_generation {
+                    return;
+                }
+                self.fingerprint_dialog = None;
+                if self.pending_authorization_fingerprint == fingerprint {
+                    self.pending_authorization_fingerprint = None;
+                }
             }
 
             #[cfg(target_os = "macos")]

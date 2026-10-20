@@ -10,7 +10,7 @@ pub struct AddClientDialogInit {
 
 pub struct AddClientDialogModel;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AddClientDialogOutput {
     PairRequested(ClientConfig),
     Cancelled,
@@ -25,24 +25,36 @@ fn position_from_selected(selected: u32) -> Position {
     }
 }
 
-fn pairing_config(
-    fingerprint: &adw::EntryRow,
-    name: &adw::EntryRow,
-    position: &adw::ComboRow,
+pub(crate) fn build_client_config(
+    raw_fingerprint: &str,
+    name: &str,
+    selected_pos: u32,
 ) -> Option<ClientConfig> {
-    let fingerprint = fingerprint.text().trim().to_owned();
-    if fingerprint.is_empty() {
-        return None;
-    }
-
-    let name = name.text().trim().to_owned();
+    let raw = raw_fingerprint.trim();
+    let normalized = deskunion_ipc::normalize_fingerprint(raw).ok()?;
+    let trimmed_name = name.trim();
 
     Some(ClientConfig {
-        hostname: (!name.is_empty()).then_some(name),
-        pos: position_from_selected(position.selected()),
-        fingerprint: Some(fingerprint),
+        hostname: (!trimmed_name.is_empty()).then(|| trimmed_name.to_owned()),
+        pos: position_from_selected(selected_pos),
+        fingerprint: Some(normalized),
         ..ClientConfig::default()
     })
+}
+
+pub(crate) fn evaluate_add_client_response(
+    response: &str,
+    raw_fingerprint: &str,
+    name: &str,
+    selected_pos: u32,
+) -> AddClientDialogOutput {
+    match response {
+        "add" => match build_client_config(raw_fingerprint, name, selected_pos) {
+            Some(config) => AddClientDialogOutput::PairRequested(config),
+            None => AddClientDialogOutput::Cancelled,
+        },
+        _ => AddClientDialogOutput::Cancelled,
+    }
 }
 
 #[relm4::component(pub)]
@@ -92,6 +104,29 @@ impl SimpleComponent for AddClientDialogModel {
                         set_selected: 1,
                     },
                 },
+
+                #[name(fingerprint_error)]
+                gtk::Label {
+                    set_wrap: true,
+                    set_xalign: 0.0,
+                    set_margin_start: 6,
+                    set_margin_end: 6,
+                    add_css_class: "error",
+                    add_css_class: "caption",
+                    set_visible: false,
+                },
+
+                #[name(fingerprint_hint)]
+                gtk::Label {
+                    set_wrap: true,
+                    set_xalign: 0.0,
+                    set_margin_start: 6,
+                    set_margin_end: 6,
+                    add_css_class: "dim-label",
+                    add_css_class: "caption",
+                    set_label: "Format: 32 colon-separated hex bytes (aa:bb:…) or 64 hex characters",
+                    set_visible: true,
+                },
             },
         }
     }
@@ -104,12 +139,42 @@ impl SimpleComponent for AddClientDialogModel {
         let model = Self;
         let widgets = view_output!();
 
-        widgets.root.set_response_enabled("add", false);
-        widgets.fingerprint.connect_changed(glib::clone!(
+        let sync_add = glib::clone!(
             #[weak(rename_to = dialog)]
             widgets.root,
-            move |entry| dialog.set_response_enabled("add", !entry.text().trim().is_empty())
-        ));
+            #[weak(rename_to = error_label)]
+            widgets.fingerprint_error,
+            #[weak(rename_to = hint_label)]
+            widgets.fingerprint_hint,
+            move |entry: &adw::EntryRow| {
+                let text = entry.text();
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    entry.remove_css_class("error");
+                    error_label.set_visible(false);
+                    hint_label.set_visible(true);
+                    dialog.set_response_enabled("add", false);
+                } else {
+                    match deskunion_ipc::normalize_fingerprint(trimmed) {
+                        Ok(_) => {
+                            entry.remove_css_class("error");
+                            error_label.set_visible(false);
+                            hint_label.set_visible(false);
+                            dialog.set_response_enabled("add", true);
+                        }
+                        Err(err) => {
+                            entry.add_css_class("error");
+                            error_label.set_text(&err.to_string());
+                            error_label.set_visible(true);
+                            hint_label.set_visible(true);
+                            dialog.set_response_enabled("add", false);
+                        }
+                    }
+                }
+            }
+        );
+        sync_add(&widgets.fingerprint);
+        widgets.fingerprint.connect_changed(sync_add);
 
         widgets.root.connect_response(
             None,
@@ -122,16 +187,14 @@ impl SimpleComponent for AddClientDialogModel {
                 widgets.name,
                 #[strong(rename_to = position_widget)]
                 widgets.position,
-                move |_dialog, response| match response {
-                    "add" =>
-                        if let Some(config) =
-                            pairing_config(&fingerprint_widget, &name_widget, &position_widget)
-                        {
-                            sender
-                                .output(AddClientDialogOutput::PairRequested(config))
-                                .unwrap();
-                        },
-                    _ => sender.output(AddClientDialogOutput::Cancelled).unwrap(),
+                move |_dialog, response| {
+                    let output = evaluate_add_client_response(
+                        response,
+                        fingerprint_widget.text().as_str(),
+                        name_widget.text().as_str(),
+                        position_widget.selected(),
+                    );
+                    sender.output(output).unwrap();
                 }
             ),
         );
@@ -151,5 +214,65 @@ mod tests {
         assert_eq!(position_from_selected(1), Position::Right);
         assert_eq!(position_from_selected(2), Position::Top);
         assert_eq!(position_from_selected(3), Position::Bottom);
+    }
+
+    #[test]
+    fn build_client_config_with_valid_colon_hex() {
+        let raw = "01:23:45:67:89:AB:CD:EF:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef";
+        let config = build_client_config(raw, "laptop", 1).expect("valid config");
+        assert_eq!(
+            config.fingerprint,
+            Some("01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef".to_string())
+        );
+        assert_eq!(config.hostname, Some("laptop".to_string()));
+        assert_eq!(config.pos, Position::Right);
+    }
+
+    #[test]
+    fn build_client_config_with_valid_plain_hex() {
+        let plain = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let config = build_client_config(plain, "", 2).expect("valid config");
+        assert_eq!(
+            config.fingerprint,
+            Some("01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef".to_string())
+        );
+        assert_eq!(config.hostname, None);
+        assert_eq!(config.pos, Position::Top);
+    }
+
+    #[test]
+    fn build_client_config_rejects_invalid_fingerprint() {
+        assert!(build_client_config("invalid", "laptop", 0).is_none());
+        assert!(build_client_config("", "laptop", 0).is_none());
+        assert!(build_client_config("   ", "laptop", 0).is_none());
+    }
+
+    #[test]
+    fn evaluate_add_client_response_handles_add_and_cancellation() {
+        let valid = "01:23:45:67:89:AB:CD:EF:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef";
+        let add_out = evaluate_add_client_response("add", valid, "pc", 3);
+        match add_out {
+            AddClientDialogOutput::PairRequested(cfg) => {
+                assert_eq!(cfg.pos, Position::Bottom);
+                assert_eq!(
+                    cfg.fingerprint,
+                    Some("01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef".to_string())
+                );
+            }
+            AddClientDialogOutput::Cancelled => panic!("expected PairRequested"),
+        }
+
+        assert_eq!(
+            evaluate_add_client_response("add", "invalid", "pc", 0),
+            AddClientDialogOutput::Cancelled
+        );
+        assert_eq!(
+            evaluate_add_client_response("cancel", valid, "pc", 0),
+            AddClientDialogOutput::Cancelled
+        );
+        assert_eq!(
+            evaluate_add_client_response("close", valid, "pc", 0),
+            AddClientDialogOutput::Cancelled
+        );
     }
 }

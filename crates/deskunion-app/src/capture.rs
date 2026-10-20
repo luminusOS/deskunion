@@ -71,6 +71,11 @@ pub(crate) enum ICaptureEvent {
         packets_lost: u64,
         level: f32,
     },
+    #[cfg(feature = "audio")]
+    AudioError {
+        addr: SocketAddr,
+        error: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -424,6 +429,12 @@ impl CaptureTask {
                     level,
                 })
                 .expect("channel closed"),
+            #[cfg(feature = "audio")]
+            ListenEvent::AudioError { addr, error } => {
+                let _ = self
+                    .event_tx
+                    .send(ICaptureEvent::AudioError { addr, error });
+            }
         }
     }
 
