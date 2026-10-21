@@ -20,7 +20,7 @@ use windows::core::{PCWSTR, w};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     EDD_GET_DEVICE_INTERFACE_NAME, GetMessageW, HOOKPROC, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG,
-    MSLLHOOKSTRUCT, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, RegisterClassW,
+    MSLLHOOKSTRUCT, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, RegisterClassW, SetCursorPos,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
     WINDOW_STYLE, WM_DISPLAYCHANGE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
@@ -34,6 +34,7 @@ use input_event::{
 };
 
 use super::{CaptureEvent, Position, display_util};
+use crate::cursor_geometry::{self, Bounds};
 
 pub(crate) struct EventThread {
     request_buffer: Arc<Mutex<Vec<ClientUpdate>>>,
@@ -125,6 +126,9 @@ thread_local! {
     static EVENT_TX: RefCell<Option<Sender<(Position, CaptureEvent)>>> = const { RefCell::new(None) };
     /// position of barrier entry
     static ENTRY_POINT: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
+    /// position the swallowed pointer motion is measured from: the parked
+    /// cursor, or the entry point when parking is disabled
+    static MOTION_ORIGIN: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
     /// previous mouse position
     static PREV_POS: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
     /// displays and generation counter
@@ -269,9 +273,7 @@ fn start_routine(
             /* messages sent via PostThreadMessage */
             match msg.wParam.0 {
                 x if x == RequestType::Exit as usize => break,
-                x if x == RequestType::Release as usize => {
-                    ACTIVE_CLIENT.take();
-                }
+                x if x == RequestType::Release as usize => release_active_client(),
                 x if x == RequestType::ClientUpdate as usize => {
                     let requests = {
                         let mut res = vec![];
@@ -304,9 +306,9 @@ fn start_routine(
     let _ = unsafe { UnhookWindowsHookEx(keyboard_hook) };
 }
 
-fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
+fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> Activation {
     if wparam.0 != WM_MOUSEMOVE as usize {
-        return ACTIVE_CLIENT.get().is_some();
+        return Activation::from_active(ACTIVE_CLIENT.get().is_some());
     }
     // SAFETY: only reached from `mouse_proc` with `ncode >= 0`, where `lparam` is a pointer
     // to a valid `MSLLHOOKSTRUCT` for the duration of the hook call.
@@ -316,7 +318,7 @@ fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
     PREV_POS.replace(Some(curr_pos));
 
     /* next event is the first actual event */
-    let ret = ACTIVE_CLIENT.get().is_some();
+    let ret = Activation::from_active(ACTIVE_CLIENT.get().is_some());
 
     /* client already active, no need to check */
     if ACTIVE_CLIENT.get().is_some() {
@@ -340,23 +342,95 @@ fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
 
     /* update active client and entry point */
     ACTIVE_CLIENT.replace(Some(pos));
-    let entry_point = DISPLAYS.with_borrow(|(displays, _)| {
-        display_util::clamp_to_display_bounds(displays, prev_pos, curr_pos)
+    let (entry_point, parking_point) = DISPLAYS.with_borrow(|(displays, _)| {
+        (
+            display_util::clamp_to_display_bounds(displays, prev_pos, curr_pos),
+            cursor_geometry::parking_point(&display_bounds(displays), prev_pos),
+        )
     });
     ENTRY_POINT.replace(entry_point);
+    let parking_point = parking_point.filter(|_| park_cursor_enabled());
+    MOTION_ORIGIN.replace(parking_point.unwrap_or(entry_point));
 
     /* notify main thread */
     log::debug!("ENTERED @ {prev_pos:?} -> {curr_pos:?}");
     let Some(active) = ACTIVE_CLIENT.get() else {
-        return false;
+        return Activation::Pass;
     };
     if let Err(error) = try_send_event(active, CaptureEvent::Begin) {
         log::error!("failed to begin Windows edge handoff: {error}");
         ACTIVE_CLIENT.take();
-        return false;
+        return Activation::Pass;
     }
 
-    ret
+    /* the crossing event itself moves the real cursor to the screen edge;
+     * it must be swallowed or it would undo the parking */
+    match parking_point {
+        Some(point) => {
+            set_cursor_position(point);
+            Activation::Swallow
+        }
+        None => Activation::Pass,
+    }
+}
+
+/// puts the cursor back where it left, slightly inside the crossed edge, when
+/// control returns to this computer
+fn release_active_client() {
+    let Some(edge) = ACTIVE_CLIENT.take() else {
+        return;
+    };
+    if !park_cursor_enabled() {
+        return;
+    }
+    let point = DISPLAYS.with_borrow(|(displays, _)| {
+        cursor_geometry::return_point(&display_bounds(displays), ENTRY_POINT.get(), edge)
+    });
+    PREV_POS.replace(Some(point));
+    set_cursor_position(point);
+}
+
+fn set_cursor_position((x, y): (i32, i32)) {
+    // SAFETY: plain Win32 call with by-value arguments.
+    if let Err(error) = unsafe { SetCursorPos(x, y) } {
+        log::warn!("failed to move the cursor to ({x}, {y}): {error}");
+    }
+}
+
+fn display_bounds(displays: &[RECT]) -> Vec<Bounds> {
+    displays
+        .iter()
+        .map(|display| Bounds {
+            left: display.left,
+            top: display.top,
+            right: display.right,
+            bottom: display.bottom,
+        })
+        .collect()
+}
+
+/// DESKUNION_PARK_CURSOR=0 keeps the cursor at the screen edge while another
+/// computer is controlled
+fn park_cursor_enabled() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("DESKUNION_PARK_CURSOR").as_deref() != Ok("0"));
+    *ENABLED
+}
+
+/// how the mouse hook treats the event that triggered a barrier crossing
+enum Activation {
+    /// no client is active: let the operating system process it
+    Pass,
+    /// a client is active: forward it and keep it from applications
+    Forward,
+    /// swallow it without forwarding it as motion
+    Swallow,
+}
+
+impl Activation {
+    fn from_active(active: bool) -> Self {
+        if active { Self::Forward } else { Self::Pass }
+    }
 }
 
 unsafe extern "system" fn mouse_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -370,11 +444,11 @@ unsafe extern "system" fn mouse_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM)
             return CallNextHookEx(None, ncode, wparam, lparam);
         }
 
-        let active = check_client_activation(wparam, lparam);
-
-        /* no client was active */
-        if !active {
-            return CallNextHookEx(None, ncode, wparam, lparam);
+        match check_client_activation(wparam, lparam) {
+            /* no client was active */
+            Activation::Pass => return CallNextHookEx(None, ncode, wparam, lparam),
+            Activation::Swallow => return LRESULT(1),
+            Activation::Forward => {}
         }
 
         /* get active client if any */
@@ -505,10 +579,8 @@ fn update_clients(request: ClientUpdate) {
             CLIENTS.with_borrow_mut(|clients| clients.insert(pos));
         }
         ClientUpdate::Destroy(pos) => {
-            if let Some(active_pos) = ACTIVE_CLIENT.get()
-                && pos == active_pos
-            {
-                let _ = ACTIVE_CLIENT.take();
+            if ACTIVE_CLIENT.get() == Some(pos) {
+                release_active_client();
             }
             CLIENTS.with_borrow_mut(|clients| clients.remove(&pos));
         }
@@ -597,7 +669,7 @@ fn to_mouse_event(wparam: WPARAM, lparam: LPARAM) -> Option<PointerEvent> {
         }),
         WPARAM(p) if p == WM_MOUSEMOVE as usize => {
             let (x, y) = (mouse_low_level.pt.x, mouse_low_level.pt.y);
-            let (ex, ey) = ENTRY_POINT.get();
+            let (ex, ey) = MOTION_ORIGIN.get();
             let (dx, dy) = (x - ex, y - ey);
             let (dx, dy) = (dx as f64, dy as f64);
             Some(PointerEvent::Motion { time: 0, dx, dy })

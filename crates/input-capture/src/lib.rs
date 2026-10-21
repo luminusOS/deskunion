@@ -15,6 +15,9 @@ pub use error::{CaptureCreationError, CaptureError, InputCaptureError};
 
 pub mod error;
 
+#[cfg(any(windows, test))]
+mod cursor_geometry;
+
 #[cfg(libei)]
 mod libei;
 
