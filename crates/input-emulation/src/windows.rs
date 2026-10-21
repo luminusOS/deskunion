@@ -68,7 +68,11 @@ impl WindowsEmulation {
             let latest = latest_clipboard.clone();
             let notify = clipboard_notify.clone();
             thread::spawn(move || {
-                let mut last_sequence = 0;
+                // SAFETY: `GetClipboardSequenceNumber` takes no arguments and has no
+                // preconditions.
+                // Content that predates the service is not a copy made during this
+                // session; sending it would overwrite the peer's fresh clipboard.
+                let mut last_sequence = unsafe { GetClipboardSequenceNumber() };
                 let mut failed_reads = 0u8;
                 while !stop.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(150));
@@ -91,7 +95,7 @@ impl WindowsEmulation {
                     last_sequence = sequence;
                     failed_reads = 0;
                     {
-                        log::debug!("local clipboard changed ({} bytes)", text.len());
+                        log::info!("clipboard: local change ({} bytes)", text.len());
                         let is_remote_echo = suppressed
                             .lock()
                             .ok()

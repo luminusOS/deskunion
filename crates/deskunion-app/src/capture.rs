@@ -660,7 +660,7 @@ impl CaptureTask {
                 clipboard = next_clipboard_event(clipboard_events), if self.clipboard_enabled => {
                     match clipboard {
                         Some((pos, text)) => {
-                            log::debug!("local clipboard text ready ({} bytes) for {pos:?}", text.len());
+                            log::info!("clipboard: local text ready ({} bytes) for {pos:?}", text.len());
                             match self.active_client {
                                 Some(handle) if self.get_pos(handle) == pos => {
                                     if self.state == State::Sending {
@@ -711,8 +711,8 @@ impl CaptureTask {
                             let active_addr = self.active_client
                                 .and_then(|handle| self.client_manager.active_addr(handle));
                             if !(self.clipboard_enabled && active_addr == Some(addr)) {
-                                log::debug!(
-                                    "ignoring clipboard text from {addr}: enabled={}, active={active_addr:?}",
+                                log::info!(
+                                    "clipboard: ignoring text from {addr}: enabled={}, active={active_addr:?}",
                                     self.clipboard_enabled
                                 );
                             }
@@ -720,7 +720,7 @@ impl CaptureTask {
                                 let transfer_id = fragment.transfer_id;
                                 let is_last_fragment = fragment.index + 1 == fragment.count;
                                 if let Some(text) = self.clipboard_assembler.push(&fragment, &payload) {
-                                    log::debug!("applying clipboard text from {addr} ({} bytes)", text.len());
+                                    log::info!("clipboard: applying text from {addr} ({} bytes)", text.len());
                                     capture.set_clipboard_text(text)?;
                                 }
                                 if is_last_fragment
@@ -898,7 +898,7 @@ impl CaptureTask {
             return;
         };
         self.last_sent_clipboard_text = Some(text.clone());
-        log::debug!("sending clipboard text to {addr} ({} bytes)", text.len());
+        log::info!("clipboard: sending text to {addr} ({} bytes)", text.len());
         let transfer_id = self.next_clipboard_transfer_id;
         self.next_clipboard_transfer_id = self.next_clipboard_transfer_id.wrapping_add(1);
         if let Some(listener) = &self.listener {

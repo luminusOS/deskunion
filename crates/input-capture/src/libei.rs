@@ -28,7 +28,6 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::{
-    fs::File as AsyncFile,
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{
         Notify, Semaphore,
@@ -54,6 +53,36 @@ use super::{
 /* there is a bug in xdg-remote-desktop-portal-gnome / mutter that
  * prevents receiving further events after a session has been disabled once.
  * Therefore the session needs to be recreated when the barriers are updated */
+
+/* mutter stops delivering events after a device change, so only there the
+ * session is recreated. Elsewhere each restart is a CreateSession +
+ * ConnectToEIS round trip, and compositors that keep per-session state (such
+ * as Hyprland's keymap fd) can be driven out of file descriptors by the churn.
+ * DESKUNION_RESTART_SESSION_ON_DEVICE_CHANGE=1/0 overrides the default. */
+fn restart_session_on_device_change() -> bool {
+    static RESTART: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        restart_policy(
+            std::env::var("DESKUNION_RESTART_SESSION_ON_DEVICE_CHANGE")
+                .ok()
+                .as_deref(),
+            std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+        )
+    });
+    *RESTART
+}
+
+fn restart_policy(override_value: Option<&str>, desktop: Option<&str>) -> bool {
+    match override_value {
+        Some("1") => true,
+        Some("0") => false,
+        _ => desktop.is_some_and(|desktops| {
+            desktops
+                .to_uppercase()
+                .split(':')
+                .any(|desktop| desktop == "GNOME")
+        }),
+    }
+}
 
 /// events that necessitate restarting the capture session
 #[derive(Clone, Copy, Debug)]
@@ -595,6 +624,7 @@ async fn do_capture_session(
             None => None,
         };
         let mut clipboard_active = owner_changed.is_some() && selection_transfer.is_some();
+        log::info!("clipboard: portal sync active={clipboard_active}");
         let remote_text = Rc::new(RefCell::new(None::<String>));
         let local_text = Rc::new(RefCell::new(None::<String>));
         let clipboard_revision = Rc::new(Cell::new(0u64));
@@ -631,6 +661,7 @@ async fn do_capture_session(
                         if clipboard_revision.get() != revision {
                             continue;
                         }
+                        log::info!("clipboard: read {} bytes from the portal", text.len());
                         *local_text.borrow_mut() = Some(text.clone());
                         if let Some(pos) = current_pos.get() {
                             tokio::select! {
@@ -666,14 +697,14 @@ async fn do_capture_session(
                         result = clipboard.set_selection(session, options) => result,
                     };
                     if let Err(error) = result {
-                        log::debug!("failed to publish remote clipboard text: {error}");
+                        log::warn!("failed to publish remote clipboard text: {error}");
                     }
                 }
             }
         };
         tokio::pin!(set_selection_worker);
         let mut ei_devices_changed = false;
-        loop {
+        'session: loop {
             tokio::select! {
                 changed = async {
                     match owner_changed.as_mut() {
@@ -684,6 +715,11 @@ async fn do_capture_session(
                     if let Some((owner_session, details)) = changed {
                         let matching_session = format!("{owner_session:?}") == format!("{session:?}");
                         if clipboard_active && matching_session {
+                            log::info!(
+                                "clipboard: portal owner changed (own={:?}, mime types: {:?})",
+                                details.session_is_owner(),
+                                details.mime_types()
+                            );
                             let revision = clipboard_revision.get().wrapping_add(1);
                             clipboard_revision.set(revision);
                             let _ = local_text.borrow_mut().take();
@@ -748,6 +784,7 @@ async fn do_capture_session(
                                 }}
                                 continue;
                             };
+                            log::info!("clipboard: paste requested as {mime_type}");
                             let supported = matches!(mime_type.as_str(), "text/plain" | "text/plain;charset=utf-8" | "UTF8_STRING");
                             let text = remote_text.borrow().clone().filter(|_| supported);
                             let clipboard = clipboard.as_ref().expect("clipboard active").clone();
@@ -774,7 +811,7 @@ async fn do_capture_session(
                                     result = clipboard.selection_write_done(&transfer_session, serial, result) => result,
                                 };
                                 if let Err(error) = completion {
-                                    log::debug!("portal clipboard completion failed: {error}");
+                                    log::warn!("portal clipboard completion failed: {error}");
                                 }
                             });
                         }
@@ -821,18 +858,29 @@ async fn do_capture_session(
                         let _ = events.clipboard.events.try_send((pos, text));
                     }
 
-                    tokio::select! {
-                        _ = notify_release.notified() => { /* capture release */
-                            log::debug!("release session requested");
-                        },
-                        _ = release_session.notified() => { /* release session */
-                            log::debug!("ei devices changed");
-                            ei_devices_changed = true;
-                        },
-                        _ = cancel_session.cancelled() => { /* kill session notify */
-                            log::debug!("session cancel requested");
-                            break
-                        },
+                    /* the worker is polled here as well: text copied on the
+                     * controlled computer must reach the clipboard while it is
+                     * still in control, not only after the cursor came back */
+                    loop {
+                        tokio::select! {
+                            _ = notify_release.notified() => { /* capture release */
+                                log::debug!("release session requested");
+                                break;
+                            },
+                            _ = release_session.notified() => { /* release session */
+                                log::debug!("ei devices changed");
+                                ei_devices_changed = true;
+                                break;
+                            },
+                            _ = cancel_session.cancelled() => { /* kill session notify */
+                                log::debug!("session cancel requested");
+                                break 'session;
+                            },
+                            _ = &mut set_selection_worker, if clipboard_active => {
+                                clipboard_active = false;
+                                log::warn!("clipboard selection worker ended; disabling clipboard sync");
+                            },
+                        }
                     }
 
                     release_capture(input_capture, session, activated, pos).await?;
@@ -934,20 +982,36 @@ async fn read_portal_text(
         result = clipboard.selection_read(session, mime_type) => match result {
             Ok(fd) => fd,
             Err(error) => {
-                log::debug!("portal clipboard read failed: {error}");
+                log::warn!("portal clipboard read failed: {error}");
                 return None;
             }
         },
     };
-    let file = AsyncFile::from_std(std::fs::File::from(std::os::fd::OwnedFd::from(fd)));
-    let mut file = file.take((MAX_CLIPBOARD_TEXT_BYTES + 2) as u64);
+    read_text_from_fd(std::os::fd::OwnedFd::from(fd), cancellation).await
+}
+
+/* mutter hands out the read end of the pipe in non-blocking mode and fills it
+ * only after the owning application answered, so a plain blocking read fails
+ * with EAGAIN and the text is lost; the pipe has to be driven by the reactor */
+async fn read_text_from_fd(
+    fd: std::os::fd::OwnedFd,
+    cancellation: &CancellationToken,
+) -> Option<String> {
+    let pipe = match tokio::net::unix::pipe::Receiver::from_owned_fd(fd) {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            log::warn!("portal clipboard stream is not a readable pipe: {error}");
+            return None;
+        }
+    };
+    let mut pipe = pipe.take((MAX_CLIPBOARD_TEXT_BYTES + 2) as u64);
     let mut bytes = Vec::new();
     let result = tokio::select! {
         _ = cancellation.cancelled() => return None,
-        result = file.read_to_end(&mut bytes) => result,
+        result = pipe.read_to_end(&mut bytes) => result,
     };
     if let Err(error) = result {
-        log::debug!("portal clipboard stream read failed: {error}");
+        log::warn!("portal clipboard stream read failed: {error}");
         return None;
     }
     if bytes.len() > MAX_CLIPBOARD_TEXT_BYTES + 1 {
@@ -982,16 +1046,36 @@ async fn write_portal_text(
         result = clipboard.selection_write(session, serial) => match result {
             Ok(fd) => fd,
             Err(error) => {
-                log::debug!("portal clipboard write failed: {error}");
+                log::warn!("portal clipboard write failed: {error}");
                 return false;
             }
         },
     };
-    let mut file = AsyncFile::from_std(std::fs::File::from(std::os::fd::OwnedFd::from(fd)));
-    tokio::select! {
-        _ = cancellation.cancelled() => false,
-        result = file.write_all(text) => result.is_ok(),
+    write_text_to_fd(std::os::fd::OwnedFd::from(fd), text, cancellation).await
+}
+
+/* the pipe is closed before returning so the reader sees EOF before the
+ * portal is told the transfer is done */
+async fn write_text_to_fd(
+    fd: std::os::fd::OwnedFd,
+    text: &[u8],
+    cancellation: &CancellationToken,
+) -> bool {
+    let mut pipe = match tokio::net::unix::pipe::Sender::from_owned_fd(fd) {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            log::warn!("portal clipboard stream is not a writable pipe: {error}");
+            return false;
+        }
+    };
+    let written = tokio::select! {
+        _ = cancellation.cancelled() => return false,
+        result = pipe.write_all(text) => result,
+    };
+    if let Err(error) = &written {
+        log::warn!("portal clipboard stream write failed: {error}");
     }
+    written.is_ok()
 }
 
 fn distance_to_line(line: ((f32, f32), (f32, f32)), p: (f32, f32)) -> f32 {
@@ -1027,20 +1111,32 @@ async fn handle_ei_event(
             s.seat.bind_capabilities(all_capabilities);
             context.flush().map_err(|e| io::Error::new(e.kind(), e))?;
         }
-        EiEvent::SeatRemoved(_) | /* EiEvent::DeviceAdded(_) | */ EiEvent::DeviceRemoved(_) => {
+        EiEvent::SeatRemoved(_) => {
             log::debug!("releasing session: {ei_event:?}");
             release_session.notify_waiters();
+        }
+        /* EiEvent::DeviceAdded(_) | */
+        EiEvent::DeviceRemoved(_) => {
+            if restart_session_on_device_change() {
+                log::debug!("releasing session: {ei_event:?}");
+                release_session.notify_waiters();
+            } else {
+                log::debug!("ignoring device change: {ei_event:?}");
+            }
         }
         EiEvent::DevicePaused(_) | EiEvent::DeviceResumed(_) => {}
         EiEvent::DeviceStartEmulating(_) => log::debug!("START EMULATING"),
         EiEvent::DeviceStopEmulating(_) => log::debug!("STOP EMULATING"),
         EiEvent::Disconnected(d) => {
-            return Err(CaptureError::Disconnected(format!("{:?}", d.reason)))
+            return Err(CaptureError::Disconnected(format!("{:?}", d.reason)));
         }
         _ => {
             if let Some(pos) = current_client {
                 for event in Event::from_ei_event(ei_event) {
-                    event_tx.send((pos, CaptureEvent::Input(event))).await.expect("no channel");
+                    event_tx
+                        .send((pos, CaptureEvent::Input(event)))
+                        .await
+                        .expect("no channel");
                 }
             }
         }
@@ -1156,5 +1252,98 @@ mod clipboard_tests {
         assert!(!clipboard_available(false, true));
         assert!(!clipboard_available(true, false));
         assert!(clipboard_available(true, true));
+    }
+}
+
+#[cfg(test)]
+mod session_restart_tests {
+    use super::restart_policy;
+
+    #[test]
+    fn gnome_restarts_the_session_by_default() {
+        assert!(restart_policy(None, Some("GNOME")));
+        assert!(restart_policy(None, Some("ubuntu:GNOME")));
+        assert!(restart_policy(None, Some("ubuntu:gnome")));
+    }
+
+    #[test]
+    fn other_desktops_keep_the_session() {
+        assert!(!restart_policy(None, Some("KDE")));
+        assert!(!restart_policy(None, Some("Hyprland")));
+        assert!(!restart_policy(None, Some("GNOME-Classic-Extras")));
+        assert!(!restart_policy(None, None));
+    }
+
+    #[test]
+    fn override_wins_over_the_desktop() {
+        assert!(restart_policy(Some("1"), Some("KDE")));
+        assert!(!restart_policy(Some("0"), Some("GNOME")));
+        assert!(restart_policy(Some("unexpected"), Some("GNOME")));
+    }
+}
+
+#[cfg(test)]
+mod portal_pipe_tests {
+    use super::{read_text_from_fd, write_text_to_fd};
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn reads_text_written_after_the_read_started() {
+        let (mut sender, receiver) = tokio::net::unix::pipe::pipe().expect("pipe");
+        let fd = receiver.into_nonblocking_fd().expect("fd");
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            sender
+                .write_all("olá, mundo".as_bytes())
+                .await
+                .expect("write");
+        });
+        let text = read_text_from_fd(fd, &CancellationToken::new()).await;
+        writer.await.expect("writer");
+        assert_eq!(text.as_deref(), Some("olá, mundo"));
+    }
+
+    #[tokio::test]
+    async fn read_strips_one_trailing_nul() {
+        let (mut sender, receiver) = tokio::net::unix::pipe::pipe().expect("pipe");
+        let fd = receiver.into_nonblocking_fd().expect("fd");
+        sender.write_all(b"texto\0").await.expect("write");
+        drop(sender);
+        let text = read_text_from_fd(fd, &CancellationToken::new()).await;
+        assert_eq!(text.as_deref(), Some("texto"));
+    }
+
+    #[tokio::test]
+    async fn read_rejects_embedded_nul_and_invalid_utf8() {
+        for payload in [&b"a\0b"[..], &[0xff, 0xfe][..]] {
+            let (mut sender, receiver) = tokio::net::unix::pipe::pipe().expect("pipe");
+            let fd = receiver.into_nonblocking_fd().expect("fd");
+            sender.write_all(payload).await.expect("write");
+            drop(sender);
+            assert_eq!(read_text_from_fd(fd, &CancellationToken::new()).await, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn write_delivers_text_and_closes_the_pipe() {
+        let (sender, receiver) = tokio::net::unix::pipe::pipe().expect("pipe");
+        let fd = sender.into_nonblocking_fd().expect("fd");
+        let reader = tokio::spawn(async move {
+            let fd = receiver.into_nonblocking_fd().expect("fd");
+            read_text_from_fd(fd, &CancellationToken::new()).await
+        });
+        assert!(write_text_to_fd(fd, "copiado".as_bytes(), &CancellationToken::new()).await);
+        assert_eq!(reader.await.expect("reader").as_deref(), Some("copiado"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_read_returns_nothing() {
+        let (_sender, receiver) = tokio::net::unix::pipe::pipe().expect("pipe");
+        let fd = receiver.into_nonblocking_fd().expect("fd");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert_eq!(read_text_from_fd(fd, &cancellation).await, None);
     }
 }
