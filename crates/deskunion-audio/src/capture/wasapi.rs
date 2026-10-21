@@ -19,18 +19,27 @@
 //! failures are returned to the service and written to DeskUnion's log.
 
 use std::collections::VecDeque;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
+use super::mixer::Mixer;
 use super::process_loopback::{supports_process_loopback, use_process_loopback};
 use super::{AudioCapture, CaptureCallback};
 use crate::codec::SAMPLE_RATE;
 use crate::{AudioDevice, AudioError, AudioFormat};
 use wasapi::{
-    AudioClient, DeviceEnumerator, Direction, SampleType, StreamMode, WasapiError, WaveFormat,
+    AudioClient, DeviceEnumerator, Direction, Role, SampleType, StreamMode, WasapiError, WaveFormat,
 };
 
 const CHANNELS: u16 = 2;
+const SAMPLES_PER_SECOND: usize = SAMPLE_RATE as usize * CHANNELS as usize;
+/// how often the mixer hands a block downstream
+const MIX_TICK: Duration = Duration::from_millis(10);
+/// audio a stream must have buffered before it joins the mix
+const MIX_PRIME_SAMPLES: usize = SAMPLES_PER_SECOND / 50;
+/// more than this buffered means the stream outpaces the mixer clock
+const MIX_MAX_BACKLOG_SAMPLES: usize = SAMPLES_PER_SECOND / 8;
 const BYTES_PER_SAMPLE: usize = 4; // 32-bit float, matches WaveFormat below
 /// how long to wait for a WASAPI buffer-ready event before checking for
 /// a stop request; keeps `stop()` responsive without busy-polling
@@ -104,6 +113,114 @@ fn windows_version() -> Result<(u32, u32), AudioError> {
         )));
     }
     Ok((version.major_version, version.build_number))
+}
+
+/// The render endpoint Windows uses for calls, when it is not the one used
+/// for everything else.
+///
+/// Chromium-based apps such as Teams play call audio on the default
+/// *communications* device but ringtones and notifications on the default
+/// device. Process loopback does not see streams on the former, so a call
+/// would be silent while every other sound is heard.
+fn communications_endpoint() -> Option<String> {
+    let enumerator = DeviceEnumerator::new().ok()?;
+    let console = enumerator
+        .get_default_device_for_role(&Direction::Render, &Role::Console)
+        .ok()?;
+    let communications = enumerator
+        .get_default_device_for_role(&Direction::Render, &Role::Communications)
+        .ok()?;
+    let (console_id, communications_id) = (console.get_id().ok()?, communications.get_id().ok()?);
+    log::info!(
+        "Windows default output: {:?}; default communications output: {:?}",
+        console.get_friendlyname().unwrap_or_default(),
+        communications.get_friendlyname().unwrap_or_default()
+    );
+    (console_id != communications_id).then_some(communications_id)
+}
+
+/// Keeps capturing the communications endpoint into the mixer, following
+/// the endpoint if the user picks another one.
+fn run_communications_capture(mixer: Arc<Mutex<Mixer>>, stop_rx: mpsc::Receiver<()>) {
+    if ensure_com_initialized().is_err() {
+        return;
+    }
+    // nobody waits for the format of this stream
+    let (format_tx, _format_rx) = mpsc::channel();
+    let mut announced = false;
+    let mut backoff = INITIAL_REOPEN_BACKOFF;
+    loop {
+        let ran_since = Instant::now();
+        if let Some(endpoint) = communications_endpoint() {
+            let mixer = mixer.clone();
+            let mut on_data: CaptureCallback = Box::new(move |data| {
+                mixer
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(1, data);
+            });
+            match run_capture(
+                CaptureSource::EndpointLoopback,
+                Some(&endpoint),
+                &mut on_data,
+                &stop_rx,
+                &format_tx,
+                &mut announced,
+            ) {
+                Ok(CaptureRun::Stopped) => return,
+                Ok(CaptureRun::Interrupted) => {
+                    log::warn!("communications output capture interrupted; reopening")
+                }
+                Err(error) => {
+                    log::warn!("communications output capture failed ({error}); retrying")
+                }
+            }
+        }
+        if ran_since.elapsed() >= STABLE_RUN_RESETS_BACKOFF {
+            backoff = INITIAL_REOPEN_BACKOFF;
+        }
+        if stop_rx.recv_timeout(backoff).is_ok() {
+            return;
+        }
+        backoff = (backoff * 2).min(MAX_REOPEN_BACKOFF);
+    }
+}
+
+/// Paces the mixer on the wall clock and hands the sum downstream.
+fn run_mixer(mixer: Arc<Mutex<Mixer>>, mut on_data: CaptureCallback, stop_rx: mpsc::Receiver<()>) {
+    let mut last = Instant::now();
+    let mut owed_frames = 0.0_f64;
+    let mut block = Vec::with_capacity(SAMPLES_PER_SECOND / 20);
+    while let Err(mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(MIX_TICK) {
+        let now = Instant::now();
+        owed_frames += now.duration_since(last).as_secs_f64() * f64::from(SAMPLE_RATE);
+        last = now;
+        let frames = owed_frames as usize;
+        owed_frames -= frames as f64;
+        block.clear();
+        let mixed = mixer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .mix(&mut block, frames * CHANNELS as usize);
+        if mixed {
+            on_data(&block);
+        }
+    }
+}
+
+/// stops and joins the helper threads of a mixed capture, also when the
+/// capture thread leaves early
+struct Helpers(Vec<(mpsc::Sender<()>, JoinHandle<()>)>);
+
+impl Drop for Helpers {
+    fn drop(&mut self) {
+        for (stop, _) in &self.0 {
+            let _ = stop.send(());
+        }
+        for (_, join) in self.0.drain(..) {
+            let _ = join.join();
+        }
+    }
 }
 
 fn ensure_com_initialized() -> Result<(), AudioError> {
@@ -214,6 +331,37 @@ impl AudioCapture for WasapiCapture {
                 }
             };
             log::info!("Windows audio capture mode: {}", source.description());
+
+            let mut helpers = Helpers(Vec::new());
+            if source == CaptureSource::ProcessLoopback && communications_endpoint().is_some() {
+                log::info!(
+                    "calls play on a different output than other sounds; also capturing the communications output (follows its Windows volume/mute)"
+                );
+                let mixer = Arc::new(Mutex::new(Mixer::new(
+                    2,
+                    MIX_PRIME_SAMPLES,
+                    MIX_MAX_BACKLOG_SAMPLES,
+                )));
+                let (pump_stop, pump_rx) = mpsc::channel();
+                let pump_mixer = mixer.clone();
+                let downstream = std::mem::replace(&mut on_data, Box::new(|_| {}));
+                helpers.0.push((
+                    pump_stop,
+                    thread::spawn(move || run_mixer(pump_mixer, downstream, pump_rx)),
+                ));
+                let (calls_stop, calls_rx) = mpsc::channel();
+                let calls_mixer = mixer.clone();
+                helpers.0.push((
+                    calls_stop,
+                    thread::spawn(move || run_communications_capture(calls_mixer, calls_rx)),
+                ));
+                on_data = Box::new(move |data| {
+                    mixer
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(0, data);
+                });
+            }
 
             // a broken capture used to end the thread with a single
             // warning: the encode thread then slept forever on an empty
