@@ -25,6 +25,40 @@ default and reconnect.
 Changes to Windows capture require updating the Windows client, not just the Linux
 server. Linux-only test results do not establish that a Teams call is fixed.
 
+Teams call voices: Chromium-based apps play calls on the default *communications*
+render endpoint and notifications on the default one. Process loopback only sees
+the latter, which matches the report of working notifications and ringtones with
+silent participants. When the two default endpoints differ, the Windows client now
+mixes process loopback with an endpoint loopback of the communications endpoint
+(`capture/mixer.rs`, 10 ms pacing, 20 ms priming, summed and clamped). The log
+lines `Windows default output: ...; default communications output: ...` and
+`calls play on a different output than other sounds` show whether it is active.
+Verified only by unit tests of the mixer and by compiling and linting for
+`x86_64-pc-windows-gnu`; it has not been run against a real Teams call. The extra
+capture follows the communications device's Windows volume and mute.
+
+Cursor handoff (Windows server): `input-capture/src/windows` parks the cursor in
+the center of the display it left from (`cursor_geometry::parking_point`),
+measures motion from that point, swallows the crossing event, and on release moves
+the cursor back to the crossed edge inset by 2 px (`cursor_geometry::return_point`).
+The geometry is unit tested on every platform; the Win32 calls are only compiled and
+linted for Windows. `DESKUNION_PARK_CURSOR=0` restores the old behaviour. The cursor
+is not hidden and the return position does not depend on where the pointer left the
+other computer: that needs the exit coordinate in `Leave` and an entry fraction in
+`Enter`, a protocol change across every capture and emulation backend.
+
+Changes ported from lan-mouse: libei capture only restarts its session on a device
+removal under GNOME (override with
+`DESKUNION_RESTART_SESSION_ON_DEVICE_CHANGE=1/0`), wlroots emulation tags
+continuous scrolling with `AxisSource::Continuous`, and one virtual keyboard is
+shared by all wlroots clients so reconnecting peers no longer exhaust the
+connection's descriptor budget. These were compiled, linted and, for the session
+policy, unit tested; the wlroots changes were not run on a compositor.
+
+## Release 0.2.7
+
+Fixes clipboard text copied on GNOME not reaching Windows, publishes text copied on Windows immediately, and stops old Windows clipboard content from overwriting the peer. Parks the Windows cursor in the center of its display while another computer is controlled and returns it just inside the edge it left through. Also captures the Windows communications output so Teams call voices are heard, aligns the screen arrangement with the new design and ports lan-mouse fixes for libei session restarts and wlroots scrolling and keyboards.
+
 ## Release 0.2.6
 
 Adds a tray icon on Linux (StatusNotifierItem, with Flatpak Background Apps support) and Windows so the window can be closed while DeskUnion keeps running, validates ports and fingerprints with explicit feedback, keeps unapplied client edits, lets a cancelled authorization be retried, reports audio startup errors in the banner, adds endpoint loopback selection for Windows audio capture and shows the application version in About.
@@ -175,6 +209,13 @@ graphical flow passed with high contrast enabled. Native GTK renders in
 layouts, 1× capture scale, light/dark themes. `ui-first-run-before.png` records
 the former empty initial view for comparison.
 
+The screen arrangement canvas follows the Penpot prototype: each tile shows a
+number badge, the device name and a state line (`This computer`, `Stopped` or
+`Capture off` for the local screen; `Connected`, `Offline` or `Paused` for
+clients). Offline tiles are dimmed, drop zones use a dashed accent outline and
+the dragged tile casts a shadow. Text is hidden on very small canvases and
+tiles grow with the system font size.
+
 Linux CI runs the existing `--all-features` test command under a private D-Bus
 session and Xvfb, using the Cairo renderer for CPU-only runs. The graphical IPC
 harness is Linux-only; platform-independent
@@ -313,6 +354,21 @@ authenticated DTLS connection and is scoped to the active peer. GNOME Wayland
 uses the active InputCapture portal session; portal v2 permission is requested
 before session start and must be granted. Windows uses Unicode text clipboard
 monitoring. Transfers are capped at 64 KiB; images and files are not included.
+
+Portal pipes: mutter hands the application the read end of the `SelectionRead`
+pipe in non-blocking mode and fills it only after the owning application has
+answered. `libei.rs` therefore reads it with `tokio::net::unix::pipe` (reactor
+driven); a blocking `tokio::fs::File` read fails with `EAGAIN` whenever the data
+is not there yet, which dropped GNOME to Windows copies without a visible error. The `SelectionWrite` pipe is closed before
+`SelectionWriteDone`. While a client is active the capture session loop also
+polls the selection worker, so text copied on the controlled computer is
+published immediately instead of after the cursor returns.
+
+The Windows poller starts from the current clipboard sequence number, so content
+that predates the service is not pushed over the peer's fresh clipboard on the
+first handoff. Unit tests cover the pipe handling (including a late writer); the
+portal, mutter and Windows clipboard calls were compiled and linted but not run
+end to end.
 
 ## Problems
 The network protocol supports bidirectional events, but the selected operation
