@@ -412,6 +412,7 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     settings.set_gtk_font_name(font.as_deref());
     settle();
     assert_eq!(controller.model().status_text(), "Sharing stopped");
+    assert_eq!(controller.model().host_caption(), "Stopped");
     assert!(
         controller
             .widgets()
@@ -459,6 +460,47 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     styles.set_color_scheme(adw::ColorScheme::ForceLight);
     settle();
     capture(window, "screens-server-light");
+
+    controller.emit(AppMsg::Frontend(FrontendEvent::CaptureStatus(
+        Status::Enabled,
+    )));
+    settle();
+    assert_eq!(controller.model().host_caption(), "This computer");
+    capture(window, "screens-running-light");
+    for (handle, name, pos, connected) in [
+        (3, "MacBook-Air", Position::Left, false),
+        (4, "ThinkPad-X1", Position::Bottom, true),
+    ] {
+        controller.emit(AppMsg::Frontend(FrontendEvent::Created(
+            handle,
+            ClientConfig {
+                hostname: Some(name.to_string()),
+                pos,
+                ..Default::default()
+            },
+            ClientState {
+                active: true,
+                active_addr: connected.then(|| "192.168.1.24:50798".parse().unwrap()),
+                ..Default::default()
+            },
+        )));
+    }
+    controller.emit(AppMsg::ToggleArrangementSize);
+    settle();
+    capture(window, "screens-all-edges-light");
+    controller
+        .widgets()
+        .screen_arrangement
+        .preview_drag(Some((1, (150.0, 70.0), Position::Right)));
+    settle();
+    capture(window, "screens-drag-light");
+    controller.widgets().screen_arrangement.preview_drag(None);
+    controller.emit(AppMsg::ToggleArrangementSize);
+    controller.emit(AppMsg::Frontend(FrontendEvent::CaptureStatus(
+        Status::Disabled,
+    )));
+    settle();
+    assert_eq!(controller.model().host_caption(), "Capture off");
 
     window.set_default_size(1100, 360);
     settle();

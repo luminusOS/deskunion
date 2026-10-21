@@ -43,6 +43,18 @@ impl ScreenArrangement {
     pub fn set_host_label(&self, label: &str) {
         self.imp().set_host_label(label);
     }
+
+    /// state line under the local screen's name, such as "This computer"
+    /// or "Stopped"; empty draws no line
+    pub fn set_host_caption(&self, caption: &str) {
+        self.imp().set_host_caption(caption);
+    }
+
+    /// draws a drag in progress without pointer input, for screenshots
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub fn preview_drag(&self, drag: Option<(ClientHandle, (f64, f64), Position)>) {
+        self.imp().preview_drag(drag);
+    }
 }
 
 impl Default for ScreenArrangement {

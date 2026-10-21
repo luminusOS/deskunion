@@ -11,11 +11,18 @@ use deskunion_ipc::Position;
 
 use super::ScreenItem;
 
-// 16:10 tiles, like the monitors in GNOME Settings → Displays
-const HOST_W: f64 = 104.0;
-const HOST_H: f64 = 65.0;
-const SAT_W: f64 = 88.0;
-const SAT_H: f64 = 55.0;
+// 16:10 tiles, like the monitors in GNOME Settings → Displays. Tall enough
+// for a number badge, the device name and a state line.
+const HOST_W: f64 = 136.0;
+const HOST_H: f64 = 85.0;
+const SAT_W: f64 = 112.0;
+const SAT_H: f64 = 70.0;
+const TILE_PADDING: f32 = 5.0;
+const TILE_GAP: f32 = 3.0;
+const LABEL_SCALE: f64 = 0.82;
+const CAPTION_SCALE: f64 = 0.74;
+const MIN_TEXT_FIT: f32 = 0.75;
+const BADGE_HEIGHT_SHARE: f32 = 0.17;
 const GAP: f64 = 18.0;
 const CANVAS_PADDING: f64 = 16.0;
 const MIN_DRAG_DISTANCE: f64 = 6.0;
@@ -37,16 +44,25 @@ struct Layout {
 struct ScreenStyle<'a> {
     /// 1-based position shown in the tile, matching the client list below
     number: usize,
+    /// device name under the number; empty draws none
+    label: &'a str,
+    /// state line under the name; empty draws none
+    caption: &'a str,
+    badge_fill: &'a gdk::RGBA,
     badge_text: &'a gdk::RGBA,
     fill: &'a gdk::RGBA,
     text: &'a gdk::RGBA,
+    caption_text: &'a gdk::RGBA,
     success: &'a gdk::RGBA,
     warning: &'a gdk::RGBA,
     selection: &'a gdk::RGBA,
+    /// how much the canvas shrank the tile to fit; scales the text with it
+    fit: f32,
     audio_active: bool,
     selected: bool,
     hovered: bool,
     active: bool,
+    dragging: bool,
 }
 
 #[derive(Default)]
@@ -54,6 +70,7 @@ pub struct ScreenArrangement {
     items: RefCell<Vec<ScreenItem>>,
     /// label for the local (blue) screen; empty falls back to "This device"
     host_label: RefCell<String>,
+    host_caption: RefCell<String>,
     dragging: Cell<Option<u64>>,
     drag_start: Cell<(f64, f64)>,
     drag_offset: Cell<(f64, f64)>,
@@ -214,49 +231,81 @@ impl WidgetImpl for ScreenArrangement {
             .lookup_color("success_color")
             .unwrap_or(gdk::RGBA::new(0.2, 0.7, 0.3, 1.0));
         #[allow(deprecated)]
-        let card_bg = style
+        let window_bg = style
             .lookup_color("window_bg_color")
             .unwrap_or(gdk::RGBA::new(0.2, 0.2, 0.2, 1.0));
-        let muted = with_alpha(&fg, 0.08);
-        let active = with_alpha(&success, 0.16);
+        #[allow(deprecated)]
+        let card_bg = style.lookup_color("card_bg_color").unwrap_or(window_bg);
+        let offline_fill = with_alpha(&fg, 0.05);
+        let offline_badge = with_alpha(&fg, 0.55);
         let dim = with_alpha(&fg, 0.7);
+        let faint = with_alpha(&fg, 0.75);
+        let host_faint = accent_fg;
+        let card_scale = self.card_scale();
         let layout = self.layout(width, height);
+        let fit = (layout.scale / card_scale).min(1.0) as f32;
         let widget: &gtk::Widget = obj.upcast_ref();
 
         if let Some(target) = self.drop_position.get() {
+            // a label over a screen that stays on its edge would hide that screen's name
+            let occupied = self
+                .items
+                .borrow()
+                .iter()
+                .filter(|item| self.dragging.get() != Some(item.handle))
+                .map(|item| item.position)
+                .collect::<Vec<_>>();
             for position in [
                 Position::Left,
                 Position::Right,
                 Position::Top,
                 Position::Bottom,
             ] {
+                let is_target = position == target;
+                let label = match (occupied.contains(&position), is_target) {
+                    (true, _) => None,
+                    (false, true) => Some("Drop here"),
+                    (false, false) => Some(position_label(position)),
+                };
                 draw_drop_zone(
                     widget,
                     snapshot,
                     &drop_zone_rect(&layout, position),
                     &accent_text,
-                    position == target,
-                    &position.to_string(),
+                    is_target,
+                    label,
                 );
             }
         }
 
+        let host_label = self.host_label.borrow();
+        let host_caption = self.host_caption.borrow();
         draw_screen(
             widget,
             snapshot,
             &layout.host,
             &ScreenStyle {
                 number: 1,
+                label: if host_label.is_empty() {
+                    "This device"
+                } else {
+                    &host_label
+                },
+                caption: &host_caption,
+                badge_fill: &accent_fg,
                 badge_text: &accent,
                 fill: &accent,
                 text: &accent_fg,
+                caption_text: &host_faint,
                 success: &success,
                 warning: &warning,
                 selection: &accent_text,
+                fit,
                 audio_active: false,
                 selected: false,
                 hovered: false,
                 active: false,
+                dragging: false,
             },
         );
 
@@ -288,23 +337,41 @@ impl WidgetImpl for ScreenArrangement {
             };
 
             let Some(item) = items.get(i) else { continue };
-            let color = if item.connected { &active } else { &muted };
+            let name = device_name(item);
             draw_screen(
                 widget,
                 snapshot,
                 &rect,
                 &ScreenStyle {
                     number: screen_number(i),
-                    badge_text: &card_bg,
-                    fill: color,
+                    label: &name,
+                    caption: tile_caption(item.active, item.connected),
+                    badge_fill: if item.connected {
+                        &accent
+                    } else {
+                        &offline_badge
+                    },
+                    badge_text: if item.connected {
+                        &accent_fg
+                    } else {
+                        &window_bg
+                    },
+                    fill: if item.connected {
+                        &card_bg
+                    } else {
+                        &offline_fill
+                    },
                     text: &fg,
+                    caption_text: &faint,
                     success: &success,
                     warning: &warning,
                     selection: &accent_text,
+                    fit,
                     audio_active: item.audio_active,
                     selected: selected == Some(item.handle),
                     hovered: hovered == Some(i),
                     active: item.connected,
+                    dragging: dragging == Some(item.handle),
                 },
             );
         }
@@ -354,6 +421,25 @@ fn connection_status(active: bool, connected: bool) -> &'static str {
     }
 }
 
+fn tile_caption(active: bool, connected: bool) -> &'static str {
+    if connected {
+        "Connected"
+    } else if active {
+        "Offline"
+    } else {
+        "Paused"
+    }
+}
+
+fn position_label(position: Position) -> &'static str {
+    match position {
+        Position::Left => "Left",
+        Position::Right => "Right",
+        Position::Top => "Top",
+        Position::Bottom => "Bottom",
+    }
+}
+
 fn with_alpha(color: &gdk::RGBA, alpha: f32) -> gdk::RGBA {
     gdk::RGBA::new(
         color.red(),
@@ -370,6 +456,16 @@ fn draw_screen(
     style: &ScreenStyle<'_>,
 ) {
     let rounded = gsk::RoundedRect::from_rect(*rect, CORNER_RADIUS);
+    if style.dragging {
+        snapshot.append_outset_shadow(
+            &rounded,
+            &gdk::RGBA::new(0.0, 0.0, 0.0, 0.28),
+            0.0,
+            6.0,
+            0.0,
+            16.0,
+        );
+    }
     snapshot.push_rounded_clip(&rounded);
     snapshot.append_color(style.fill, rect);
     snapshot.pop();
@@ -382,7 +478,7 @@ fn draw_screen(
     let (border_width, outline) = if style.selected {
         (2.0, *style.selection)
     } else {
-        (1.0, with_alpha(style.text, 0.3))
+        (1.0, with_alpha(style.text, 0.45))
     };
     snapshot.append_border(&rounded, &[border_width; 4], &[outline; 4]);
 
@@ -395,10 +491,43 @@ fn draw_screen(
     attrs.insert(gtk::pango::AttrFloat::new_scale(text_scale as f64));
     number.set_attributes(Some(&attrs));
     let (number_w, number_h) = number.pixel_size();
-    let center = Point::new(
-        rect.x() + rect.width() / 2.0,
-        rect.y() + rect.height() / 2.0,
+
+    let text_width = (rect.width() - TILE_PADDING * 2.0).max(1.0);
+    let label = fitted_text(
+        widget,
+        style.label,
+        LABEL_SCALE * style.fit as f64,
+        text_width,
     );
+    let caption = fitted_text(
+        widget,
+        style.caption,
+        CAPTION_SCALE * style.fit as f64,
+        text_width,
+    );
+    // text shrunk with a tiny canvas is unreadable, so the number alone is kept
+    let readable = style.fit >= MIN_TEXT_FIT;
+    let label_h = if style.label.is_empty() || !readable {
+        0.0
+    } else {
+        label.pixel_size().1 as f32
+    };
+    let caption_h = if style.caption.is_empty() || !readable {
+        0.0
+    } else {
+        caption.pixel_size().1 as f32
+    };
+    let gap = TILE_GAP * style.fit;
+    let parts = fit_tile_content(
+        rect.height() - TILE_PADDING * 2.0,
+        radius * 2.0,
+        label_h,
+        caption_h,
+        gap,
+    );
+    let block = tile_content_height(parts, radius * 2.0, label_h, caption_h, gap);
+    let top = rect.y() + (rect.height() - block) / 2.0;
+    let center = Point::new(rect.x() + rect.width() / 2.0, top + radius);
     let disc = Rect::new(
         center.x() - radius,
         center.y() - radius,
@@ -406,7 +535,7 @@ fn draw_screen(
         radius * 2.0,
     );
     snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(disc, radius));
-    snapshot.append_color(style.text, &disc);
+    snapshot.append_color(style.badge_fill, &disc);
     snapshot.pop();
     snapshot.save();
     snapshot.translate(&Point::new(
@@ -415,6 +544,27 @@ fn draw_screen(
     ));
     snapshot.append_layout(&number, style.badge_text);
     snapshot.restore();
+
+    let mut cursor = top + radius * 2.0 + gap;
+    if parts.label {
+        draw_text(
+            snapshot,
+            &label,
+            rect.x() + TILE_PADDING,
+            cursor,
+            style.text,
+        );
+        cursor += label_h;
+    }
+    if parts.caption {
+        draw_text(
+            snapshot,
+            &caption,
+            rect.x() + TILE_PADDING,
+            cursor,
+            style.caption_text,
+        );
+    }
 
     if style.active {
         draw_badge(
@@ -439,6 +589,81 @@ fn draw_screen(
     }
 }
 
+/// what fits in a tile once the number badge is drawn
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TileParts {
+    label: bool,
+    caption: bool,
+}
+
+/// keeps the number and as much text as the tile can hold, dropping the
+/// state line first and the name second
+fn fit_tile_content(available: f32, badge: f32, label: f32, caption: f32, gap: f32) -> TileParts {
+    let wants_label = label > 0.0;
+    let wants_caption = wants_label && caption > 0.0;
+    let all = TileParts {
+        label: wants_label,
+        caption: wants_caption,
+    };
+    if tile_content_height(all, badge, label, caption, gap) <= available {
+        return all;
+    }
+    let without_caption = TileParts {
+        label: wants_label,
+        caption: false,
+    };
+    if tile_content_height(without_caption, badge, label, caption, gap) <= available {
+        return without_caption;
+    }
+    TileParts {
+        label: false,
+        caption: false,
+    }
+}
+
+/// how much the tiles must grow so the badge, name and state line still fit
+/// at the user's font size
+fn content_scale(label_height: f32, caption_height: f32) -> f64 {
+    let text = TILE_PADDING * 2.0 + TILE_GAP + label_height + caption_height;
+    let room = (1.0 - 2.0 * BADGE_HEIGHT_SHARE) * SAT_H as f32;
+    f64::from(text / room).max(1.0)
+}
+
+fn tile_content_height(parts: TileParts, badge: f32, label: f32, caption: f32, gap: f32) -> f32 {
+    let mut height = badge;
+    if parts.label {
+        height += gap + label;
+    }
+    if parts.caption {
+        height += caption;
+    }
+    height
+}
+
+fn fitted_text(widget: &gtk::Widget, text: &str, scale: f64, width: f32) -> gtk::pango::Layout {
+    let layout = widget.create_pango_layout(Some(text));
+    let attrs = gtk::pango::AttrList::new();
+    attrs.insert(gtk::pango::AttrFloat::new_scale(scale));
+    layout.set_attributes(Some(&attrs));
+    layout.set_alignment(gtk::pango::Alignment::Center);
+    layout.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    layout.set_width((width * gtk::pango::SCALE as f32) as i32);
+    layout
+}
+
+fn draw_text(
+    snapshot: &gtk::Snapshot,
+    layout: &gtk::pango::Layout,
+    x: f32,
+    y: f32,
+    color: &gdk::RGBA,
+) {
+    snapshot.save();
+    snapshot.translate(&Point::new(x, y));
+    snapshot.append_layout(layout, color);
+    snapshot.restore();
+}
+
 fn draw_badge(snapshot: &gtk::Snapshot, center: Point, color: &gdk::RGBA) {
     let rect = Rect::new(
         center.x() - BADGE_RADIUS as f32,
@@ -458,19 +683,20 @@ fn draw_drop_zone(
     rect: &Rect,
     accent: &gdk::RGBA,
     highlighted: bool,
-    label: &str,
+    label: Option<&str>,
 ) {
     let rounded = gsk::RoundedRect::from_rect(*rect, CORNER_RADIUS);
     let color = with_alpha(accent, if highlighted { 0.28 } else { 0.07 });
     snapshot.push_rounded_clip(&rounded);
     snapshot.append_color(&color, rect);
     snapshot.pop();
-    snapshot.append_border(
-        &rounded,
-        &[if highlighted { 2.0 } else { 1.0 }; 4],
-        &[*accent; 4],
-    );
+    let outline = gsk::PathBuilder::new();
+    outline.add_rounded_rect(&rounded);
+    let stroke = gsk::Stroke::new(if highlighted { 2.0 } else { 1.0 });
+    stroke.set_dash(&[6.0, 4.0]);
+    snapshot.append_stroke(&outline.to_path(), &stroke, accent);
 
+    let Some(label) = label else { return };
     let layout = widget.create_pango_layout(Some(label));
     layout.set_alignment(gtk::pango::Alignment::Center);
     let (text_w, text_h) = layout.pixel_size();
@@ -512,6 +738,31 @@ impl ScreenArrangement {
         }
     }
 
+    pub(super) fn set_host_caption(&self, caption: &str) {
+        if *self.host_caption.borrow() != caption {
+            self.host_caption.replace(caption.to_string());
+            self.obj().queue_draw();
+            self.update_accessibility();
+        }
+    }
+
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub(super) fn preview_drag(&self, drag: Option<(u64, (f64, f64), Position)>) {
+        match drag {
+            Some((handle, offset, target)) => {
+                self.dragging.set(Some(handle));
+                self.drag_offset.set(offset);
+                self.drop_position.set(Some(target));
+            }
+            None => {
+                self.dragging.set(None);
+                self.drag_offset.set((0.0, 0.0));
+                self.drop_position.set(None);
+            }
+        }
+        self.obj().queue_draw();
+    }
+
     pub(super) fn set_items(&self, items: Vec<ScreenItem>) {
         let geometry_changed = self
             .items
@@ -548,9 +799,15 @@ impl ScreenArrangement {
     fn update_accessibility(&self) {
         let host = self.host_label.borrow();
         let host = if host.is_empty() {
-            "This computer"
+            "This device"
         } else {
             &host
+        };
+        let caption = self.host_caption.borrow();
+        let host = if caption.is_empty() {
+            host.to_string()
+        } else {
+            format!("{host}, {caption}")
         };
         let items = self.items.borrow();
         let mut text = if items.is_empty() {
@@ -606,7 +863,20 @@ impl ScreenArrangement {
         attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
         number.set_attributes(Some(&attrs));
         let (w, h) = number.pixel_size();
-        1.0_f64.max(((w as f64).hypot(h as f64) + 12.0) / (SAT_H - 8.0))
+        let digits = 1.0_f64.max(((w as f64).hypot(h as f64) + 12.0) / (SAT_H - 8.0));
+        let (label_h, caption_h) = (
+            self.sample_text_height(LABEL_SCALE),
+            self.sample_text_height(CAPTION_SCALE),
+        );
+        digits.max(content_scale(label_h, caption_h))
+    }
+
+    fn sample_text_height(&self, scale: f64) -> f32 {
+        let layout = self.obj().create_pango_layout(Some("Ag"));
+        let attrs = gtk::pango::AttrList::new();
+        attrs.insert(gtk::pango::AttrFloat::new_scale(scale));
+        layout.set_attributes(Some(&attrs));
+        layout.pixel_size().1 as f32
     }
 
     fn layout(&self, width: f64, height: f64) -> Layout {
@@ -818,8 +1088,10 @@ fn screen_number(index: usize) -> usize {
 
 fn number_badge_metrics(rect: &Rect, text_w: f32, text_h: f32) -> (f32, f32) {
     let diagonal = text_w.hypot(text_h).max(1.0);
-    let radius = (diagonal / 2.0 + 6.0)
-        .max(11.0)
+    // small enough to leave room for the device name and its state line
+    let radius = (diagonal / 2.0 + 3.0)
+        .max(10.0)
+        .min((rect.height() * BADGE_HEIGHT_SHARE).max(10.0))
         .min((rect.width().min(rect.height()) / 2.0 - 2.0).max(0.5));
     let text_scale = ((radius * 2.0 - 8.0).max(1.0) / diagonal).min(1.0);
     (radius, text_scale)
@@ -1008,6 +1280,89 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tile_caption_names_the_connection_state() {
+        assert_eq!(tile_caption(true, true), "Connected");
+        assert_eq!(tile_caption(true, false), "Offline");
+        assert_eq!(tile_caption(false, false), "Paused");
+    }
+
+    #[test]
+    fn tile_content_drops_the_caption_then_the_name_when_short() {
+        let full = TileParts {
+            label: true,
+            caption: true,
+        };
+        assert_eq!(fit_tile_content(60.0, 22.0, 12.0, 11.0, 3.0), full);
+        assert_eq!(
+            fit_tile_content(40.0, 22.0, 12.0, 11.0, 3.0),
+            TileParts {
+                label: true,
+                caption: false
+            }
+        );
+        assert_eq!(
+            fit_tile_content(30.0, 22.0, 12.0, 11.0, 3.0),
+            TileParts {
+                label: false,
+                caption: false
+            }
+        );
+    }
+
+    #[test]
+    fn tile_content_without_a_name_draws_no_caption() {
+        assert_eq!(
+            fit_tile_content(80.0, 22.0, 0.0, 11.0, 3.0),
+            TileParts {
+                label: false,
+                caption: false
+            }
+        );
+    }
+
+    #[test]
+    fn default_font_keeps_the_tile_size() {
+        assert_eq!(content_scale(15.0, 14.0), 1.0);
+    }
+
+    #[test]
+    fn large_text_grows_tiles_until_name_and_caption_fit() {
+        let (label, caption) = (28.0, 26.0);
+        let scale = content_scale(label, caption);
+        assert!(scale > 1.0);
+        let tile = SAT_H as f32 * scale as f32;
+        let badge = BADGE_HEIGHT_SHARE * 2.0 * tile;
+        let parts = fit_tile_content(tile - TILE_PADDING * 2.0, badge, label, caption, TILE_GAP);
+        assert!(parts.label && parts.caption);
+    }
+
+    #[test]
+    fn tile_content_fits_when_exactly_as_tall_as_the_space() {
+        let all = TileParts {
+            label: true,
+            caption: true,
+        };
+        let height = tile_content_height(all, 22.0, 12.0, 11.0, 3.0);
+        assert_eq!(fit_tile_content(height, 22.0, 12.0, 11.0, 3.0), all);
+        assert_ne!(fit_tile_content(height - 0.5, 22.0, 12.0, 11.0, 3.0), all);
+    }
+
+    #[test]
+    fn default_tiles_hold_the_badge_name_and_caption() {
+        let badge =
+            number_badge_metrics(&Rect::new(0.0, 0.0, SAT_W as f32, SAT_H as f32), 14.0, 18.0).0
+                * 2.0;
+        let parts = fit_tile_content(
+            SAT_H as f32 - TILE_PADDING * 2.0,
+            badge,
+            13.0,
+            12.0,
+            TILE_GAP,
+        );
+        assert!(parts.label && parts.caption);
     }
 
     #[test]

@@ -293,6 +293,25 @@ impl AppModel {
             && self.parked_device_rows.is_empty()
     }
 
+    /// state line under this computer's tile on the arrangement canvas
+    fn host_caption(&self) -> &'static str {
+        if self.capture_active {
+            "This computer"
+        } else if self.service_wanted_running {
+            "Capture off"
+        } else {
+            "Stopped"
+        }
+    }
+
+    fn connect_hint(&self) -> &'static str {
+        if self.capture_active {
+            "On the other computer choose Client, enter this computer's address and press Connect. Then allow it here."
+        } else {
+            "Start sharing, then on the other computer choose Client, enter this computer's address and press Connect. Then allow it here."
+        }
+    }
+
     fn screen_items(&self) -> Vec<ScreenItem> {
         self.client_rows
             .iter()
@@ -1243,6 +1262,8 @@ impl SimpleComponent for AppModel {
                                                     set_margin_all: 12,
                                                     set_host_label: &model.hostname,
                                                     #[watch]
+                                                    set_host_caption: model.host_caption(),
+                                                    #[watch]
                                                     set_items: model.screen_items(),
                                                 },
 
@@ -1261,7 +1282,8 @@ impl SimpleComponent for AppModel {
 
                                         adw::PreferencesGroup {
                                             set_title: "Connect a client",
-                                            set_description: Some("On the other computer choose Client, enter this computer's address and press Connect. Then allow it here."),
+                                            #[watch]
+                                            set_description: Some(model.connect_hint()),
                                             #[watch]
                                             set_visible: model.show_connect_hint(),
 
