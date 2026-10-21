@@ -6,9 +6,19 @@
 
 <h1 align="center">DeskUnion</h1>
 
-[![CI](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/rust.yml) [![Release](https://github.com/luminusOS/deskunion/actions/workflows/release.yml/badge.svg)](https://github.com/luminusOS/deskunion/actions/workflows/release.yml)
+<p align="center">
+  <a href="https://github.com/luminusOS/deskunion/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/luminusOS/deskunion?style=for-the-badge&logo=github&label=Latest%20release"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://github.com/luminusOS/deskunion/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/luminusOS/deskunion/total?style=for-the-badge&logo=github&label=Downloads"></a>&nbsp;&nbsp;&nbsp;
+  <a href="https://github.com/luminusOS/deskunion/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/luminusOS/deskunion?style=for-the-badge&logo=github&label=Stars"></a>
+</p>
 
-[![crates.io](https://img.shields.io/crates/v/deskunion-app.svg)](https://crates.io/crates/deskunion-app)  [![license](https://img.shields.io/crates/l/deskunion-app.svg)](https://github.com/luminusOS/deskunion/blob/main/Cargo.toml)
+<p align="center">
+  <a href="https://github.com/luminusOS/deskunion/commits/main/"><img alt="Commit activity" src="https://img.shields.io/github/commit-activity/m/luminusOS/deskunion?logo=github"></a>
+  <a href="https://github.com/luminusOS/deskunion/commits/main/"><img alt="Top language" src="https://img.shields.io/github/languages/top/luminusOS/deskunion?logo=rust"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/luminusOS/deskunion?logo=github"></a>
+  <a href="https://github.com/luminusOS/deskunion/actions/workflows/rust.yml"><img alt="CI" src="https://github.com/luminusOS/deskunion/actions/workflows/rust.yml/badge.svg"></a>
+  <a href="https://github.com/luminusOS/deskunion/actions/workflows/release.yml"><img alt="Release" src="https://github.com/luminusOS/deskunion/actions/workflows/release.yml/badge.svg"></a>
+</p>
 
 DeskUnion is a *cross-platform* mouse and keyboard sharing software similar to universal-control on Apple devices.
 It allows for using multiple PCs via a single set of mouse and keyboard.
@@ -51,6 +61,14 @@ both ends — sending and receiving are toggled independently.
   older builds fall back to endpoint loopback), and
   CoreAudio on macOS 14.6+ (older macOS versions can still capture a
   microphone, just not system output).
+- Calls on Windows: Teams and other Chromium-based apps play call voices on
+  the default *communications* output, while notifications and ringtones use
+  the default output. Process loopback does not capture the former, so when the
+  two outputs differ DeskUnion also captures the communications output and mixes
+  it in. That part follows the Windows volume and mute of the communications
+  device. `deskunion.log` (`%LOCALAPPDATA%\deskunion`) states which outputs were
+  found and whether the extra capture is active. If both roles use the same
+  device nothing changes.
 - A jitter buffer with clock-drift compensation absorbs network jitter and
   slowly-diverging sender/receiver clocks.
 - Controlled from the gtk frontend's **Audio** page: enable send/receive,
@@ -76,6 +94,13 @@ input capture. It requires an InputCapture portal that supports the v2
 session and grants clipboard permission. Older portals keep input sharing
 available but do not provide clipboard sync. Transfers are UTF-8 text only and
 limited to 64 KiB; images and files are not shared.
+
+Text is exchanged while the other computer is the active one: copy on either
+side, then move the cursor across. Only copies made while DeskUnion is running
+are shared, whatever was already on the Windows clipboard at startup is not
+sent. Each step is logged at info level with a `clipboard:` prefix, so a missing
+transfer can be located in the journal (`journalctl --user | grep clipboard:`)
+or in `%LOCALAPPDATA%\deskunion\deskunion.log`.
 
 ## OS Support
 
@@ -111,6 +136,16 @@ Click the icon to show or hide the window, or use its menu to open or quit DeskU
 > there is no real mouse connected to the machine.
 
 For more detailed information about os support see [Detailed OS Support](#detailed-os-support)
+
+### Cursor handoff on Windows
+
+When a Windows computer shares its keyboard and mouse, the cursor is parked in
+the center of the display it left from while another computer is controlled, so
+motion is never lost against the screen edge. When control returns it reappears
+at the height it left, just inside the edge it crossed. Set
+`DESKUNION_PARK_CURSOR=0` to keep the previous behaviour, where the cursor stays
+at the edge. The cursor is not hidden, and the position it returns to does not
+follow where it left the other computer.
 
 ### Android & IOS
 
