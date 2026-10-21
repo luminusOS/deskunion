@@ -37,6 +37,7 @@ use super::error::WaylandBindError;
 
 struct State {
     keymap: Option<(u32, OwnedFd, u32)>,
+    keyboard: Option<Vk>,
     input_for_client: HashMap<EmulationHandle, VirtualInput>,
     seat: wl_seat::WlSeat,
     qh: QueueHandle<Self>,
@@ -74,6 +75,7 @@ impl WlrootsEmulation {
             last_flush_failed: false,
             state: State {
                 keymap: None,
+                keyboard: None,
                 input_for_client,
                 seat,
                 vpm,
@@ -93,16 +95,27 @@ impl WlrootsEmulation {
 }
 
 impl State {
-    fn add_client(&mut self, client: EmulationHandle) {
-        let pointer: Vp = self.vpm.create_virtual_pointer(None, &self.qh, ());
+    /// One keyboard serves every client: each keymap send queues a file
+    /// descriptor, and reconnecting clients used to exhaust the connection's
+    /// descriptor budget (ETOOMANYREFS).
+    fn shared_keyboard(&mut self) -> Vk {
+        if let Some(keyboard) = &self.keyboard {
+            return keyboard.clone();
+        }
         let keyboard: Vk = self.vkm.create_virtual_keyboard(&self.seat, &self.qh, ());
-
         // TODO: use server side keymap
         if let Some((format, fd, size)) = self.keymap.as_ref() {
             keyboard.keymap(*format, fd.as_fd(), *size);
         } else {
             panic!("no keymap");
         }
+        self.keyboard = Some(keyboard.clone());
+        keyboard
+    }
+
+    fn add_client(&mut self, client: EmulationHandle) {
+        let pointer: Vp = self.vpm.create_virtual_pointer(None, &self.qh, ());
+        let keyboard = self.shared_keyboard();
 
         let vinput = VirtualInput {
             pointer,
@@ -116,7 +129,6 @@ impl State {
     fn destroy_client(&mut self, handle: EmulationHandle) {
         if let Some(input) = self.input_for_client.remove(&handle) {
             input.pointer.destroy();
-            input.keyboard.destroy();
         }
     }
 }
@@ -204,6 +216,9 @@ impl VirtualInput {
                     PointerEvent::Axis { time, axis, value } => {
                         let axis: Axis = (axis as u32).try_into()?;
                         self.pointer.axis(time, axis, value);
+                        // without a source wlroots reports wheel input, which makes
+                        // touchpad scrolling stutter
+                        self.pointer.axis_source(AxisSource::Continuous);
                         self.pointer.frame();
                     }
                     PointerEvent::AxisDiscrete120 { axis, value } => {
