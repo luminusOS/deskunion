@@ -15,6 +15,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+};
 use windows::core::{PCWSTR, w};
 
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -171,11 +174,29 @@ fn start(
     (msg_thread, thread_id.expect("thread id"))
 }
 
+/// The mouse hook reports physical pixels and the display rectangles come from
+/// `EnumDisplaySettingsW`, which are physical too. `SetCursorPos` instead
+/// follows the DPI awareness of the calling thread: in a DPI-unaware process
+/// it scales its arguments, so with a display scale above 100% the parked
+/// cursor lands away from the center and returns to the wrong place.
+fn use_physical_coordinates() {
+    // SAFETY: plain Win32 call with a constant argument; it only changes the
+    // DPI awareness of the calling thread.
+    let previous =
+        unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    if previous.is_invalid() {
+        log::warn!(
+            "could not make the capture thread DPI aware; the parked cursor may be misplaced"
+        );
+    }
+}
+
 fn start_routine(
     ready: Arc<(Condvar, Mutex<Option<u32>>)>,
     event_tx: Sender<(Position, CaptureEvent)>,
     request_buffer: Arc<Mutex<Vec<ClientUpdate>>>,
 ) {
+    use_physical_coordinates();
     EVENT_TX.replace(Some(event_tx));
     // A thread does not own a Win32 message queue until it calls a message
     // function. Create it before publishing the thread id; otherwise the
