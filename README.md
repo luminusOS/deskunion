@@ -61,14 +61,20 @@ both ends — sending and receiving are toggled independently.
   older builds fall back to endpoint loopback), and
   CoreAudio on macOS 14.6+ (older macOS versions can still capture a
   microphone, just not system output).
-- Calls on Windows: Teams and other Chromium-based apps play call voices on
-  the default *communications* output, while notifications and ringtones use
-  the default output. Process loopback does not capture the former, so when the
-  two outputs differ DeskUnion also captures the communications output and mixes
-  it in. That part follows the Windows volume and mute of the communications
-  device. `deskunion.log` (`%LOCALAPPDATA%\deskunion`) states which outputs were
-  found and whether the extra capture is active. If both roles use the same
-  device nothing changes.
+- Calls on Windows: process loopback receives only silence from the Teams
+  desktop client (`ms-teams.exe`), a known Windows limitation
+  ([microsoft/Windows-classic-samples#414](https://github.com/microsoft/Windows-classic-samples/issues/414)),
+  while browsers, Zoom and other applications are captured normally. DeskUnion
+  therefore listens to the Windows audio notifications (a session was created or
+  changed state, an output appeared or went away). While Teams is playing on an
+  output it captures that whole output instead, and it goes back to process
+  loopback 3 seconds after Teams falls silent. During that time the
+  Windows volume and mute of the output apply (a muted output is silent on the
+  server) and sounds on other outputs are not sent. `deskunion.log`
+  (`%LOCALAPPDATA%\deskunion`) records when this starts and stops, and at the
+  `debug` level (`DESKUNION_LOG_LEVEL=debug`) which applications have audio
+  sessions. To capture
+  one output all the time, choose it as the capture device in the Audio page.
 - A jitter buffer with clock-drift compensation absorbs network jitter and
   slowly-diverging sender/receiver clocks.
 - Controlled from the gtk frontend's **Audio** page: enable send/receive,

@@ -9,6 +9,10 @@ pub type CaptureCallback = Box<dyn FnMut(&[f32]) + Send>;
 // (rustaudio/cpal#476: added, then lost in a refactor). `wasapi` fills
 // that one gap; on Linux/macOS, cpal alone already covers loopback too
 // (see `is_monitor_name`'s doc comment).
+#[cfg(windows)]
+mod call_watch;
+#[cfg(any(windows, test))]
+mod calls;
 mod cpal;
 mod dummy;
 #[cfg(any(windows, test))]

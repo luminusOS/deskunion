@@ -18,24 +18,29 @@
 //! The backend is cross-compiled as part of the Windows package. Runtime
 //! failures are returned to the service and written to DeskUnion's log.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use super::call_watch::{SessionMonitor, Signal};
+use super::calls::{CallTracker, ScanPacer};
 use super::mixer::Mixer;
 use super::process_loopback::{supports_process_loopback, use_process_loopback};
 use super::{AudioCapture, CaptureCallback};
 use crate::codec::SAMPLE_RATE;
 use crate::{AudioDevice, AudioError, AudioFormat};
 use wasapi::{
-    AudioClient, DeviceEnumerator, Direction, Role, SampleType, StreamMode, WasapiError, WaveFormat,
+    AudioClient, DeviceEnumerator, Direction, SampleType, StreamMode, WasapiError, WaveFormat,
 };
 
 const CHANNELS: u16 = 2;
 const SAMPLES_PER_SECOND: usize = SAMPLE_RATE as usize * CHANNELS as usize;
 /// how often the mixer hands a block downstream
 const MIX_TICK: Duration = Duration::from_millis(10);
+/// outputs captured at once during a call; one is the norm
+const MAX_CALL_OUTPUTS: usize = 4;
 /// audio a stream must have buffered before it joins the mix
 const MIX_PRIME_SAMPLES: usize = SAMPLES_PER_SECOND / 50;
 /// more than this buffered means the stream outpaces the mixer clock
@@ -115,66 +120,115 @@ fn windows_version() -> Result<(u32, u32), AudioError> {
     Ok((version.major_version, version.build_number))
 }
 
-/// The render endpoint Windows uses for calls, when it is not the one used
-/// for everything else.
-///
-/// Chromium-based apps such as Teams play call audio on the default
-/// *communications* device but ringtones and notifications on the default
-/// device. Process loopback does not see streams on the former, so a call
-/// would be silent while every other sound is heard.
-fn communications_endpoint() -> Option<String> {
-    let enumerator = DeviceEnumerator::new().ok()?;
-    let console = enumerator
-        .get_default_device_for_role(&Direction::Render, &Role::Console)
-        .ok()?;
-    let communications = enumerator
-        .get_default_device_for_role(&Direction::Render, &Role::Communications)
-        .ok()?;
-    let (console_id, communications_id) = (console.get_id().ok()?, communications.get_id().ok()?);
-    log::info!(
-        "Windows default output: {:?}; default communications output: {:?}",
-        console.get_friendlyname().unwrap_or_default(),
-        communications.get_friendlyname().unwrap_or_default()
-    );
-    (console_id != communications_id).then_some(communications_id)
+/// What the process loopback and the call capture share. While a call is
+/// captured from its output, that capture already holds every sound of the
+/// output, so the process loopback stops forwarding to avoid playing
+/// everything twice.
+struct CallCapture {
+    downstream: Mutex<CaptureCallback>,
+    mixer: Mutex<Mixer>,
+    engaged: AtomicBool,
 }
 
-/// Keeps capturing the communications endpoint into the mixer, following
-/// the endpoint if the user picks another one.
-fn run_communications_capture(mixer: Arc<Mutex<Mixer>>, stop_rx: mpsc::Receiver<()>) {
+impl CallCapture {
+    fn new(downstream: CaptureCallback) -> Self {
+        Self {
+            downstream: Mutex::new(downstream),
+            mixer: Mutex::new(Mixer::new(
+                MAX_CALL_OUTPUTS,
+                MIX_PRIME_SAMPLES,
+                MIX_MAX_BACKLOG_SAMPLES,
+            )),
+            engaged: AtomicBool::new(false),
+        }
+    }
+
+    fn forward(&self, data: &[f32]) {
+        let mut downstream = self
+            .downstream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (*downstream)(data);
+    }
+
+    fn engaged(&self) -> bool {
+        self.engaged.load(Ordering::Acquire)
+    }
+}
+
+struct OutputCapture {
+    slot: usize,
+    name: String,
+    opened: mpsc::Receiver<Result<AudioFormat, AudioError>>,
+    stop: mpsc::Sender<()>,
+    join: JoinHandle<()>,
+    is_open: bool,
+}
+
+impl OutputCapture {
+    fn start(calls: &Arc<CallCapture>, device_id: String, name: String, slot: usize) -> Self {
+        let (stop, stop_rx) = mpsc::channel();
+        let (format_tx, opened) = mpsc::channel();
+        let calls = calls.clone();
+        let join = thread::spawn(move || {
+            run_output_capture(&device_id, &calls, slot, &stop_rx, format_tx)
+        });
+        Self {
+            slot,
+            name,
+            opened,
+            stop,
+            join,
+            is_open: false,
+        }
+    }
+
+    fn refresh_open(&mut self) {
+        if !self.is_open && matches!(self.opened.try_recv(), Ok(Ok(_))) {
+            self.is_open = true;
+        }
+    }
+
+    fn finish(self) {
+        let _ = self.stop.send(());
+        let _ = self.join.join();
+    }
+}
+
+/// Keeps capturing one output into the call mixer, reopening it when it breaks.
+fn run_output_capture(
+    device_id: &str,
+    calls: &Arc<CallCapture>,
+    slot: usize,
+    stop_rx: &mpsc::Receiver<()>,
+    format_tx: mpsc::Sender<Result<AudioFormat, AudioError>>,
+) {
     if ensure_com_initialized().is_err() {
         return;
     }
-    // nobody waits for the format of this stream
-    let (format_tx, _format_rx) = mpsc::channel();
     let mut announced = false;
     let mut backoff = INITIAL_REOPEN_BACKOFF;
     loop {
         let ran_since = Instant::now();
-        if let Some(endpoint) = communications_endpoint() {
-            let mixer = mixer.clone();
-            let mut on_data: CaptureCallback = Box::new(move |data| {
-                mixer
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(1, data);
-            });
-            match run_capture(
-                CaptureSource::EndpointLoopback,
-                Some(&endpoint),
-                &mut on_data,
-                &stop_rx,
-                &format_tx,
-                &mut announced,
-            ) {
-                Ok(CaptureRun::Stopped) => return,
-                Ok(CaptureRun::Interrupted) => {
-                    log::warn!("communications output capture interrupted; reopening")
-                }
-                Err(error) => {
-                    log::warn!("communications output capture failed ({error}); retrying")
-                }
-            }
+        let calls = calls.clone();
+        let mut on_data: CaptureCallback = Box::new(move |data| {
+            calls
+                .mixer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(slot, data);
+        });
+        match run_capture(
+            CaptureSource::EndpointLoopback,
+            Some(device_id),
+            &mut on_data,
+            stop_rx,
+            &format_tx,
+            &mut announced,
+        ) {
+            Ok(CaptureRun::Stopped) => return,
+            Ok(CaptureRun::Interrupted) => log::warn!("call output capture interrupted; reopening"),
+            Err(error) => log::warn!("call output capture failed ({error}); retrying"),
         }
         if ran_since.elapsed() >= STABLE_RUN_RESETS_BACKOFF {
             backoff = INITIAL_REOPEN_BACKOFF;
@@ -186,36 +240,135 @@ fn run_communications_capture(mixer: Arc<Mutex<Mixer>>, stop_rx: mpsc::Receiver<
     }
 }
 
-/// Paces the mixer on the wall clock and hands the sum downstream.
-fn run_mixer(mixer: Arc<Mutex<Mixer>>, mut on_data: CaptureCallback, stop_rx: mpsc::Receiver<()>) {
+/// Process loopback returns silence for the Teams desktop client, so while a
+/// call plays the output it plays on is captured instead. Woken by audio
+/// notifications; see [`SessionMonitor`].
+fn run_call_watch(
+    calls: Arc<CallCapture>,
+    signal_tx: mpsc::Sender<Signal>,
+    signals: mpsc::Receiver<Signal>,
+) {
+    if ensure_com_initialized().is_err() {
+        return;
+    }
+    let mut monitor = match SessionMonitor::new(signal_tx) {
+        Ok(monitor) => monitor,
+        Err(error) => {
+            log::warn!(
+                "cannot watch the Windows audio sessions ({error}); Teams calls will not be captured"
+            );
+            return;
+        }
+    };
+    let Ok(enumerator) = DeviceEnumerator::new() else {
+        return;
+    };
+    let mut tracker = CallTracker::default();
+    let mut pacer = ScanPacer::default();
+    let mut captures: HashMap<String, OutputCapture> = HashMap::new();
+    'watch: loop {
+        let now = Instant::now();
+        let wanted = tracker.update(now, &monitor.active_call_outputs());
+        captures.retain(|id, capture| {
+            let keep = wanted.contains(id);
+            if !keep {
+                log::info!("Teams stopped playing on {}; releasing it", capture.name);
+            }
+            keep
+        });
+        for id in wanted {
+            if captures.contains_key(&id) {
+                continue;
+            }
+            let Some(slot) =
+                (0..MAX_CALL_OUTPUTS).find(|slot| captures.values().all(|c| c.slot != *slot))
+            else {
+                break;
+            };
+            let name = enumerator
+                .get_device(&id)
+                .and_then(|device| device.get_friendlyname())
+                .unwrap_or_else(|_| id.clone());
+            log::info!(
+                "Teams is playing on {name}; capturing that output while the call lasts (follows its Windows volume and mute)"
+            );
+            captures.insert(id.clone(), OutputCapture::start(&calls, id, name, slot));
+        }
+        for capture in captures.values_mut() {
+            capture.refresh_open();
+        }
+        let engaged = captures.values().any(|capture| capture.is_open);
+        if engaged != calls.engaged() {
+            calls.engaged.store(engaged, Ordering::Release);
+            if !engaged {
+                calls
+                    .mixer
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+            }
+        }
+
+        let wait = pacer.next_wait(now, tracker.next_release_in(now));
+        let mut signal = signals.recv_timeout(wait);
+        loop {
+            match signal {
+                Ok(Signal::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break 'watch,
+                Ok(Signal::Changed) => pacer.changed(Instant::now()),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+            }
+            // a burst of notifications costs one look at the sessions
+            signal = signals.try_recv().map_err(|error| match error {
+                mpsc::TryRecvError::Empty => mpsc::RecvTimeoutError::Timeout,
+                mpsc::TryRecvError::Disconnected => mpsc::RecvTimeoutError::Disconnected,
+            });
+        }
+    }
+    calls.engaged.store(false, Ordering::Release);
+    for (_, capture) in captures.drain() {
+        capture.finish();
+    }
+}
+
+/// Paces the call mixer on the wall clock and hands the sum downstream.
+fn run_mixer(calls: Arc<CallCapture>, stop_rx: mpsc::Receiver<()>) {
     let mut last = Instant::now();
     let mut owed_frames = 0.0_f64;
     let mut block = Vec::with_capacity(SAMPLES_PER_SECOND / 20);
     while let Err(mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(MIX_TICK) {
         let now = Instant::now();
+        if !calls.engaged() {
+            last = now;
+            owed_frames = 0.0;
+            continue;
+        }
         owed_frames += now.duration_since(last).as_secs_f64() * f64::from(SAMPLE_RATE);
         last = now;
         let frames = owed_frames as usize;
         owed_frames -= frames as f64;
         block.clear();
-        let mixed = mixer
+        let mixed = calls
+            .mixer
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .mix(&mut block, frames * CHANNELS as usize);
         if mixed {
-            on_data(&block);
+            calls.forward(&block);
         }
     }
 }
 
 /// stops and joins the helper threads of a mixed capture, also when the
 /// capture thread leaves early
-struct Helpers(Vec<(mpsc::Sender<()>, JoinHandle<()>)>);
+struct Helpers(Vec<(StopHelper, JoinHandle<()>)>);
+
+/// asks one helper thread to finish
+type StopHelper = Box<dyn Fn() + Send>;
 
 impl Drop for Helpers {
     fn drop(&mut self) {
         for (stop, _) in &self.0 {
-            let _ = stop.send(());
+            stop();
         }
         for (_, join) in self.0.drain(..) {
             let _ = join.join();
@@ -333,33 +486,30 @@ impl AudioCapture for WasapiCapture {
             log::info!("Windows audio capture mode: {}", source.description());
 
             let mut helpers = Helpers(Vec::new());
-            if source == CaptureSource::ProcessLoopback && communications_endpoint().is_some() {
-                log::info!(
-                    "calls play on a different output than other sounds; also capturing the communications output (follows its Windows volume/mute)"
-                );
-                let mixer = Arc::new(Mutex::new(Mixer::new(
-                    2,
-                    MIX_PRIME_SAMPLES,
-                    MIX_MAX_BACKLOG_SAMPLES,
-                )));
-                let (pump_stop, pump_rx) = mpsc::channel();
-                let pump_mixer = mixer.clone();
+            if source == CaptureSource::ProcessLoopback {
                 let downstream = std::mem::replace(&mut on_data, Box::new(|_| {}));
+                let calls = Arc::new(CallCapture::new(downstream));
+                let (mixer_stop, mixer_rx) = mpsc::channel();
+                let mixer_calls = calls.clone();
                 helpers.0.push((
-                    pump_stop,
-                    thread::spawn(move || run_mixer(pump_mixer, downstream, pump_rx)),
+                    Box::new(move || {
+                        let _ = mixer_stop.send(());
+                    }),
+                    thread::spawn(move || run_mixer(mixer_calls, mixer_rx)),
                 ));
-                let (calls_stop, calls_rx) = mpsc::channel();
-                let calls_mixer = mixer.clone();
+                let (signal_tx, signals) = mpsc::channel();
+                let stop_tx = signal_tx.clone();
+                let watch_calls = calls.clone();
                 helpers.0.push((
-                    calls_stop,
-                    thread::spawn(move || run_communications_capture(calls_mixer, calls_rx)),
+                    Box::new(move || {
+                        let _ = stop_tx.send(Signal::Stop);
+                    }),
+                    thread::spawn(move || run_call_watch(watch_calls, signal_tx, signals)),
                 ));
                 on_data = Box::new(move |data| {
-                    mixer
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .push(0, data);
+                    if !calls.engaged() {
+                        calls.forward(data);
+                    }
                 });
             }
 

@@ -29,6 +29,13 @@ impl Mixer {
         }
     }
 
+    /// forgets everything buffered, so the next audio starts a fresh mix
+    pub(super) fn clear(&mut self) {
+        for source in &mut self.sources {
+            *source = Source::default();
+        }
+    }
+
     pub(super) fn push(&mut self, source: usize, data: &[f32]) {
         let (prime, max_backlog) = (self.prime, self.max_backlog);
         let source = &mut self.sources[source];
@@ -130,6 +137,19 @@ mod tests {
         let mut out = Vec::new();
         assert!(mixer.mix(&mut out, 2));
         assert_eq!(out, [1.0, -1.0]);
+    }
+
+    #[test]
+    fn clearing_drops_buffered_audio_and_the_primed_state() {
+        let mut mixer = Mixer::new(2, 2, 32);
+        mixer.push(0, &[0.5; 4]);
+        mixer.push(1, &[0.5; 4]);
+        mixer.clear();
+        let mut out = Vec::new();
+        assert!(!mixer.mix(&mut out, 4));
+        mixer.push(1, &[0.25, 0.25]);
+        assert!(mixer.mix(&mut out, 2));
+        assert_eq!(out, [0.25, 0.25]);
     }
 
     #[test]

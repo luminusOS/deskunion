@@ -329,6 +329,19 @@ tray, which redraws only when it changed; tray actions come back as
   also physical; `SetCursorPos` follows the DPI awareness of its thread and would
   otherwise scale its arguments, parking the cursor away from the center whenever
   the display scale is above 100%.
+- Audio capture normally uses process loopback of every process except
+  DeskUnion, which does not depend on the master volume. The Teams desktop client
+  is silent in that stream, so `call_watch.rs` finds the outputs it plays on.
+  Windows notifications (a session was created on an output, a Teams session
+  changed state, an output was added or removed) only wake the watcher; it then
+  recomputes the answer from the system, so a lost notification cannot leave it
+  wrong. Because the session list may not show a new session at once, a wake-up
+  is followed by quick looks for 2 s, and a look every 5 s covers anything never
+  delivered. While an output has an active Teams session it is captured through
+  endpoint loopback and the process loopback stops forwarding, since the output
+  already holds every sound; `CallTracker` keeps the output for 3 s after the
+  session goes quiet. The decision logic (`calls.rs`) and the mixer are unit
+  tested; the WASAPI calls are only compiled and linted for Windows.
 - Logs go to `%LOCALAPPDATA%\deskunion\deskunion.log`.
 
 ## Configuration and State
