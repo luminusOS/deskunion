@@ -47,6 +47,11 @@
   <launchable type="desktop-id">io.github.luminusos.DeskUnion.desktop</launchable>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.8" date="2026-10-23">
+      <description>
+        <p>Retries the server connection the way Deskflow does, resolving the server name again on every attempt and showing the time left before the next one. Adds a tray menu with start and stop, connect and disconnect, reconnect now, a list of computers and shorter labels. Shows the round trip time of each connected computer in the connection list, stops capturing the pointer at the edge of computers that are offline, and makes the Windows cursor parking independent of the display scale.</p>
+      </description>
+    </release>
     <release version="0.2.7" date="2026-10-21">
       <description>
         <p>Fixes clipboard text copied on GNOME not reaching Windows, publishes text copied on Windows immediately, and stops old Windows clipboard content from overwriting the peer. Parks the Windows cursor in the center of its display while another computer is controlled and returns it just inside the edge it left through. Also captures the Windows communications output so Teams call voices are heard, aligns the screen arrangement with the new design and ports lan-mouse fixes for libei session restarts and wlroots scrolling and keyboards.</p>
