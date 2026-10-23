@@ -5,9 +5,16 @@
 use std::rc::Rc;
 
 use gtk::{gdk, gdk::prelude::TextureExt, gio, glib};
-use ksni::{MenuItem, OfflineReason, ToolTip, blocking::TrayMethods, menu::StandardItem};
+use ksni::{
+    MenuItem, OfflineReason, ToolTip,
+    blocking::TrayMethods,
+    menu::{CheckmarkItem, StandardItem, SubMenu},
+};
 
-use super::{TrayAction, background};
+use super::{
+    TrayAction, background,
+    menu::{Entry, TrayInfo, escape_underscores, menu_model},
+};
 
 const ICON_NAME: &str = "io.github.luminusos.DeskUnion-symbolic";
 const ICON_RESOURCE: &str =
@@ -17,6 +24,8 @@ const ICON_SIZE: u32 = 22;
 pub struct Tray {
     pixmap: Vec<ksni::Icon>,
     actions: async_channel::Sender<TrayAction>,
+    info: TrayInfo,
+    window_visible: bool,
 }
 
 impl Tray {
@@ -24,14 +33,45 @@ impl Tray {
         let _ = self.actions.try_send(action);
     }
 
-    fn item(label: &str, icon: &str, action: TrayAction) -> MenuItem<Self> {
-        StandardItem {
-            label: label.into(),
-            icon_name: icon.into(),
-            activate: Box::new(move |tray: &mut Self| tray.emit(action)),
-            ..Default::default()
+    fn render(entry: Entry) -> MenuItem<Self> {
+        match entry {
+            Entry::Item {
+                label,
+                icon,
+                action,
+                enabled,
+            } => StandardItem {
+                label: escape_underscores(&label),
+                icon_name: icon.into(),
+                enabled,
+                activate: Box::new(move |tray: &mut Self| tray.emit(action)),
+                ..Default::default()
+            }
+            .into(),
+            Entry::Check {
+                label,
+                checked,
+                action,
+            } => CheckmarkItem {
+                label: escape_underscores(&label),
+                checked,
+                activate: Box::new(move |tray: &mut Self| tray.emit(action)),
+                ..Default::default()
+            }
+            .into(),
+            Entry::Separator => MenuItem::Separator,
+            Entry::Submenu {
+                label,
+                icon,
+                entries,
+            } => SubMenu {
+                label: escape_underscores(&label),
+                icon_name: icon.into(),
+                submenu: entries.into_iter().map(Self::render).collect(),
+                ..Default::default()
+            }
+            .into(),
         }
-        .into()
     }
 }
 
@@ -59,6 +99,7 @@ impl ksni::Tray for Tray {
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "DeskUnion".into(),
+            description: self.info.status.clone(),
             ..Default::default()
         }
     }
@@ -68,19 +109,10 @@ impl ksni::Tray for Tray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        vec![
-            Self::item(
-                "Open DeskUnion",
-                "window-new-symbolic",
-                TrayAction::ShowWindow,
-            ),
-            MenuItem::Separator,
-            Self::item(
-                "Quit DeskUnion",
-                "application-exit-symbolic",
-                TrayAction::Quit,
-            ),
-        ]
+        menu_model(&self.info, self.window_visible)
+            .into_iter()
+            .map(Self::render)
+            .collect()
     }
 
     fn watcher_online(&self) {
@@ -134,7 +166,17 @@ fn pixmap(dark_theme: bool) -> Vec<ksni::Icon> {
 }
 
 pub struct TrayHandle {
-    _handle: Rc<ksni::blocking::Handle<Tray>>,
+    handle: Rc<ksni::blocking::Handle<Tray>>,
+}
+
+impl TrayHandle {
+    pub fn update(&self, info: &TrayInfo, window_visible: bool) {
+        let info = info.clone();
+        self.handle.update(move |tray| {
+            tray.info = info;
+            tray.window_visible = window_visible;
+        });
+    }
 }
 
 pub fn spawn(actions: async_channel::Sender<TrayAction>) -> Option<TrayHandle> {
@@ -142,6 +184,8 @@ pub fn spawn(actions: async_channel::Sender<TrayAction>) -> Option<TrayHandle> {
     let tray = Tray {
         pixmap: pixmap(style.is_dark()),
         actions,
+        info: TrayInfo::default(),
+        window_visible: true,
     };
     // Flatpak cannot own the org.kde.StatusNotifierItem-* name.
     let handle = match tray
@@ -162,5 +206,5 @@ pub fn spawn(actions: async_channel::Sender<TrayAction>) -> Option<TrayHandle> {
             handle.update(move |tray| tray.pixmap = pixmap);
         }
     });
-    Some(TrayHandle { _handle: handle })
+    Some(TrayHandle { handle })
 }

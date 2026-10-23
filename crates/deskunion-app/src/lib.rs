@@ -13,4 +13,5 @@ mod dns;
 mod emulation;
 pub mod emulation_test;
 mod listen;
+mod retry;
 pub mod service;

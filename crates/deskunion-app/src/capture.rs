@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     rc::Rc,
     sync::{Arc, RwLock},
@@ -135,6 +135,7 @@ impl Capture {
             backend,
             cancellation_token: cancellation_token.clone(),
             captures: Default::default(),
+            barriers: Default::default(),
             listener,
             client_manager,
             event_tx,
@@ -267,6 +268,9 @@ struct CaptureTask {
     backend: Option<input_capture::Backend>,
     cancellation_token: CancellationToken,
     captures: Vec<(CaptureHandle, Position, CaptureType)>,
+    /// captures that currently hold a barrier in the backend: a client only
+    /// gets one while it is connected (see [`Self::sync_barriers`])
+    barriers: HashSet<CaptureHandle>,
     /// the capture side's transport: accepted DTLS connections from
     /// dialed-in emulation devices. `None` outside server mode: a
     /// client-mode device accepts no connections, so it must not keep
@@ -323,6 +327,15 @@ impl CaptureTask {
                     }
                 }
             }
+            ListenEvent::Latency { addr, rtt_ms } => {
+                if let Some(handle) = self.client_manager.get_client_by_active_addr(addr)
+                    && self.client_manager.set_ping(handle, Some(rtt_ms))
+                {
+                    self.event_tx
+                        .send(ICaptureEvent::ClientStateChanged(handle))
+                        .expect("channel closed");
+                }
+            }
             ListenEvent::ComputerName { addr, name } => {
                 // Parked devices have no paired active_addr yet. The dialer
                 // repeats metadata so assignment later needs no cached name.
@@ -359,6 +372,7 @@ impl CaptureTask {
                     self.client_manager.set_active_addr(handle, None);
                     self.client_manager.set_alive(handle, false);
                     self.client_manager.set_peer_commit(handle, None);
+                    self.client_manager.set_ping(handle, None);
                     self.event_tx
                         .send(ICaptureEvent::ClientStateChanged(handle))
                         .expect("channel closed");
@@ -532,6 +546,50 @@ impl CaptureTask {
         self.captures.retain(|&(h, ..)| handle != h);
     }
 
+    /// A barrier at a screen edge makes the backend grab the pointer when it
+    /// touches it (on Linux the portal captures it and the compositor shows
+    /// it), so a computer that cannot receive the input gets none.
+    fn wants_barrier(&self, handle: CaptureHandle, capture_type: CaptureType) -> bool {
+        capture_type == CaptureType::EnterOnly || self.client_manager.active_addr(handle).is_some()
+    }
+
+    /// Makes the backend's barriers match the captures that want one. `active`
+    /// is the client that held the pointer before the change that led here: if
+    /// it loses its barrier the pointer is released instead of left grabbed.
+    async fn sync_barriers(
+        &mut self,
+        capture: &mut InputCapture,
+        active: Option<CaptureHandle>,
+    ) -> Result<(), CaptureError> {
+        let wanted: Vec<(CaptureHandle, Position)> = self
+            .captures
+            .iter()
+            .filter(|&&(handle, _, kind)| self.wants_barrier(handle, kind))
+            .map(|&(handle, pos, _)| (handle, pos))
+            .collect();
+        let stale: Vec<CaptureHandle> = self
+            .barriers
+            .iter()
+            .copied()
+            .filter(|handle| !wanted.iter().any(|(wanted, _)| wanted == handle))
+            .collect();
+        if active.is_some_and(|handle| stale.contains(&handle)) {
+            capture.release().await?;
+        }
+        for handle in stale {
+            self.barriers.remove(&handle);
+            log::debug!("removing the barrier of capture {handle}");
+            capture.destroy(handle).await?;
+        }
+        for (handle, pos) in wanted {
+            if self.barriers.insert(handle) {
+                log::debug!("adding the barrier of capture {handle} @ {pos}");
+                capture.create(handle, pos).await?;
+            }
+        }
+        Ok(())
+    }
+
     fn is_default_capture_at(&self, pos: Position) -> bool {
         self.captures
             .iter()
@@ -636,14 +694,12 @@ impl CaptureTask {
     }
 
     async fn create_captures(&mut self, capture: &mut InputCapture) -> Result<(), CaptureError> {
-        let captures = self.captures.clone();
-        for (handle, pos, _type) in captures {
-            tokio::select! {
-                r = capture.create(handle, pos) => r?,
-                _ = self.cancellation_token.cancelled() => return Ok(()),
-            }
+        self.barriers.clear();
+        let cancelled = self.cancellation_token.clone();
+        tokio::select! {
+            r = self.sync_barriers(capture, None) => r,
+            _ = cancelled.cancelled() => Ok(()),
         }
-        Ok(())
     }
 
     async fn do_capture_session(
@@ -684,6 +740,7 @@ impl CaptureTask {
                         /* listener terminated */
                         return Ok(());
                     };
+                    let active_before = self.active_client;
                     match listen_event {
                         // connection acknowlegded => set state to Sending
                         ListenEvent::Msg { event: ProtoEvent::Ack(_), addr } => {
@@ -732,34 +789,33 @@ impl CaptureTask {
                         }
                         event => self.handle_listen_event(event).await,
                     }
+                    self.sync_barriers(capture, active_before).await?;
                 },
-                e = self.request_rx.recv() => match e.expect("channel closed") {
-                    CaptureRequest::Reenable => { /* already active */ },
-                    CaptureRequest::SetEnabled(true) => { /* already active */ },
-                    CaptureRequest::SetEnabled(false) => {
-                        self.enabled = false;
-                        self.release_capture(capture).await?;
-                        return Ok(());
-                    },
-                    CaptureRequest::Release => self.release_capture(capture).await?,
-                    CaptureRequest::Create(h, p, t) => {
-                        self.add_capture(h, p, t);
-                        capture.create(h, p).await?;
+                e = self.request_rx.recv() => {
+                    let active_before = self.active_client;
+                    match e.expect("channel closed") {
+                        CaptureRequest::Reenable => { /* already active */ },
+                        CaptureRequest::SetEnabled(true) => { /* already active */ },
+                        CaptureRequest::SetEnabled(false) => {
+                            self.enabled = false;
+                            self.release_capture(capture).await?;
+                            return Ok(());
+                        },
+                        CaptureRequest::Release => self.release_capture(capture).await?,
+                        CaptureRequest::Create(h, p, t) => self.add_capture(h, p, t),
+                        CaptureRequest::Destroy(h) => self.remove_capture(h),
+                        CaptureRequest::SetReleaseBind(bind) => {
+                            self.release_bind.borrow_mut().clone_from(&bind);
+                        }
+                        CaptureRequest::ChangePort(port) => {
+                            self.request_port_change(port).await;
+                        }
+                        CaptureRequest::StartListening { port, cert, authorized_keys, audio } => {
+                            self.start_listening(port, *cert, authorized_keys, audio).await;
+                        }
+                        CaptureRequest::StopListening => self.stop_listening().await,
                     }
-                    CaptureRequest::Destroy(h) => {
-                        self.remove_capture(h);
-                        capture.destroy(h).await?;
-                    }
-                    CaptureRequest::SetReleaseBind(bind) => {
-                        self.release_bind.borrow_mut().clone_from(&bind);
-                    }
-                    CaptureRequest::ChangePort(port) => {
-                        self.request_port_change(port).await;
-                    }
-                    CaptureRequest::StartListening { port, cert, authorized_keys, audio } => {
-                        self.start_listening(port, *cert, authorized_keys, audio).await;
-                    }
-                    CaptureRequest::StopListening => self.stop_listening().await,
+                    self.sync_barriers(capture, active_before).await?;
                 },
                 _ = self.cancellation_token.cancelled() => break,
             }
@@ -973,5 +1029,133 @@ impl<T> Drop for DropGuard<T> {
         self.tx
             .send(self.on_drop.take().expect("item"))
             .expect("channel closed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(client_manager: ClientManager) -> CaptureTask {
+        let (_request_tx, request_rx) = channel();
+        let (event_tx, _event_rx) = channel();
+        CaptureTask {
+            active_client: None,
+            backend: Some(input_capture::Backend::Dummy),
+            cancellation_token: CancellationToken::new(),
+            captures: Default::default(),
+            barriers: Default::default(),
+            listener: None,
+            client_manager,
+            event_tx,
+            enabled: true,
+            clipboard_enabled: false,
+            next_clipboard_transfer_id: 0,
+            clipboard_assembler: Default::default(),
+            pending_local_clipboard: None,
+            early_local_clipboard: None,
+            last_sent_clipboard_text: None,
+            rejected_connections: Default::default(),
+            request_rx,
+            release_bind: Default::default(),
+            state: Default::default(),
+        }
+    }
+
+    fn addr() -> SocketAddr {
+        "10.0.0.2:4242".parse().expect("addr")
+    }
+
+    async fn dummy_capture() -> InputCapture {
+        InputCapture::new(Some(input_capture::Backend::Dummy))
+            .await
+            .expect("dummy capture")
+    }
+
+    #[tokio::test]
+    async fn only_connected_clients_hold_a_barrier() {
+        let manager = ClientManager::default();
+        let away = manager.add_client();
+        let near = manager.add_client();
+        let incoming = manager.add_client();
+        let mut task = task(manager.clone());
+        task.add_capture(away, Position::Left, CaptureType::Default);
+        task.add_capture(near, Position::Right, CaptureType::Default);
+        task.add_capture(incoming, Position::Top, CaptureType::EnterOnly);
+        manager.set_active_addr(near, Some(addr()));
+        let mut capture = dummy_capture().await;
+
+        task.sync_barriers(&mut capture, None).await.expect("sync");
+
+        assert_eq!(task.barriers, HashSet::from([near, incoming]));
+    }
+
+    #[tokio::test]
+    async fn a_barrier_follows_the_connection_of_its_client() {
+        let manager = ClientManager::default();
+        let handle = manager.add_client();
+        let mut task = task(manager.clone());
+        task.add_capture(handle, Position::Left, CaptureType::Default);
+        let mut capture = dummy_capture().await;
+
+        task.sync_barriers(&mut capture, None).await.expect("sync");
+        assert!(task.barriers.is_empty());
+
+        manager.set_active_addr(handle, Some(addr()));
+        task.sync_barriers(&mut capture, None).await.expect("sync");
+        assert_eq!(task.barriers, HashSet::from([handle]));
+
+        // a second pass must neither create the barrier again nor drop it
+        task.sync_barriers(&mut capture, None).await.expect("sync");
+        assert_eq!(task.barriers, HashSet::from([handle]));
+
+        manager.set_active_addr(handle, None);
+        task.sync_barriers(&mut capture, Some(handle))
+            .await
+            .expect("sync");
+        assert!(task.barriers.is_empty());
+
+        manager.set_active_addr(handle, Some(addr()));
+        task.sync_barriers(&mut capture, None).await.expect("sync");
+        assert_eq!(task.barriers, HashSet::from([handle]));
+    }
+
+    #[tokio::test]
+    async fn a_removed_capture_gives_up_its_barrier_and_a_new_one_gets_its_own() {
+        let manager = ClientManager::default();
+        let handle = manager.add_client();
+        manager.set_active_addr(handle, Some(addr()));
+        let mut task = task(manager);
+        task.add_capture(handle, Position::Left, CaptureType::Default);
+        let mut capture = dummy_capture().await;
+        task.sync_barriers(&mut capture, None).await.expect("sync");
+
+        task.remove_capture(handle);
+        task.add_capture(handle, Position::Right, CaptureType::Default);
+        task.sync_barriers(&mut capture, None).await.expect("sync");
+
+        assert_eq!(task.barriers, HashSet::from([handle]));
+        assert_eq!(task.get_pos(handle), Position::Right);
+    }
+
+    #[tokio::test]
+    async fn a_new_session_starts_without_stale_barriers() {
+        let manager = ClientManager::default();
+        let handle = manager.add_client();
+        manager.set_active_addr(handle, Some(addr()));
+        let mut task = task(manager);
+        task.add_capture(handle, Position::Left, CaptureType::Default);
+        let mut first = dummy_capture().await;
+        task.sync_barriers(&mut first, None).await.expect("sync");
+
+        let mut second = dummy_capture().await;
+        task.create_captures(&mut second).await.expect("captures");
+
+        assert_eq!(task.barriers, HashSet::from([handle]));
+        // `destroy` panics unless the new backend really got the barrier
+        second
+            .destroy(handle)
+            .await
+            .expect("barrier in the new session");
     }
 }

@@ -206,6 +206,10 @@ pub struct ClientState {
     /// that predates the Hello event. The frontend uses this to
     /// soft-warn on version mismatch.
     pub peer_commit: Option<[u8; 8]>,
+    /// Round trip of the last liveness probe to the client, in
+    /// milliseconds. `None` until the first answer arrives.
+    #[serde(default)]
+    pub ping_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +264,15 @@ pub enum FrontendEvent {
         hostname: Option<String>,
         ips: Vec<IpAddr>,
         port: u16,
+    },
+    /// client mode: a dial to the server failed and the next attempt is
+    /// scheduled. Cleared by `DeviceConnected`, a stopped emulation or a new
+    /// `ServerEndpoint`.
+    ServerRetry {
+        retry_in_secs: u32,
+        /// the server rejected this computer's certificate and waits for
+        /// the user to authorize it
+        awaiting_authorization: bool,
     },
     /// current audio settings/capability
     AudioStatus {
@@ -353,6 +366,8 @@ pub enum FrontendRequest {
         ips: Vec<IpAddr>,
         port: u16,
     },
+    /// dial the configured server now, skipping the retry delay (client mode)
+    ReconnectNow,
     /// request reenabling input capture
     EnableCapture,
     /// request reenabling input emulation

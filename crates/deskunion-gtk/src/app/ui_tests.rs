@@ -400,6 +400,7 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
             ClientState {
                 active: true,
                 active_addr: (handle == 1).then(|| "192.168.1.4:50798".parse().unwrap()),
+                ping_ms: (handle == 1).then_some(12),
                 ..Default::default()
             },
         )));

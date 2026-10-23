@@ -395,6 +395,17 @@ impl ClientManager {
         }
     }
 
+    /// returns whether the stored round trip changed
+    pub(crate) fn set_ping(&self, handle: ClientHandle, ping_ms: Option<u32>) -> bool {
+        match self.clients.borrow_mut().get_mut(handle as usize) {
+            Some((_, s)) if s.ping_ms != ping_ms => {
+                s.ping_ms = ping_ms;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn active_addr(&self, handle: ClientHandle) -> Option<SocketAddr> {
         self.clients
             .borrow()

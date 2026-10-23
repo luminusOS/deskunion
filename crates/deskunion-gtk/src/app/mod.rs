@@ -39,6 +39,7 @@ use crate::factories::{
     ParkedDeviceRowOutput,
 };
 use crate::screen_arrangement::{ScreenArrangement, ScreenItem};
+use crate::server_link::ServerRetry;
 
 use audio::{
     AUDIO_BITRATES, audio_bitrate_index, audio_device_index, audio_device_model,
@@ -118,6 +119,8 @@ pub struct AppInit {
 #[allow(clippy::enum_variant_names)]
 pub enum AppMsg {
     Frontend(FrontendEvent),
+    #[cfg(not(target_os = "macos"))]
+    Tray(crate::tray::TrayCommand),
 
     NavigateTo(Page),
     SetOperationMode(OperationMode),
@@ -221,6 +224,8 @@ pub struct AppModel {
     server_port_spin: adw::SpinRow,
     /// address of the server this client is currently connected to
     server_connected_addr: Option<SocketAddr>,
+    /// the service is waiting before dialing the server again
+    server_retry: Option<ServerRetry>,
     /// in-flight `TestConnection` for the client-mode connect flow
     pending_server_test: Option<(u64, String, u16)>,
     next_test_id: u64,
@@ -355,6 +360,40 @@ impl AppModel {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
+    fn tray_info(&self) -> crate::tray::TrayInfo {
+        crate::tray::TrayInfo {
+            mode: self.operation_mode,
+            running: self.service_running(),
+            status: self.header_subtitle(),
+            clients: self
+                .client_rows
+                .iter()
+                .map(|row| crate::tray::TrayClient {
+                    handle: row.handle(),
+                    name: row.title().to_string(),
+                    shared: row.active(),
+                    connected: row.active_addr.is_some(),
+                })
+                .collect(),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn handle_tray_command(&mut self, command: crate::tray::TrayCommand) {
+        use crate::tray::TrayCommand;
+        match command {
+            TrayCommand::SetRunning(on) => {
+                self.service_wanted_running = on;
+                self.request(FrontendRequest::SetServiceRunning(on));
+            }
+            TrayCommand::ReconnectNow => self.request(FrontendRequest::ReconnectNow),
+            TrayCommand::SetClientShared(handle, on) => {
+                self.request(FrontendRequest::Activate(handle, on));
+            }
+        }
+    }
+
     fn connected_client_count(&self) -> usize {
         self.client_rows
             .iter()
@@ -379,7 +418,10 @@ impl AppModel {
                 "Client · connected".to_string()
             }
             OperationMode::Client if self.emulation_active && self.server_hostname.is_some() => {
-                "Client · connecting…".to_string()
+                match self.server_retry {
+                    Some(retry) => format!("Client · {}", retry.short_text()),
+                    None => "Client · connecting…".to_string(),
+                }
             }
             OperationMode::Client if self.emulation_active => "Client · running".to_string(),
             OperationMode::Client => "Client · stopped".to_string(),
@@ -506,6 +548,10 @@ impl AppModel {
             return format!("Connected to {addr}");
         }
         match &self.server_hostname {
+            Some(hostname) if self.service_wanted_running && self.server_retry.is_some() => self
+                .server_retry
+                .map(|retry| retry.status_text(hostname, self.server_port))
+                .unwrap_or_default(),
             Some(hostname) if self.service_wanted_running => format!(
                 "Connecting to {hostname}:{}… If this keeps failing, allow UDP port {} in the server's firewall",
                 self.server_port, self.server_port
@@ -675,12 +721,23 @@ impl AppModel {
                     self.service_wanted_running = true;
                 } else {
                     self.server_connected_addr = None;
+                    self.server_retry = None;
                 }
+            }
+            FrontendEvent::ServerRetry {
+                retry_in_secs,
+                awaiting_authorization,
+            } => {
+                self.server_retry = Some(ServerRetry {
+                    in_secs: retry_in_secs,
+                    awaiting_authorization,
+                });
             }
             FrontendEvent::OperationMode(mode) => {
                 if self.operation_mode != mode {
                     self.pending_server_test = None;
                     self.server_connection_error = None;
+                    self.server_retry = None;
                 }
                 self.operation_mode = mode;
             }
@@ -725,6 +782,7 @@ impl AppModel {
                     // succeeded — reflect it in the server status line
                     _ => {
                         self.server_connected_addr = Some(addr);
+                        self.server_retry = None;
                         self.toast_overlay
                             .add_toast(adw::Toast::new(&format!("connected to server {addr}")));
                     }
@@ -869,6 +927,7 @@ impl AppModel {
                 self.server_port = port;
                 self.server_host_draft = self.server_hostname.clone().unwrap_or_default();
                 self.server_port_draft = port;
+                self.server_retry = None;
                 self.server_host_entry.set_text(&self.server_host_draft);
                 self.server_port_spin.set_value(f64::from(port));
             }
@@ -2006,6 +2065,7 @@ impl SimpleComponent for AppModel {
             server_host_entry: adw::EntryRow::new(), // throwaway, overwritten below once `widgets` exists
             server_port_spin: adw::SpinRow::new(None::<&gtk::Adjustment>, 1.0, 0), // throwaway, same as above
             server_connected_addr: None,
+            server_retry: None,
             pending_server_test: None,
             next_test_id: 0,
             server_connection_error: None,
@@ -2084,6 +2144,11 @@ impl SimpleComponent for AppModel {
         model.request(FrontendRequest::EnumerateAudioDevices);
 
         ComponentParts { model, widgets }
+    }
+
+    fn post_view() {
+        #[cfg(not(target_os = "macos"))]
+        crate::tray::publish(model.tray_info());
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
@@ -2206,6 +2271,8 @@ impl SimpleComponent for AppModel {
                 self.service_wanted_running = !running;
                 self.request(FrontendRequest::SetServiceRunning(!running));
             }
+            #[cfg(not(target_os = "macos"))]
+            AppMsg::Tray(command) => self.handle_tray_command(command),
 
             AppMsg::AudioSendToggled(active) => {
                 if !self.updating_audio_ui {

@@ -39,6 +39,8 @@ pub(crate) enum EmulationEvent {
     },
     /// connection to the server closed
     Disconnected { addr: SocketAddr },
+    /// a dial failed; the next attempt is scheduled
+    Retrying(crate::retry::RetryNotice),
     #[cfg(feature = "audio")]
     AudioError { addr: SocketAddr, error: String },
     /// result of a dial-out test requested by the frontend
@@ -62,6 +64,8 @@ enum EmulationRequest {
     Release(SocketAddr),
     /// set (or clear) the server endpoint to dial
     SetServer(Option<ServerTarget>),
+    /// dial again now, ignoring the retry delay
+    Reconnect,
     TestConnection {
         request_id: u64,
         hostname: String,
@@ -116,6 +120,12 @@ impl Emulation {
     pub(crate) fn set_server(&self, target: Option<ServerTarget>) {
         self.request_tx
             .send(EmulationRequest::SetServer(target))
+            .expect("channel closed");
+    }
+
+    pub(crate) fn reconnect_now(&self) {
+        self.request_tx
+            .send(EmulationRequest::Reconnect)
             .expect("channel closed");
     }
 
@@ -233,6 +243,9 @@ impl DialTask {
                         last_response.insert(addr, Instant::now());
                         self.conn.acknowledge_clipboard_text(addr, transfer_id);
                         }
+                    ConnectionEvent::Retrying(notice) => {
+                        self.event_tx.send(EmulationEvent::Retrying(notice)).expect("channel closed");
+                    }
                     ConnectionEvent::Connected { addr, fingerprint } => {
                         last_response.insert(addr, Instant::now());
                         self.event_tx.send(EmulationEvent::Connected { addr, fingerprint }).expect("channel closed");
@@ -291,6 +304,7 @@ impl DialTask {
                         self.conn.clear_clipboard_text();
                         self.conn.set_server(target).await;
                     }
+                    EmulationRequest::Reconnect => self.conn.reconnect_now().await,
                     EmulationRequest::TestConnection { request_id, hostname, port } => {
                         let test = self.conn.test_connection(hostname, port);
                         let event_tx = self.event_tx.clone();

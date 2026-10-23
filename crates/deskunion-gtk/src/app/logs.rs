@@ -106,6 +106,19 @@ impl LogState {
                 LogCategory::Connections,
                 format!("client deleted: handle {handle}"),
             ),
+            FrontendEvent::ServerRetry {
+                retry_in_secs,
+                awaiting_authorization,
+            } => (
+                LogCategory::Connections,
+                if *awaiting_authorization {
+                    format!(
+                        "server is waiting for authorization; trying again in {retry_in_secs} s"
+                    )
+                } else {
+                    format!("server unreachable; next attempt in {retry_in_secs} s")
+                },
+            ),
             FrontendEvent::State(..) => return None,
             FrontendEvent::NoSuchClient(handle) => (
                 LogCategory::Errors,

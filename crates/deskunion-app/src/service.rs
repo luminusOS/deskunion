@@ -73,8 +73,6 @@ pub struct Service {
     incoming_conns: HashSet<SocketAddr>,
     /// map from capture handle to connection info
     incoming_conn_info: HashMap<ClientHandle, Incoming>,
-    /// resolved IPs of the configured server endpoint (client mode)
-    server_dns_ips: Vec<IpAddr>,
     next_trigger_handle: u64,
 }
 
@@ -169,7 +167,6 @@ impl Service {
             emulation_status: Default::default(),
             incoming_conn_info: Default::default(),
             incoming_conns: Default::default(),
-            server_dns_ips: Default::default(),
             next_trigger_handle: 0,
         };
         Ok(service)
@@ -186,12 +183,6 @@ impl Service {
 
         for handle in active {
             self.activate_client(handle);
-        }
-
-        // a client-mode daemon reconnects to its configured server
-        // without waiting for a frontend
-        if self.operation_mode == OperationMode::Client {
-            self.resolve_server();
         }
 
         loop {
@@ -259,6 +250,13 @@ impl Service {
             FrontendRequest::EnableEmulation => {
                 if self.operation_mode == OperationMode::Client {
                     self.emulation.reenable();
+                }
+            }
+            FrontendRequest::ReconnectNow => {
+                if self.operation_mode == OperationMode::Client
+                    && self.emulation_status == Status::Enabled
+                {
+                    self.emulation.reconnect_now();
                 }
             }
             FrontendRequest::SetServiceRunning(running) => self.set_service_running(running),
@@ -443,8 +441,6 @@ impl Service {
             .unwrap()
             .clone_from(&authorized_keys);
         if self.operation_mode == OperationMode::Client {
-            self.server_dns_ips.clear();
-            self.resolve_server();
             self.push_server_target();
         }
         self.sync_frontend();
@@ -513,6 +509,14 @@ impl Service {
             }
             EmulationEvent::ReleaseNotify => self.capture.release(),
             EmulationEvent::ClipboardText(_) => {}
+            EmulationEvent::Retrying(notice) => {
+                if self.operation_mode == OperationMode::Client {
+                    self.notify_frontend(FrontendEvent::ServerRetry {
+                        retry_in_secs: notice.in_secs,
+                        awaiting_authorization: notice.awaiting_authorization,
+                    });
+                }
+            }
             EmulationEvent::Connected { addr, fingerprint } => {
                 if self.operation_mode == OperationMode::Client {
                     self.notify_frontend(FrontendEvent::DeviceConnected { addr, fingerprint });
@@ -623,20 +627,10 @@ impl Service {
     }
 
     fn handle_resolver_event(&mut self, event: DnsEvent) {
-        const SERVER_HANDLE: ClientHandle = u64::MAX;
         let handle = match event {
-            DnsEvent::Resolving(SERVER_HANDLE) => return,
             DnsEvent::Resolving(handle) => {
                 self.client_manager.set_resolving(handle, true);
                 handle
-            }
-            DnsEvent::Resolved(SERVER_HANDLE, hostname, ips) => {
-                if let Err(e) = &ips {
-                    log::warn!("could not resolve server {hostname}: {e}");
-                }
-                self.server_dns_ips = ips.unwrap_or_default();
-                self.push_server_target();
-                return;
             }
             DnsEvent::Resolved(handle, hostname, ips) => {
                 self.client_manager.set_resolving(handle, false);
@@ -657,14 +651,6 @@ impl Service {
         }
     }
 
-    /// resolve the configured server hostname (client mode). Uses a
-    /// dedicated resolver handle that can never collide with a client.
-    fn resolve_server(&self) {
-        if let Some(hostname) = self.config.server_endpoint().hostname {
-            self.resolver.resolve(u64::MAX, hostname);
-        }
-    }
-
     /// (re)dial the configured server endpoint when this device is an
     /// enabled client. The target persists in the connection and its
     /// reconnect loop redials after drops, so this only needs to run
@@ -676,15 +662,15 @@ impl Service {
         }
         let endpoint = self.config.server_endpoint();
         let mut ips = endpoint.ips.clone();
-        ips.extend(self.server_dns_ips.iter().copied());
         ips.sort();
         ips.dedup();
-        if ips.is_empty() {
-            // no usable address yet — a pending DNS resolution pushes
-            // the target again once it completes
+        if ips.is_empty() && endpoint.hostname.is_none() {
             return;
         }
+        // the connection resolves the host name itself before every dial, so a
+        // lookup that fails now is retried instead of leaving the target unset
         self.emulation.set_server(Some(ServerTarget {
+            hostname: endpoint.hostname,
             ips,
             port: endpoint.port,
         }));
@@ -696,9 +682,6 @@ impl Service {
             ips,
             port,
         });
-        // stale resolutions belong to the previous hostname
-        self.server_dns_ips.clear();
-        self.resolve_server();
         self.push_server_target();
         let endpoint = self.config.server_endpoint();
         self.notify_frontend(FrontendEvent::ServerEndpoint {
@@ -934,9 +917,6 @@ impl Service {
                     self.capture.destroy(handle);
                 }
                 self.capture.set_enabled(false);
-                // warm the server address; the actual dial happens when
-                // emulation is (re)enabled
-                self.resolve_server();
             }
         }
     }

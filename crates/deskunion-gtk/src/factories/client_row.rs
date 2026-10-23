@@ -4,6 +4,8 @@ use relm4::prelude::*;
 
 use deskunion_ipc::{ClientConfig, ClientHandle, ClientState, Position};
 
+use crate::ping::{PingLevel, ping_description, ping_label};
+
 const NO_HOSTNAME_TITLE: &str = "No hostname";
 const PORT_ERROR: &str = "Enter a port from 1 to 65535";
 
@@ -125,6 +127,8 @@ pub struct ClientRowModel {
     /// used by `AppModel` to correlate `FrontendEvent::AudioStream` (which
     /// only carries a socket addr) back to this row's `ClientHandle`
     pub active_addr: Option<String>,
+    /// round trip of the last liveness probe
+    ping_ms: Option<u32>,
     audio_active: bool,
     /// last latency reported by the audio stream from this client;
     /// `None` while no stream is active
@@ -178,6 +182,10 @@ impl ClientRowModel {
 
     pub fn hostname(&self) -> Option<&str> {
         self.draft.confirmed_hostname.as_deref()
+    }
+
+    pub fn title(&self) -> &str {
+        self.draft.title()
     }
 
     pub fn port(&self) -> u16 {
@@ -237,10 +245,28 @@ impl FactoryComponent for ClientRowModel {
                 update_property: &[gtk::accessible::Property::Label("Screen number")],
             },
 
-            add_suffix = &gtk::Image {
-                set_icon_name: Some("network-cellular-signal-excellent-symbolic"),
-                add_css_class: "success",
+            add_suffix = &gtk::Label {
+                add_css_class: "numeric",
+                add_css_class: "dim-label",
                 set_valign: gtk::Align::Center,
+                #[watch]
+                set_label: &ping_label(self.ping_ms),
+                #[watch]
+                set_tooltip_text: Some(&ping_description(self.ping_ms)),
+                #[watch]
+                set_visible: self.connected(),
+            },
+
+            add_suffix = &gtk::Image {
+                set_valign: gtk::Align::Center,
+                #[watch]
+                set_icon_name: Some(PingLevel::from_ms(self.ping_ms).icon_name()),
+                #[watch]
+                set_css_classes: &[PingLevel::from_ms(self.ping_ms).css_class()],
+                #[watch]
+                set_tooltip_text: Some(&ping_description(self.ping_ms)),
+                #[watch]
+                update_property: &[gtk::accessible::Property::Label(&ping_description(self.ping_ms))],
                 #[watch]
                 set_visible: self.connected(),
             },
@@ -383,6 +409,7 @@ impl FactoryComponent for ClientRowModel {
             position: config.pos,
             active: state.active,
             active_addr: state.active_addr.map(|a| a.to_string()),
+            ping_ms: state.ping_ms,
             audio_active: false,
             audio_latency_ms: None,
             adopted: AdoptedFields::default(),
@@ -398,6 +425,7 @@ impl FactoryComponent for ClientRowModel {
             ClientRowInput::SetState(state) => {
                 self.active = state.active;
                 self.active_addr = state.active_addr.map(|a| a.to_string());
+                self.ping_ms = state.ping_ms;
             }
             ClientRowInput::SetAudioStats { active, latency_ms } => {
                 self.audio_active = active;

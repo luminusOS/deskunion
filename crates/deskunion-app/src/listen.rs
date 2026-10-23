@@ -72,6 +72,11 @@ pub(crate) enum ListenEvent {
     Rejected {
         fingerprint: String,
     },
+    /// the peer answered a liveness probe after `rtt_ms`
+    Latency {
+        addr: SocketAddr,
+        rtt_ms: u32,
+    },
     /// the DTLS association to this peer ended (recv error or explicit
     /// close) and its `read_loop` exited
     Disconnected {
@@ -163,7 +168,7 @@ impl DeskunionListener {
 
         let conns: Rc<AsyncMutex<Vec<(SocketAddr, ArcConn)>>> =
             Rc::new(AsyncMutex::new(Vec::new()));
-        let ping_response: Rc<RefCell<HashSet<SocketAddr>>> = Default::default();
+        let ping_response: Rc<RefCell<Liveness>> = Default::default();
 
         let conns_clone = conns.clone();
         let listen_task: JoinHandle<()> = {
@@ -469,6 +474,24 @@ const LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
 /// declared dead (6 × 5 s = 30 s liveness budget)
 const LIVENESS_MAX_MISSES: u32 = 6;
 
+/// What the pinger and the read loop of every connection share.
+#[derive(Default)]
+struct Liveness {
+    /// peers heard from since their last probe
+    heard: HashSet<SocketAddr>,
+    /// when the probe still waiting for its answer was sent
+    probed_at: HashMap<SocketAddr, std::time::Instant>,
+}
+
+impl Liveness {
+    /// round trip of the probe that `addr` just answered, in whole
+    /// milliseconds; a probe is only timed once
+    fn answered(&mut self, addr: SocketAddr) -> Option<u32> {
+        let sent = self.probed_at.remove(&addr)?;
+        Some(u32::try_from(sent.elapsed().as_millis()).unwrap_or(u32::MAX))
+    }
+}
+
 /// consecutive-miss keepalive counter: a single lost ping/pong must
 /// not kill the connection; only a sustained silence does.
 #[derive(Default)]
@@ -494,27 +517,25 @@ impl MissCounter {
 /// with `Pong(emulation_active)`. Any received datagram — Pong, audio or
 /// input control — counts as liveness, so a busy real-time audio stream
 /// can't falsely fail the keepalive.
-async fn ping_pong(
-    addr: SocketAddr,
-    conn: ArcConn,
-    ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
-) {
+async fn ping_pong(addr: SocketAddr, conn: ArcConn, ping_response: Rc<RefCell<Liveness>>) {
     let mut keepalive = MissCounter::default();
     loop {
         let (buf, len) = ProtoEvent::Ping.into();
         // Clear the preceding interval before issuing this probe. Any
         // successfully received datagram proves the DTLS peer is alive.
-        ping_response.borrow_mut().remove(&addr);
+        ping_response.borrow_mut().heard.remove(&addr);
+        let probed_at = std::time::Instant::now();
         if let Err(e) = conn.send(&buf[..len]).await {
             log::warn!("{addr}: send error `{e}`, closing connection");
             let _ = conn.close().await;
             return;
         }
+        ping_response.borrow_mut().probed_at.insert(addr, probed_at);
         log::trace!("PING >=>=>=>=>=> {addr}");
 
         tokio::time::sleep(LIVENESS_INTERVAL).await;
 
-        if ping_response.borrow_mut().remove(&addr) {
+        if ping_response.borrow_mut().heard.remove(&addr) {
             keepalive.reset();
         } else if keepalive.miss() {
             log::warn!(
@@ -757,7 +778,7 @@ async fn read_loop(
     addr: SocketAddr,
     conn: ArcConn,
     dtls_tx: Sender<ListenEvent>,
-    ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
+    ping_response: Rc<RefCell<Liveness>>,
     pinger: JoinHandle<()>,
     #[cfg_attr(not(feature = "audio"), allow(unused_variables))]
     audio: crate::config::AudioSettings,
@@ -771,7 +792,7 @@ async fn read_loop(
     while let Ok(n) = conn.recv(&mut buf).await {
         // Receiving anything from this DTLS association is stronger proof of
         // liveness than waiting for a Pong queued behind real-time audio.
-        ping_response.borrow_mut().insert(addr);
+        ping_response.borrow_mut().heard.insert(addr);
         match decode(&buf[..n]) {
             Ok(Datagram::ComputerName(name)) => {
                 dtls_tx
@@ -780,9 +801,18 @@ async fn read_loop(
             }
             Ok(Datagram::Event(event)) => {
                 log::trace!("{addr} <=<=<=<=<= {event}");
+                let rtt_ms = matches!(event, ProtoEvent::Pong(_))
+                    .then(|| ping_response.borrow_mut().answered(addr))
+                    .flatten();
                 dtls_tx
                     .send(ListenEvent::Msg { event, addr })
                     .expect("channel closed");
+                // after the `Pong` itself, so whoever waits for that keeps seeing it first
+                if let Some(rtt_ms) = rtt_ms {
+                    dtls_tx
+                        .send(ListenEvent::Latency { addr, rtt_ms })
+                        .expect("channel closed");
+                }
             }
             Ok(Datagram::ClipboardText(fragment)) => {
                 let payload = buf[fragment.payload_range.clone()].to_vec();
@@ -893,7 +923,11 @@ async fn read_loop(
     // logging keepalive timeouts for a dead connection) and drop its
     // liveness bookkeeping
     pinger.abort();
-    ping_response.borrow_mut().remove(&addr);
+    {
+        let mut liveness = ping_response.borrow_mut();
+        liveness.heard.remove(&addr);
+        liveness.probed_at.remove(&addr);
+    }
     let mut conns = conns.lock().await;
     if let Some(index) = conns.iter().position(|(a, _)| *a == addr) {
         conns.remove(index);
@@ -983,7 +1017,7 @@ mod test {
                 let conns: Rc<AsyncMutex<Vec<(SocketAddr, ArcConn)>>> = Default::default();
                 conns.lock().await.push((addr, conn.clone()));
                 let (tx, mut rx) = channel();
-                let ping_response: Rc<RefCell<HashSet<SocketAddr>>> = Default::default();
+                let ping_response: Rc<RefCell<Liveness>> = Default::default();
 
                 let sends = conn.clone();
                 let pinger = spawn_local(ping_pong(addr, conn.clone(), ping_response.clone()));
@@ -1040,7 +1074,7 @@ mod test {
                 let conns: Rc<AsyncMutex<Vec<(SocketAddr, ArcConn)>>> = Default::default();
                 conns.lock().await.push((addr, conn.clone()));
                 let (mut tx, rx) = channel();
-                let ping_response: Rc<RefCell<HashSet<SocketAddr>>> = Default::default();
+                let ping_response: Rc<RefCell<Liveness>> = Default::default();
 
                 // what `terminate()` does to the channel, before the loop
                 // reaches its teardown sends
@@ -1239,6 +1273,82 @@ mod test {
             .await;
     }
 
+    #[test]
+    fn a_probe_is_timed_once_and_only_when_it_was_sent() {
+        let addr: SocketAddr = "10.0.0.2:4242".parse().expect("addr");
+        let mut liveness = Liveness::default();
+        assert_eq!(liveness.answered(addr), None);
+
+        liveness
+            .probed_at
+            .insert(addr, std::time::Instant::now() - Duration::from_millis(40));
+        let rtt = liveness.answered(addr).expect("a round trip");
+        assert!((40..1000).contains(&rtt), "{rtt}");
+        assert_eq!(liveness.answered(addr), None);
+    }
+
+    /// The listener times the gap between its Ping and the peer's Pong and
+    /// reports it, so the frontend can show the link quality.
+    #[tokio::test]
+    async fn the_listener_reports_how_long_the_pong_took() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let server_cert =
+                    Certificate::generate_self_signed(["ignored".to_owned()]).expect("certificate");
+                let client_cert =
+                    Certificate::generate_self_signed(["ignored".to_owned()]).expect("certificate");
+                let authorized = Arc::new(RwLock::new(HashMap::from([(
+                    crypto::certificate_fingerprint(&client_cert),
+                    "test".to_owned(),
+                )])));
+                let port = ephemeral_port();
+                let mut listener = DeskunionListener::new(
+                    port,
+                    server_cert,
+                    authorized,
+                    ClientManager::default(),
+                    test_audio_settings(),
+                )
+                .await
+                .expect("listener");
+                let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
+                let (conn, _) = crate::connect::connect(addr, client_cert)
+                    .await
+                    .map_err(|(_, e)| e)
+                    .expect("connect");
+
+                let mut buf = [0u8; MAX_DATAGRAM_SIZE];
+                let received = tokio::time::timeout(Duration::from_secs(5), conn.recv(&mut buf))
+                    .await
+                    .expect("the ping")
+                    .expect("recv");
+                assert!(matches!(
+                    decode(&buf[..received]),
+                    Ok(Datagram::Event(ProtoEvent::Ping))
+                ));
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                let (pong, len) = ProtoEvent::Pong(true).into();
+                conn.send(&pong[..len]).await.expect("pong");
+
+                let rtt_ms = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let ListenEvent::Latency { rtt_ms, .. } =
+                            listener.next().await.expect("event")
+                        {
+                            break rtt_ms;
+                        }
+                    }
+                })
+                .await
+                .expect("a latency report");
+                assert!((120..2000).contains(&rtt_ms), "{rtt_ms}");
+
+                conn.close().await.expect("close");
+                listener.terminate().await;
+            })
+            .await;
+    }
+
     /// Exercise the real dialer/session loop with audio disabled. A name
     /// discarded while parked must be repeated after position assignment.
     #[tokio::test]
@@ -1269,6 +1379,7 @@ mod test {
                     crate::connect::DeskunionConnection::new(client_cert, test_audio_settings());
                 dialer
                     .set_server(Some(crate::connect::ServerTarget {
+                        hostname: None,
                         ips: vec!["127.0.0.1".parse().unwrap()],
                         port,
                     }))

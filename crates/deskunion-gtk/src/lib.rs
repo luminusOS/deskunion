@@ -5,7 +5,9 @@ mod factories;
 mod macos_privacy;
 #[cfg(target_os = "macos")]
 mod macos_status_item;
+mod ping;
 mod screen_arrangement;
+mod server_link;
 #[cfg(not(target_os = "macos"))]
 mod tray;
 
@@ -349,7 +351,12 @@ fn build_ui(app: &Application) {
 
     #[cfg(not(target_os = "macos"))]
     {
-        tray::setup(app, &window);
+        tray::setup(app, &window, {
+            let sender = controller.sender().clone();
+            move |command| {
+                let _ = sender.send(app::AppMsg::Tray(command));
+            }
+        });
         window.present();
     }
 

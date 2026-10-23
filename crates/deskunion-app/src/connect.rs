@@ -1,11 +1,12 @@
 use crate::config::local_commit;
+use crate::retry::{Backoff, RetryNotice};
 use deskunion_proto::{
     ClipboardTextFragment, Datagram, DatagramRef, MAX_CLIPBOARD_FRAGMENT_SIZE,
     MAX_CLIPBOARD_TEXT_SIZE, MAX_DATAGRAM_SIZE, MAX_EVENT_SIZE, ProtoEvent, decode, encode_into,
 };
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     rc::Rc,
     sync::Arc,
@@ -14,7 +15,7 @@ use std::{
 use thiserror::Error;
 use tokio::{
     net::{UdpSocket, lookup_host},
-    sync::Mutex,
+    sync::{Mutex, Notify},
     task::{JoinSet, spawn_local},
 };
 use webrtc_dtls::{
@@ -34,6 +35,8 @@ pub(crate) enum DeskunionConnectionError {
     Webrtc(#[from] webrtc_util::Error),
     #[error("not connected")]
     NotConnected,
+    #[error("could not resolve the server address")]
+    Unresolved,
     #[error(
         "No reply from the server. Check the address and that UDP (not TCP) on the server's port is allowed in its firewall"
     )]
@@ -75,6 +78,8 @@ pub(crate) enum ConnectionEvent {
     Disconnected {
         addr: SocketAddr,
     },
+    /// a dial failed and the next one is scheduled
+    Retrying(RetryNotice),
     #[cfg(feature = "audio")]
     AudioError {
         addr: SocketAddr,
@@ -85,6 +90,10 @@ pub(crate) enum ConnectionEvent {
 /// the capture-side endpoint the emulation side dials
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ServerTarget {
+    /// resolved again before every dial, so a late network or a moved
+    /// server is picked up without restarting
+    pub hostname: Option<String>,
+    /// addresses entered by hand
     pub ips: Vec<IpAddr>,
     pub port: u16,
 }
@@ -98,13 +107,52 @@ impl ServerTarget {
     }
 }
 
+/// manual addresses first, then what the name resolved to, without repeats
+fn merge_addrs(fixed: Vec<SocketAddr>, resolved: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let mut merged = Vec::with_capacity(fixed.len() + resolved.len());
+    for addr in fixed.into_iter().chain(resolved) {
+        if !merged.contains(&addr) {
+            merged.push(addr);
+        }
+    }
+    merged
+}
+
+async fn resolve_target(target: &ServerTarget) -> Vec<SocketAddr> {
+    let resolved = match target.hostname.as_deref() {
+        Some(hostname) => {
+            match tokio::time::timeout(RESOLVE_TIMEOUT, lookup_host((hostname, target.port))).await
+            {
+                Ok(Ok(addrs)) => addrs.collect(),
+                Ok(Err(error)) => {
+                    log::debug!("could not resolve {hostname}: {error}");
+                    Vec::new()
+                }
+                Err(_) => {
+                    log::debug!("resolving {hostname} timed out");
+                    Vec::new()
+                }
+            }
+        }
+        None => Vec::new(),
+    };
+    merge_addrs(target.addrs(), resolved)
+}
+
+/// sleeps for `delay`; `true` when `wake` ended the wait early
+async fn wait_or_wake(delay: Duration, wake: &Notify) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => false,
+        _ = wake.notified() => true,
+    }
+}
+
 const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTHORIZATION_WAIT_TIMEOUT: Duration = Duration::from_secs(45);
 // Give the user enough time to complete the authorization form before
 // reconnecting. Older peers reopen their dialog for every rejected handshake.
 const AUTHORIZATION_RETRY_INTERVAL: Duration = Duration::from_secs(15);
-/// delay between connection attempts while the server is unreachable
-const RECONNECT_INTERVAL: Duration = Duration::from_secs(3);
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 type ArcConn = Arc<dyn Conn + Send + Sync>;
 
@@ -184,7 +232,7 @@ async fn connect_any(
             Some(r) => match r.expect("join error") {
                 Ok(conn) => return Ok(conn),
                 Err((a, e)) => {
-                    log::warn!("failed to connect to {a}: `{e}`");
+                    log::debug!("failed to connect to {a}: `{e}`");
                     // An IPv6 resolution can fail locally while IPv4 reaches
                     // the peer and is rejected only because authorization is
                     // pending. Preserve the actionable remote error instead
@@ -209,6 +257,10 @@ struct Shared {
     conn: Mutex<Option<(SocketAddr, ArcConn)>>,
     target: Mutex<Option<ServerTarget>>,
     connecting: Mutex<bool>,
+    /// failed dials since the last session
+    backoff: Cell<Backoff>,
+    /// ends the wait between two dials
+    wake: Notify,
 }
 
 /// the emulation side's transport: a persistent DTLS session dialed out
@@ -233,6 +285,8 @@ impl DeskunionConnection {
                 conn: Default::default(),
                 target: Default::default(),
                 connecting: Default::default(),
+                backoff: Default::default(),
+                wake: Default::default(),
             }),
             recv_rx,
             recv_tx,
@@ -372,6 +426,10 @@ impl DeskunionConnection {
             return;
         }
         self.clear_clipboard_text();
+        // a new target deserves an immediate attempt, not what the old one
+        // had piled up
+        self.shared.backoff.set(Backoff::default());
+        self.shared.wake.notify_waiters();
         // retarget or shutdown: drop the current session; the server
         // loop's exit path redials the new target, if any
         let conn = self.shared.conn.lock().await.take();
@@ -396,6 +454,27 @@ impl DeskunionConnection {
             self.recv_tx.clone(),
             self.audio.clone(),
         );
+    }
+
+    /// dial again now: closes the current session, whose exit path redials,
+    /// or cuts the wait between two failed dials short. Starts the backoff over.
+    pub(crate) async fn reconnect_now(&self) {
+        self.shared.backoff.set(Backoff::default());
+        let connected = self
+            .shared
+            .conn
+            .lock()
+            .await
+            .as_ref()
+            .map(|(addr, _)| *addr);
+        if let Some(addr) = connected {
+            self.close(addr).await;
+            return;
+        }
+        self.shared.wake.notify_waiters();
+        if self.shared.target.lock().await.is_some() {
+            self.ensure_connecting();
+        }
     }
 
     /// close the session to the server: the emulation-side watchdog
@@ -547,25 +626,57 @@ fn ensure_connecting(
 /// dial the configured server until a session is established or the
 /// target is cleared. Reconnection after an established session drops
 /// is triggered by `server_loop`'s exit path.
+///
+/// Failed dials are retried on Deskflow's schedule (see [`crate::retry`]);
+/// waiting for the user to authorize this computer uses a longer, flat
+/// interval because older peers reopen their dialog on every rejection.
 async fn connect_loop(
     shared: Rc<Shared>,
     cert: Certificate,
     tx: Sender<ConnectionEvent>,
     audio: crate::config::AudioSettings,
 ) {
+    let mut last_error = None;
+    let mut last_notice = None;
     loop {
         let target = shared.target.lock().await.clone();
         let Some(target) = target else { return };
-        let addrs = target.addrs();
-        if addrs.is_empty() {
+        let addrs = resolve_target(&target).await;
+        if addrs.is_empty() && target.hostname.is_none() {
             return;
         }
         log::info!("connecting to server ... (ips: {addrs:?})");
-        let (conn, addr) = match connect_any(&addrs, cert.clone()).await {
+        let attempt = if addrs.is_empty() {
+            Err(DeskunionConnectionError::Unresolved)
+        } else {
+            connect_any(&addrs, cert.clone()).await
+        };
+        let (conn, addr) = match attempt {
             Ok(c) => c,
-            Err(e) => {
-                log::debug!("reconnecting after: {e}");
-                tokio::time::sleep(RECONNECT_INTERVAL).await;
+            Err(error) => {
+                // a wake-up sent while this dial was in flight reached nobody,
+                // so a retargeted or cleared server must be noticed here
+                if shared.target.lock().await.as_ref() != Some(&target) {
+                    continue;
+                }
+                let awaiting_authorization =
+                    matches!(error, DeskunionConnectionError::AuthorizationRequired);
+                let delay = if awaiting_authorization {
+                    AUTHORIZATION_RETRY_INTERVAL
+                } else {
+                    let mut backoff = shared.backoff.get();
+                    let delay = backoff.next_delay();
+                    shared.backoff.set(backoff);
+                    delay
+                };
+                log_dial_failure(&mut last_error, &error, delay);
+                let notice = RetryNotice::new(delay, awaiting_authorization);
+                if last_notice != Some(notice) {
+                    last_notice = Some(notice);
+                    tx.send(ConnectionEvent::Retrying(notice))
+                        .expect("channel closed");
+                }
+                wait_or_wake(delay, &shared.wake).await;
                 continue;
             }
         };
@@ -574,6 +685,7 @@ async fn connect_loop(
             let _ = conn.close().await;
             continue;
         }
+        shared.backoff.set(Backoff::default());
         let dtls_conn: &DTLSConn = conn.as_any().downcast_ref().expect("dtls conn");
         let certs = dtls_conn.connection_state().await.peer_certificates;
         let fingerprint = certs
@@ -599,6 +711,17 @@ async fn connect_loop(
 
         spawn_local(server_loop(shared, addr, conn, cert, tx, audio));
         return;
+    }
+}
+
+/// a retry every second would fill the log with the same line
+fn log_dial_failure(last: &mut Option<String>, error: &DeskunionConnectionError, delay: Duration) {
+    let text = error.to_string();
+    if last.as_deref() == Some(text.as_str()) {
+        log::debug!("still unable to reach the server: {text}; retrying in {delay:?}");
+    } else {
+        log::warn!("unable to reach the server: {text}; retrying in {delay:?}");
+        *last = Some(text);
     }
 }
 
@@ -964,6 +1087,166 @@ mod test {
         let v6 = local_bind_addr("[::1]:4242".parse().expect("addr"));
         assert!(v6.is_ipv6(), "{v6} should be IPv6");
         assert_eq!(v6.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn merge_keeps_manual_addresses_first_and_drops_repeats() {
+        let manual: SocketAddr = "10.0.0.2:4242".parse().expect("addr");
+        let other: SocketAddr = "10.0.0.3:4242".parse().expect("addr");
+        assert_eq!(
+            merge_addrs(vec![manual], vec![other, manual]),
+            vec![manual, other]
+        );
+        assert!(merge_addrs(Vec::new(), Vec::new()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_target_resolves_a_literal_host_next_to_the_manual_addresses() {
+        let target = ServerTarget {
+            hostname: Some("127.0.0.1".to_owned()),
+            ips: vec!["10.0.0.2".parse().expect("ip")],
+            port: 4242,
+        };
+        assert_eq!(
+            resolve_target(&target).await,
+            vec![
+                "10.0.0.2:4242".parse::<SocketAddr>().expect("addr"),
+                "127.0.0.1:4242".parse::<SocketAddr>().expect("addr"),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_wait_lasts_the_whole_delay_without_a_wake() {
+        let wake = Notify::new();
+        let started = tokio::time::Instant::now();
+        assert!(!wait_or_wake(Duration::from_secs(30), &wake).await);
+        assert_eq!(started.elapsed(), Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wake_ends_the_wait_early() {
+        let wake = Notify::new();
+        let started = tokio::time::Instant::now();
+        let (woken, ()) = tokio::join!(wait_or_wake(Duration::from_secs(300), &wake), async {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            wake.notify_waiters();
+        });
+        assert!(woken);
+        assert_eq!(started.elapsed(), Duration::from_secs(2));
+    }
+
+    /// Clearing the target while a dial is in flight: that dial's failure must
+    /// neither be announced nor delay anything, since nobody is dialing anymore.
+    #[tokio::test]
+    async fn a_dial_that_fails_after_the_target_was_cleared_is_not_announced() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let silent = UdpSocket::bind("127.0.0.1:0").await.expect("socket");
+                let port = silent.local_addr().expect("addr").port();
+                let cert =
+                    Certificate::generate_self_signed(["ignored".to_owned()]).expect("certificate");
+                let mut connection = DeskunionConnection::new(
+                    cert,
+                    crate::config::AudioSettings {
+                        send: false,
+                        receive: false,
+                        bitrate: 96_000,
+                        buffer_ms: 80,
+                        capture_device: None,
+                        playback_device: None,
+                    },
+                );
+                connection
+                    .set_server(Some(ServerTarget {
+                        hostname: None,
+                        ips: vec!["127.0.0.1".parse().expect("ip")],
+                        port,
+                    }))
+                    .await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                connection.set_server(None).await;
+
+                let event = tokio::time::timeout(
+                    DEFAULT_CONNECTION_TIMEOUT + Duration::from_secs(2),
+                    connection.recv(),
+                )
+                .await;
+                assert!(
+                    event.is_err(),
+                    "unexpected event after the target was cleared"
+                );
+                assert!(!*connection.shared.connecting.lock().await);
+                drop(silent);
+            })
+            .await;
+    }
+
+    /// A server that never answers: the failed dial is announced with the
+    /// delay the backoff calls for, and "reconnect now" dials again at once
+    /// instead of sitting out that delay. Every dial uses a fresh source port.
+    #[tokio::test]
+    async fn a_failed_dial_is_announced_and_reconnect_now_skips_the_wait() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let silent = UdpSocket::bind("127.0.0.1:0").await.expect("socket");
+                let port = silent.local_addr().expect("addr").port();
+                let sources = Rc::new(RefCell::new(std::collections::HashSet::new()));
+                let seen = sources.clone();
+                spawn_local(async move {
+                    let mut buf = [0u8; MAX_DATAGRAM_SIZE];
+                    while let Ok((_, from)) = silent.recv_from(&mut buf).await {
+                        seen.borrow_mut().insert(from);
+                    }
+                });
+
+                let cert =
+                    Certificate::generate_self_signed(["ignored".to_owned()]).expect("certificate");
+                let mut connection = DeskunionConnection::new(
+                    cert,
+                    crate::config::AudioSettings {
+                        send: false,
+                        receive: false,
+                        bitrate: 96_000,
+                        buffer_ms: 80,
+                        capture_device: None,
+                        playback_device: None,
+                    },
+                );
+                connection
+                    .set_server(Some(ServerTarget {
+                        hostname: None,
+                        ips: vec!["127.0.0.1".parse().expect("ip")],
+                        port,
+                    }))
+                    .await;
+
+                connection.shared.backoff.set(Backoff::after(400));
+                let event = tokio::time::timeout(
+                    DEFAULT_CONNECTION_TIMEOUT + Duration::from_secs(3),
+                    connection.recv(),
+                )
+                .await
+                .expect("a retry notice");
+                let ConnectionEvent::Retrying(notice) = event else {
+                    panic!("expected a retry notice");
+                };
+                assert_eq!(notice.in_secs, 30);
+                assert!(!notice.awaiting_authorization);
+                assert_eq!(sources.borrow().len(), 1);
+
+                connection.reconnect_now().await;
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while sources.borrow().len() < 2 {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await
+                .expect("a second dial right after reconnect_now");
+
+                connection.terminate().await;
+            })
+            .await;
     }
 
     /// a connection that accepts every send and never receives
