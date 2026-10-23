@@ -119,7 +119,23 @@ Closing the window keeps DeskUnion running in the background while a tray icon i
 - **Windows**: a notification area icon.
 - **macOS**: a menu bar item.
 
-Click the icon to show or hide the window, or use its menu to open or quit DeskUnion.
+Click the icon to show or hide the window. The menu offers, depending on the mode:
+
+- **Server**: start or stop sharing, and a *Computers* submenu to turn input sharing on or off for each paired computer.
+- **Client**: connect or disconnect, and *Reconnect now*, which skips the retry delay.
+- **Both**: show or hide the window, and quit.
+
+The tooltip carries the current status, such as "Client · retrying in 5 s".
+
+### Connection list
+
+Each connected computer shows its round trip time in milliseconds next to a signal icon. The server probes every client every 5 seconds, and the icon follows the last answer: up to 20 ms is excellent, up to 50 ms good, up to 120 ms fair and anything above weak. A computer that is not connected shows neither, and it gets no screen-edge barrier either: on Linux the pointer is not captured by the portal at the edge of a computer that is offline.
+
+On Windows the cursor is parked at the center of the display it left from while another computer is controlled, and it returns two pixels inside the edge it crossed. The capture thread works in physical pixels, so this also holds with display scaling above 100%. `DESKUNION_PARK_CURSOR=0` turns the parking off.
+
+### Connection retry
+
+A client that cannot reach its server keeps trying, following Deskflow's schedule: every second for the first 300 attempts, then every 5, 10, 30, 60 and 120 seconds, and finally every 5 minutes. A session that drops starts over from one second. The server's host name is resolved again before each attempt, so a late network or a moved server is picked up. While the server waits for this computer to be authorized, the client tries every 15 seconds without backing off. The window shows the delay before the next attempt.
 
 ### Caveats / Known Issues
 
