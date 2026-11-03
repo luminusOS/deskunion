@@ -46,6 +46,17 @@ impl FactoryComponent for IncomingDeviceRowModel {
             set_title: &self.addr,
             #[watch]
             set_subtitle: &self.subtitle(),
+
+            add_prefix = &gtk::Image {
+                set_icon_name: Some("computer-symbolic"),
+            },
+
+            add_suffix = &gtk::Label {
+                set_valign: gtk::Align::Center,
+                set_label: "Connected",
+                add_css_class: "status-pill",
+                add_css_class: "connected",
+            },
         }
     }
 

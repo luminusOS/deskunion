@@ -21,6 +21,8 @@
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/actions/open-menu-symbolic.svg">icons/scalable/actions/open-menu-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/actions/process-stop-symbolic.svg">icons/scalable/actions/process-stop-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/actions/go-next-symbolic.svg">icons/scalable/actions/go-next-symbolic.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks" alias="scalable/actions/media-playback-start-symbolic.svg">icons/scalable/actions/media-playback-start-symbolic.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks" alias="scalable/actions/media-playback-stop-symbolic.svg">icons/scalable/actions/media-playback-stop-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/actions/sidebar-show-symbolic.svg">icons/scalable/actions/sidebar-show-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/actions/view-list-symbolic.svg">icons/scalable/actions/view-list-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/devices/audio-speakers-symbolic.svg">icons/scalable/devices/audio-speakers-symbolic.svg</file>
@@ -28,7 +30,9 @@
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/devices/computer-symbolic.svg">icons/scalable/devices/computer-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/devices/network-wired-symbolic.svg">icons/scalable/devices/network-wired-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/devices/video-display-symbolic.svg">icons/scalable/devices/video-display-symbolic.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks" alias="scalable/devices/video-joined-displays-symbolic.svg">icons/scalable/devices/video-joined-displays-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/legacy/emblem-system-symbolic.svg">icons/scalable/legacy/emblem-system-symbolic.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks" alias="scalable/mimetypes/text-x-generic-symbolic.svg">icons/scalable/mimetypes/text-x-generic-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/places/user-trash-symbolic.svg">icons/scalable/places/user-trash-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/status/dialog-warning-symbolic.svg">icons/scalable/status/dialog-warning-symbolic.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="scalable/status/channel-secure-symbolic.svg">icons/scalable/status/channel-secure-symbolic.svg</file>

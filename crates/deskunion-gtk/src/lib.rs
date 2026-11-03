@@ -242,6 +242,72 @@ fn setup_actions(app: &adw::Application) {
         }
     });
     app.add_action(&about_action);
+
+    let shortcuts_action = gio::SimpleAction::new("shortcuts", None);
+    shortcuts_action.connect_activate({
+        let app = app.clone();
+        move |_, _| {
+            show_shortcuts_dialog(app.active_window().as_ref());
+        }
+    });
+    app.add_action(&shortcuts_action);
+    app.set_accels_for_action("app.shortcuts", &["<Control>question"]);
+}
+
+fn show_shortcuts_dialog(parent: Option<&gtk::Window>) {
+    let window = gtk::ShortcutsWindow::builder().modal(true).build();
+    if let Some(parent) = parent {
+        window.set_transient_for(Some(parent));
+    }
+
+    let section = gtk::ShortcutsSection::builder()
+        .section_name("shortcuts")
+        .max_height(10)
+        .build();
+
+    let general_group = gtk::ShortcutsGroup::builder().title("General").build();
+
+    let sc_shortcuts = gtk::ShortcutsShortcut::builder()
+        .title("Keyboard Shortcuts")
+        .accelerator("<Control>question")
+        .build();
+    let sc_quit = gtk::ShortcutsShortcut::builder()
+        .title("Quit")
+        .accelerator("<Control>q")
+        .build();
+
+    general_group.append(&sc_shortcuts);
+    general_group.append(&sc_quit);
+
+    let nav_group = gtk::ShortcutsGroup::builder().title("Navigation").build();
+
+    let sc_screens = gtk::ShortcutsShortcut::builder()
+        .title("Connections Page")
+        .accelerator("<Control>1")
+        .build();
+    let sc_audio = gtk::ShortcutsShortcut::builder()
+        .title("Audio Page")
+        .accelerator("<Control>2")
+        .build();
+    let sc_logs = gtk::ShortcutsShortcut::builder()
+        .title("Logs Page")
+        .accelerator("<Control>3")
+        .build();
+    let sc_settings = gtk::ShortcutsShortcut::builder()
+        .title("Settings Page")
+        .accelerator("<Control>4")
+        .build();
+
+    nav_group.append(&sc_screens);
+    nav_group.append(&sc_audio);
+    nav_group.append(&sc_logs);
+    nav_group.append(&sc_settings);
+
+    section.append(&general_group);
+    section.append(&nav_group);
+    window.set_child(Some(&section));
+
+    window.present();
 }
 
 // Set up a global menu

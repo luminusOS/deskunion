@@ -30,6 +30,21 @@
     color: @success_color;
 }
 
+.status-pill.warning {
+    background-color: alpha(@warning_color, 0.18);
+    color: @warning_color;
+}
+
+.status-pill.error {
+    background-color: alpha(@error_color, 0.18);
+    color: @error_color;
+}
+
+.status-pill.info {
+    background-color: alpha(@accent_color, 0.18);
+    color: @accent_color;
+}
+
 /* visually merge the client list with the "Add client..." row below it
    into a single card */
 .joined-list-top {

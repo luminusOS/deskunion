@@ -48,6 +48,10 @@ impl FactoryComponent for AudioStreamRowModel {
             #[watch]
             set_subtitle: &self.subtitle(),
 
+            add_prefix = &gtk::Image {
+                set_icon_name: Some("audio-speakers-symbolic"),
+            },
+
             add_suffix = &gtk::LevelBar {
                 set_min_value: 0.0,
                 set_max_value: 1.0,

@@ -140,6 +140,8 @@ pub enum AppMsg {
     ToggleCapture,
     ToggleEmulation,
     ToggleServiceRunning,
+    ReconnectNow,
+    AttentionBannerAction,
 
     AudioSendToggled(bool),
     AudioReceiveToggled(bool),
@@ -266,28 +268,80 @@ impl AppModel {
         }
     }
 
-    /// Only the server arranges screens; a client's first page is about
-    /// its connection to that server, so it must not be called "Screens".
     fn home_page_title(&self) -> &'static str {
-        match self.operation_mode {
-            OperationMode::Client => "Connection",
-            OperationMode::Unconfigured => "Welcome",
-            OperationMode::Server => Page::Screens.title(),
-        }
+        Page::Screens.title()
     }
 
     fn home_page_icon(&self) -> &'static str {
-        match self.operation_mode {
-            OperationMode::Client => "network-server-symbolic",
-            OperationMode::Unconfigured => "go-home-symbolic",
-            OperationMode::Server => "video-display-symbolic",
-        }
+        "video-joined-displays-symbolic"
     }
 
     fn page_title(&self) -> &'static str {
         match self.current_page.get() {
             Page::Screens => self.home_page_title(),
             page => page.title(),
+        }
+    }
+
+    fn show_attention_banner(&self) -> bool {
+        self.current_page.get() == Page::Screens && self.backend_attention_required()
+    }
+
+    fn attention_banner_title(&self) -> &'static str {
+        if !self.show_attention_banner() {
+            ""
+        } else if self.capture_row_visible() {
+            "Input capture is disabled. Re-enable it to share this keyboard and mouse."
+        } else {
+            "Input emulation is disabled. Re-enable it to receive input from a server."
+        }
+    }
+
+    fn attention_banner_button_label(&self) -> &'static str {
+        if self.capture_row_visible() {
+            self.capture_row_button_label()
+        } else {
+            "Re-enable"
+        }
+    }
+
+    fn show_reconnect_banner(&self) -> bool {
+        self.current_page.get() == Page::Screens
+            && self.operation_mode == OperationMode::Client
+            && self.server_retry.is_some()
+    }
+
+    fn reconnect_banner_title(&self) -> String {
+        if !self.show_reconnect_banner() {
+            return String::new();
+        }
+        match self.server_retry {
+            Some(retry) if retry.awaiting_authorization => {
+                format!(
+                    "Waiting for server authorization; trying again in {} s",
+                    retry.in_secs
+                )
+            }
+            Some(retry) => {
+                format!("Server unreachable; trying again in {} s", retry.in_secs)
+            }
+            None => String::new(),
+        }
+    }
+
+    fn show_audio_active_banner(&self) -> bool {
+        !self.audio_stream_rows.is_empty()
+    }
+
+    fn audio_active_banner_title(&self) -> String {
+        if !self.show_audio_active_banner() {
+            return String::new();
+        }
+        let n = self.audio_stream_rows.len();
+        if n == 1 {
+            "Audio streaming active · Opus 48 kHz low-latency stereo".to_string()
+        } else {
+            format!("Audio streaming active · {n} streams · Opus 48 kHz")
         }
     }
 
@@ -1246,6 +1300,25 @@ impl SimpleComponent for AppModel {
                             connect_button_clicked => AppMsg::DismissError,
                         },
 
+                        adw::Banner {
+                            #[watch]
+                            set_title: model.attention_banner_title(),
+                            #[watch]
+                            set_revealed: model.show_attention_banner(),
+                            #[watch]
+                            set_button_label: Some(model.attention_banner_button_label()),
+                            connect_button_clicked => AppMsg::AttentionBannerAction,
+                        },
+
+                        adw::Banner {
+                            #[watch]
+                            set_title: &model.reconnect_banner_title(),
+                            #[watch]
+                            set_revealed: model.show_reconnect_banner(),
+                            set_button_label: Some("Reconnect"),
+                            connect_button_clicked => AppMsg::ReconnectNow,
+                        },
+
                         #[name(page_stack)]
                         adw::ViewStack {
                             set_vexpand: true,
@@ -1424,6 +1497,15 @@ impl SimpleComponent for AppModel {
                                                 set_title: "Status",
                                                 #[watch]
                                                 set_subtitle: &model.server_status_text(),
+
+                                                add_suffix = &gtk::Label {
+                                                    set_valign: gtk::Align::Center,
+                                                    #[watch]
+                                                    set_visible: model.server_connected_addr.is_some(),
+                                                    set_label: "Connected",
+                                                    add_css_class: "status-pill",
+                                                    add_css_class: "connected",
+                                                },
                                             },
                                         },
 
@@ -1543,6 +1625,13 @@ impl SimpleComponent for AppModel {
                                             set_title: "System audio capture requires macOS 14.6 or later. Only microphone input is available.",
                                             #[watch]
                                             set_revealed: !model.audio_loopback_supported,
+                                        },
+
+                                        adw::Banner {
+                                            #[watch]
+                                            set_title: &model.audio_active_banner_title(),
+                                            #[watch]
+                                            set_revealed: model.show_audio_active_banner(),
                                         },
 
                                         adw::PreferencesGroup {
@@ -2118,9 +2207,47 @@ impl SimpleComponent for AppModel {
         );
 
         let menu = gtk::gio::Menu::new();
+        menu.append(Some("_Keyboard Shortcuts"), Some("app.shortcuts"));
         menu.append(Some("_About DeskUnion"), Some("app.about"));
         menu.append(Some("_Quit"), Some("app.quit"));
         widgets.primary_menu.set_menu_model(Some(&menu));
+
+        let nav_screens = gtk::gio::SimpleAction::new("nav-screens", None);
+        nav_screens.connect_activate({
+            let sender = sender.clone();
+            move |_, _| sender.input(AppMsg::NavigateTo(Page::Screens))
+        });
+        model.root.add_action(&nav_screens);
+
+        let nav_audio = gtk::gio::SimpleAction::new("nav-audio", None);
+        nav_audio.connect_activate({
+            let sender = sender.clone();
+            move |_, _| sender.input(AppMsg::NavigateTo(Page::Audio))
+        });
+        model.root.add_action(&nav_audio);
+
+        let nav_logs = gtk::gio::SimpleAction::new("nav-logs", None);
+        nav_logs.connect_activate({
+            let sender = sender.clone();
+            move |_, _| sender.input(AppMsg::NavigateTo(Page::Logs))
+        });
+        model.root.add_action(&nav_logs);
+
+        let nav_settings = gtk::gio::SimpleAction::new("nav-settings", None);
+        nav_settings.connect_activate({
+            let sender = sender.clone();
+            move |_, _| sender.input(AppMsg::NavigateTo(Page::Settings))
+        });
+        model.root.add_action(&nav_settings);
+
+        init.app
+            .set_accels_for_action("win.nav-screens", &["<Control>1"]);
+        init.app
+            .set_accels_for_action("win.nav-audio", &["<Control>2"]);
+        init.app
+            .set_accels_for_action("win.nav-logs", &["<Control>3"]);
+        init.app
+            .set_accels_for_action("win.nav-settings", &["<Control>4"]);
 
         widgets
             .sidebar_toggle
@@ -2270,6 +2397,14 @@ impl SimpleComponent for AppModel {
                 let running = self.service_running();
                 self.service_wanted_running = !running;
                 self.request(FrontendRequest::SetServiceRunning(!running));
+            }
+            AppMsg::ReconnectNow => self.request(FrontendRequest::ReconnectNow),
+            AppMsg::AttentionBannerAction => {
+                if self.capture_row_visible() {
+                    sender.input(AppMsg::ToggleCapture);
+                } else {
+                    sender.input(AppMsg::ToggleEmulation);
+                }
             }
             #[cfg(not(target_os = "macos"))]
             AppMsg::Tray(command) => self.handle_tray_command(command),

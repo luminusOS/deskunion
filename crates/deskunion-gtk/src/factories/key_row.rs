@@ -34,13 +34,18 @@ impl FactoryComponent for KeyRowModel {
             set_title: &self.description,
             set_subtitle: &self.fingerprint,
 
-            add_prefix = &gtk::Button {
+            add_prefix = &gtk::Image {
+                set_icon_name: Some("auth-fingerprint-symbolic"),
+            },
+
+            add_suffix = &gtk::Button {
                 set_valign: gtk::Align::Center,
                 set_halign: gtk::Align::End,
                 set_tooltip_text: Some("Revoke authorization"),
                 update_property: &[gtk::accessible::Property::Label(&format!("Revoke authorization for {}", self.description))],
                 set_icon_name: "edit-delete-symbolic",
                 add_css_class: "flat",
+                add_css_class: "error",
                 connect_clicked[sender, index] => move |_| {
                     sender.output(KeyRowOutput::Delete(index.clone())).unwrap();
                 },
