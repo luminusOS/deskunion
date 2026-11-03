@@ -186,10 +186,17 @@ impl JitterBuffer {
             }
         } else if forward <= MAX_WINDOW_FRAMES {
             self.store_packet(seq, payload);
-        } else if self.consecutive_plc >= MAX_CONSECUTIVE_PLC && self.packets.is_empty() {
+        } else if self.consecutive_plc >= MAX_CONSECUTIVE_PLC {
             // We advanced through PLC while the source was paused/stalled.
-            // Re-anchor to the resumed stream and prebuffer again instead of
-            // classifying every future arrival as permanently late.
+            // Clear any stale buffered packets, re-anchor to the resumed stream,
+            // and prebuffer again instead of classifying every future arrival as
+            // permanently late.
+            for (_, mut payload) in self.packets.drain() {
+                payload.clear();
+                if self.recycled_packets.len() < MAX_WINDOW_FRAMES as usize {
+                    self.recycled_packets.push(payload);
+                }
+            }
             self.next_seq = Some(seq);
             self.store_packet(seq, payload);
             self.started = false;

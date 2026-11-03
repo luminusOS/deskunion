@@ -340,7 +340,10 @@ tray, which redraws only when it changed; tray actions come back as
   delivered. While an output has an active Teams session it is captured through
   endpoint loopback and the process loopback stops forwarding, since the output
   already holds every sound; `CallTracker` keeps the output for 3 s after the
-  session goes quiet. The decision logic (`calls.rs`) and the mixer are unit
+  session goes quiet, and releasing an output immediately flushes its mixer slot
+  (`clear_source`) so stale or starved samples do not leak into future calls. Loopback
+  reads and mixer backlog trims strictly preserve stereo frame alignment (8 bytes per
+  frame) to prevent channel swapping. The decision logic (`calls.rs`) and the mixer are unit
   tested; the WASAPI calls are only compiled and linted for Windows.
 - Logs go to `%LOCALAPPDATA%\deskunion\deskunion.log`.
 

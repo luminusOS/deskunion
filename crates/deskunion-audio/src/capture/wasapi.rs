@@ -138,6 +138,7 @@ impl CallCapture {
                 MAX_CALL_OUTPUTS,
                 MIX_PRIME_SAMPLES,
                 MIX_MAX_BACKLOG_SAMPLES,
+                CHANNELS as usize,
             )),
             engaged: AtomicBool::new(false),
         }
@@ -273,6 +274,11 @@ fn run_call_watch(
             let keep = wanted.contains(id);
             if !keep {
                 log::info!("Teams stopped playing on {}; releasing it", capture.name);
+                calls
+                    .mixer
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear_source(capture.slot);
             }
             keep
         });
@@ -663,7 +669,8 @@ fn run_capture(
             log::warn!("wasapi loopback read failed: {e}");
             break CaptureRun::Interrupted;
         }
-        let usable_bytes = byte_queue.len() - (byte_queue.len() % BYTES_PER_SAMPLE);
+        let frame_bytes = BYTES_PER_SAMPLE * CHANNELS as usize;
+        let usable_bytes = byte_queue.len() - (byte_queue.len() % frame_bytes);
         if usable_bytes == 0 {
             continue;
         }
