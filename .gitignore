@@ -15,3 +15,8 @@ repo
 
 # packaged artifacts
 /dist
+
+# subprojects
+/subprojects/*
+!/subprojects/*.wrap
+

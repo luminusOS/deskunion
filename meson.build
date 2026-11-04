@@ -52,6 +52,34 @@ cargo_module = import('rust').workspace(
     default_features: false,
     features: features,
 )
+pkg_input_event = cargo_module.package('input-event')
+lib_input_event = pkg_input_event.library()
+pkg_input_event.override_dependency(declare_dependency(link_with: lib_input_event))
+
+pkg_deskunion_proto = cargo_module.package('deskunion-proto')
+lib_deskunion_proto = pkg_deskunion_proto.library()
+pkg_deskunion_proto.override_dependency(declare_dependency(link_with: lib_deskunion_proto))
+
+pkg_deskunion_ipc = cargo_module.package('deskunion-ipc')
+lib_deskunion_ipc = pkg_deskunion_ipc.library()
+pkg_deskunion_ipc.override_dependency(declare_dependency(link_with: lib_deskunion_ipc))
+
+pkg_input_emulation = cargo_module.package('input-emulation')
+lib_input_emulation = pkg_input_emulation.library()
+pkg_input_emulation.override_dependency(declare_dependency(link_with: lib_input_emulation))
+
+pkg_input_capture = cargo_module.package('input-capture')
+lib_input_capture = pkg_input_capture.library()
+pkg_input_capture.override_dependency(declare_dependency(link_with: lib_input_capture))
+
+pkg_deskunion_cli = cargo_module.package('deskunion-cli')
+lib_deskunion_cli = pkg_deskunion_cli.library()
+pkg_deskunion_cli.override_dependency(declare_dependency(link_with: lib_deskunion_cli))
+
+pkg_deskunion_gtk = cargo_module.package('deskunion-gtk')
+lib_deskunion_gtk = pkg_deskunion_gtk.library()
+pkg_deskunion_gtk.override_dependency(declare_dependency(link_with: lib_deskunion_gtk))
+
 crate = cargo_module.package('deskunion-app')
 crate.executable(
     'deskunion',
