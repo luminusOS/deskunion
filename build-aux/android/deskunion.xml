@@ -43,7 +43,7 @@
 		</glib>
 		<fontconfig />
 		<gtk />
-		<libadwaita />
+		<libadwaita revision="1.6.0" />
 	</dependencies>
 	<build target="deskunion">
 		<architectures>
