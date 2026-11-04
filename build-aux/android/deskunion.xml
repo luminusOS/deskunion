@@ -41,6 +41,9 @@
 		<glib>
 			<patch>hack</patch>
 		</glib>
+		<fontconfig />
+		<gtk />
+		<libadwaita />
 	</dependencies>
 	<build target="deskunion">
 		<architectures>
