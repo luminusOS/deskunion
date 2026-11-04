@@ -24,9 +24,17 @@ use input_event::scancode::{
     Linux::{KeyLeftAlt, KeyLeftCtrl, KeyLeftMeta, KeyLeftShift},
 };
 
+#[cfg(feature = "shadow")]
 use shadow_rs::shadow;
 
+#[cfg(feature = "shadow")]
 shadow!(build);
+
+#[cfg(not(feature = "shadow"))]
+pub mod build {
+    pub const SHORT_COMMIT: &str = env!("CARGO_PKG_VERSION");
+    pub const CLAP_LONG_VERSION: &str = env!("CARGO_PKG_VERSION");
+}
 
 /// Local build's 8-byte ASCII short commit hash, suitable for use
 /// in [`deskunion_proto::ProtoEvent::Hello`]. Pads with `'?'` if

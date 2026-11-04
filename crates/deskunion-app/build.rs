@@ -9,10 +9,12 @@ fn main() {
             .expect("failed to embed Windows resources");
     }
 
-    ShadowBuilder::builder()
-        .deny_const(Default::default())
-        .build()
-        .expect("shadow build");
+    if std::env::var("CARGO_FEATURE_SHADOW").is_ok() {
+        ShadowBuilder::builder()
+            .deny_const(Default::default())
+            .build()
+            .expect("shadow build");
+    }
 
     let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();

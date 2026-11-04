@@ -184,6 +184,7 @@ impl ClientRowModel {
         self.draft.confirmed_hostname.as_deref()
     }
 
+    #[allow(dead_code)]
     pub fn title(&self) -> &str {
         self.draft.title()
     }
