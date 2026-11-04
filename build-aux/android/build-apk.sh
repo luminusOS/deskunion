@@ -23,6 +23,9 @@ else
     PIXIEWOOD_BIN="$(which pixiewood)"
 fi
 
+# Redirect gitlab.gnome.org/GNOME to official GitHub mirror to avoid Gitaly outages
+git config --global url."https://github.com/GNOME/".insteadOf "https://gitlab.gnome.org/GNOME/" || true
+
 echo "=== Preparing DeskUnion Android build with Pixiewood ==="
 "${PIXIEWOOD_BIN}" prepare \
     -a "${MINI_STUDIO_DIR}" \
