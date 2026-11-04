@@ -116,7 +116,16 @@ fn gtk_main() -> glib::ExitCode {
         install_macos_gtk_log_filter();
     }
 
-    gio::resources_register_include!("deskunion.gresource").expect("Failed to register resources.");
+    #[cfg(target_os = "android")]
+    {
+        gio::resources_register_include_impl(include_bytes!("../resources/deskunion.gresource"))
+            .expect("Failed to register resources.");
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        gio::resources_register_include!("deskunion.gresource")
+            .expect("Failed to register resources.");
+    }
 
     let app = Application::builder()
         .application_id("io.github.luminusos.DeskUnion")
@@ -232,7 +241,7 @@ fn setup_actions(app: &adw::Application) {
             let dialog = adw::AboutDialog::builder()
                 .application_name("DeskUnion")
                 .application_icon("io.github.luminusos.DeskUnion")
-                .version(env!("DESKUNION_APP_VERSION"))
+                .version(option_env!("DESKUNION_APP_VERSION").unwrap_or("0.2.11"))
                 .developer_name("LuminusOS")
                 .website("https://github.com/luminusOS/deskunion")
                 .issue_url("https://github.com/luminusOS/deskunion/issues")
