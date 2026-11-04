@@ -54,6 +54,10 @@
 			<option>--cross=build-aux/android/rust.cross</option>
 			<option>--native=build-aux/android/rust.native</option>
 			<option>-Dplatform=android</option>
+			<option>-Dfontconfig:tests=disabled</option>
+			<option>-Dfontconfig:tools=disabled</option>
+			<option>-Dfontconfig:nls=disabled</option>
+			<option>-Dfontconfig:doc=disabled</option>
 		</configure-options>
 	</build>
 </app>
