@@ -153,7 +153,12 @@ impl ConfigToml {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version=build::CLAP_LONG_VERSION, about, long_about = None)]
+#[command(
+    author,
+    version = build::CLAP_LONG_VERSION,
+    about = "Software KVM Switch / mouse & keyboard sharing software for Local Area Networks",
+    long_about = None
+)]
 struct Args {
     /// the listen port for deskunion
     #[arg(short, long)]
