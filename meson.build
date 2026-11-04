@@ -81,13 +81,14 @@ lib_deskunion_gtk = pkg_deskunion_gtk.library()
 pkg_deskunion_gtk.override_dependency(declare_dependency(link_with: lib_deskunion_gtk))
 
 crate = cargo_module.package('deskunion-app')
-lib_deskunion = crate.library('deskunion', dependencies: deskunion_deps)
+lib_deskunion = crate.library('deskunion_lib', dependencies: deskunion_deps)
 crate.executable(
     'deskunion',
     install: true,
     android_exe_type: 'application',
     dependencies: deskunion_deps,
     link_with: lib_deskunion,
+    rust_dependency_map: {'deskunion_lib': 'deskunion'},
 )
 
 gnome.post_install(
