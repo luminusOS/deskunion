@@ -20,7 +20,7 @@ log = "0.4.20"
 deskunion-ipc = { path = "../deskunion-ipc", version = "0.7.0" }
 thiserror = "2.0.0"
 
-[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))'.dependencies]
 # Tray icon: StatusNotifierItem with its menu over com.canonical.dbusmenu.
 ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
 

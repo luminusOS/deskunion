@@ -31,7 +31,7 @@ async-trait = "0.1.81"
 tokio-util = "0.7.11"
 
 
-[target.'cfg(all(unix, not(target_os="macos")))'.dependencies]
+[target.'cfg(all(unix, not(any(target_os="macos", target_os="android"))))'.dependencies]
 wayland-client = { version = "0.31.1", optional = true }
 wayland-protocols = { version = "0.32.1", features = [
     "client",

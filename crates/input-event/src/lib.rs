@@ -3,7 +3,11 @@ use std::fmt::{self, Display};
 pub mod error;
 pub mod scancode;
 
-#[cfg(all(unix, feature = "libei", not(target_os = "macos")))]
+#[cfg(all(
+    unix,
+    feature = "libei",
+    not(any(target_os = "macos", target_os = "android"))
+))]
 mod libei;
 
 // FIXME

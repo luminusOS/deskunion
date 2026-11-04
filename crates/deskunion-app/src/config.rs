@@ -44,11 +44,21 @@ const CONFIG_FILE_NAME: &str = "config.toml";
 const CERT_FILE_NAME: &str = "deskunion.pem";
 
 fn default_path() -> Result<PathBuf, VarError> {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     let default_path = {
         let xdg_config_home =
             env::var("XDG_CONFIG_HOME").unwrap_or(format!("{}/.config", env::var("HOME")?));
         format!("{xdg_config_home}/deskunion/")
+    };
+
+    #[cfg(target_os = "android")]
+    let default_path = {
+        let base = env::var("XDG_CONFIG_HOME")
+            .or_else(|_| env::var("XDG_DATA_HOME"))
+            .or_else(|_| env::var("HOME").map(|h| format!("{h}/.config")))
+            .or_else(|_| env::var("TMPDIR"))
+            .unwrap_or_else(|_| "/data/local/tmp".to_string());
+        format!("{base}/deskunion/")
     };
 
     #[cfg(not(unix))]

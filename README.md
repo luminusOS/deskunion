@@ -33,6 +33,7 @@ Focus lies on performance, ease of use and a maintainable implementation that ca
 
 - _Now with a gtk frontend_
 - _Now with audio streaming (client → server)_
+- _Android support via GTK4 Android runtime (.apk)_
 
 <picture>
     <source media="(prefers-color-scheme: dark)" srcset="/screenshots/ui-server-dark.png?raw=true">

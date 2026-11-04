@@ -18,6 +18,7 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let unix = target_family.split(',').any(|family| family == "unix");
     let macos = target_os == "macos";
+    let android = target_os == "android";
 
     let layer_shell_capture = cfg!(feature = "layer_shell_capture");
     let libei_capture = cfg!(feature = "libei_capture");
@@ -28,14 +29,14 @@ fn main() {
     let wlroots_emulation = cfg!(feature = "wlroots_emulation");
     let rdp_emulation = cfg!(feature = "rdp_emulation");
 
-    let layer_shell_capture = unix && !macos && layer_shell_capture;
-    let libei_capture = unix && !macos && libei_capture;
-    let x11_capture = unix && !macos && x11_capture;
+    let layer_shell_capture = unix && !macos && !android && layer_shell_capture;
+    let libei_capture = unix && !macos && !android && libei_capture;
+    let x11_capture = unix && !macos && !android && x11_capture;
 
-    let libei_emulation = unix && !macos && libei_emulation;
-    let rdp_emulation = unix && !macos && rdp_emulation;
-    let wlroots_emulation = unix && !macos && wlroots_emulation;
-    let x11_emulation = unix && !macos && x11_emulation;
+    let libei_emulation = unix && !macos && !android && libei_emulation;
+    let rdp_emulation = unix && !macos && !android && rdp_emulation;
+    let wlroots_emulation = unix && !macos && !android && wlroots_emulation;
+    let x11_emulation = unix && !macos && !android && x11_emulation;
 
     println!("cargo::rustc-check-cfg=cfg(layer_shell_capture)");
     println!("cargo::rustc-check-cfg=cfg(libei_capture)");

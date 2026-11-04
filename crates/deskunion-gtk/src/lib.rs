@@ -8,7 +8,7 @@ mod macos_status_item;
 mod ping;
 mod screen_arrangement;
 mod server_link;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
 mod tray;
 
 use std::{env, process, str};
@@ -415,7 +415,7 @@ fn build_ui(app: &Application) {
         });
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
     {
         tray::setup(app, &window, {
             let sender = controller.sender().clone();
@@ -423,6 +423,11 @@ fn build_ui(app: &Application) {
                 let _ = sender.send(app::AppMsg::Tray(command));
             }
         });
+        window.present();
+    }
+
+    #[cfg(target_os = "android")]
+    {
         window.present();
     }
 

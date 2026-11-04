@@ -119,7 +119,7 @@ pub struct AppInit {
 #[allow(clippy::enum_variant_names)]
 pub enum AppMsg {
     Frontend(FrontendEvent),
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
     Tray(crate::tray::TrayCommand),
 
     NavigateTo(Page),
@@ -414,7 +414,7 @@ impl AppModel {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
     fn tray_info(&self) -> crate::tray::TrayInfo {
         crate::tray::TrayInfo {
             mode: self.operation_mode,
@@ -433,7 +433,7 @@ impl AppModel {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
     fn handle_tray_command(&mut self, command: crate::tray::TrayCommand) {
         use crate::tray::TrayCommand;
         match command {
@@ -2274,7 +2274,7 @@ impl SimpleComponent for AppModel {
     }
 
     fn post_view() {
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "android")))]
         crate::tray::publish(model.tray_info());
     }
 
@@ -2406,7 +2406,7 @@ impl SimpleComponent for AppModel {
                     sender.input(AppMsg::ToggleEmulation);
                 }
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "android")))]
             AppMsg::Tray(command) => self.handle_tray_command(command),
 
             AppMsg::AudioSendToggled(active) => {

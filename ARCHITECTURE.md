@@ -3,7 +3,7 @@
 DeskUnion is an open-source software KVM: one keyboard and mouse control several
 computers on a local network. The computer that owns the physical devices is the
 **server** (it captures input); every computer it controls is a **client** (it
-emulates input). Linux, Windows and macOS are supported, with a GTK4 +
+emulates input). Linux, Windows, macOS and Android are supported, with a GTK4 +
 Libadwaita frontend, a command line interface and a background service.
 
 ## System Context
@@ -46,8 +46,10 @@ flowchart TD
 
 - Without a subcommand the executable starts the service as a child process and
   runs the GTK frontend; closing the frontend stops the child (SIGINT first on
-  Unix). `deskunion daemon` runs only the service, which `service/deskunion.service`
-  uses for a systemd user unit.
+  Unix). On Android, where the application executes as a shared library (`.so`)
+  inside an APK sandbox, the service runs on a dedicated background thread in the
+  same process rather than a spawned child. `deskunion daemon` runs only the service,
+  which `service/deskunion.service` uses for a systemd user unit.
 - The frontend never touches the network or the input devices. It talks to the
   service over a local-only channel: a unix socket on Unix and the named pipe
   `\\.\pipe\deskunion` on Windows. The `deskunion-cli` crate speaks the same
@@ -347,6 +349,17 @@ tray, which redraws only when it changed; tray actions come back as
   tested; the WASAPI calls are only compiled and linted for Windows.
 - Logs go to `%LOCALAPPDATA%\deskunion\deskunion.log`.
 
+## Android Specifics
+
+- The Android application runs inside the GTK Android runtime (`RuntimeApplication` and
+  `ToplevelActivity`), built with GTK Android Builder (pixiewood) and Meson.
+- The binary targets `android_exe_type: 'application'`, compiling the application into a
+  shared library (`libdeskunion.so`) that exports `pub extern "C" fn main`.
+- The background service runs in a dedicated thread inside the process rather than a spawned child,
+  and local IPC communicates over Unix sockets located in `$TMPDIR` / app cache storage.
+- Desktop-specific features (X11, Wayland, libei, desktop system tray) are gated off on Android,
+  using the Dummy capture/emulation backends until native Android accessibility/input services are configured.
+
 ## Configuration and State
 
 `config.toml` stores the operation mode, the capture and emulation backends
@@ -368,11 +381,11 @@ the handoff back to the server.
   Gate OS-specific code at module level.
 - Pushing a `v<version>` tag runs `release.yml`, which calls one reusable
   workflow per platform: a Windows installer and portable ZIP, a macOS DMG
-  (`aarch64`), and a Flatpak and an AppImage for `x86_64` and `aarch64`, plus
+  (`aarch64`), an Android APK (`release-android.yml`), and a Flatpak and an AppImage for `x86_64` and `aarch64`, plus
   `SHA256SUMS.txt`. The tag must match the `deskunion-app` version.
 - `rust.yml` runs the tests on every platform; the graphical tests run on Linux
   under a private D-Bus session and Xvfb with the Cairo renderer.
-- Packaging inputs live in `build-aux/` (Flatpak manifest, Inno Setup), `data/`
+- Packaging inputs live in `build-aux/` (Flatpak manifest, Inno Setup, Android Pixiewood manifest), `data/`
   (icons), `service/` (systemd user unit), `nix/` and `scripts/`.
 
 ## Testing

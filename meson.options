@@ -1,0 +1,2 @@
+option('platform', type: 'combo', choices: ['linux', 'android'], value: 'linux')
+option('release-type', type: 'combo', choices: ['stable', 'devel'], value: 'stable')

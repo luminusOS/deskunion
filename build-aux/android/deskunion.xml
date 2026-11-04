@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<app
+    xmlns="https://sp1rit.arpa/pixiewood/"
+    xmlns:xi="http://www.w3.org/2001/XInclude"
+>
+	<metainfo>
+		<component
+            xmlns="https://specifications.freedesktop.org/metainfo/1.0"
+            type="desktop"
+        >
+			<id>io.github.luminusos.DeskUnion</id>
+			<name>DeskUnion</name>
+			<releases>
+				<release version="0.2.11">
+					<description>
+						<p>Initial Android release</p>
+					</description>
+				</release>
+			</releases>
+		</component>
+	</metainfo>
+	<style>
+		<theme name="adw" />
+		<icon type="generate">
+			<drawable
+                target="foreground"
+                scale=".5"
+                type="svg"
+                path="src://crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"
+            />
+			<color target="background">#FFFFFF</color>
+			<drawable
+                target="monochrome"
+                scale=".5"
+                type="svg"
+                path="src://crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion-symbolic.svg"
+            />
+		</icon>
+	</style>
+	<dependencies>
+		<glib>
+			<patch>hack</patch>
+		</glib>
+	</dependencies>
+	<build target="deskunion">
+		<architectures>
+			<arch>aarch64</arch>
+			<arch>x86_64</arch>
+		</architectures>
+		<configure-options>
+			<option>--cross=build-aux/android/rust.cross</option>
+			<option>--native=build-aux/android/rust.native</option>
+			<option>-Dplatform=android</option>
+		</configure-options>
+	</build>
+</app>

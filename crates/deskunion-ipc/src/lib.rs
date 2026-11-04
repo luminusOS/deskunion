@@ -438,7 +438,7 @@ pub enum SocketPathError {
     HomeDirNotFound(VarError),
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
 pub fn default_socket_path() -> Result<PathBuf, SocketPathError> {
     let xdg_runtime_dir =
         env::var("XDG_RUNTIME_DIR").map_err(SocketPathError::XdgRuntimeDirNotFound)?;
@@ -452,6 +452,15 @@ pub fn default_socket_path() -> Result<PathBuf, SocketPathError> {
         .join("Library")
         .join("Caches")
         .join(DESKUNION_SOCKET_NAME))
+}
+
+#[cfg(target_os = "android")]
+pub fn default_socket_path() -> Result<PathBuf, SocketPathError> {
+    let dir = env::var("TMPDIR")
+        .or_else(|_| env::var("XDG_RUNTIME_DIR"))
+        .or_else(|_| env::var("XDG_DATA_HOME"))
+        .unwrap_or_else(|_| "/data/local/tmp".to_string());
+    Ok(Path::new(&dir).join(DESKUNION_SOCKET_NAME))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

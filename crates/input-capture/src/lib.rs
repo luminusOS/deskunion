@@ -377,6 +377,8 @@ async fn create(
         Backend::Windows,
         #[cfg(target_os = "macos")]
         Backend::MacOs,
+        #[cfg(target_os = "android")]
+        Backend::Dummy,
     ] {
         match create_backend(backend, clipboard_enabled).await {
             Ok(b) => {

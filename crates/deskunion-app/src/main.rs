@@ -44,6 +44,7 @@ enum DeskunionError {
     Cli(#[from] CliError),
 }
 
+#[cfg(not(target_os = "android"))]
 fn main() {
     init_logging();
 
@@ -54,6 +55,23 @@ fn main() {
     if let Err(e) = run() {
         log::error!("{e}");
         process::exit(1);
+    }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "C" fn main(_argc: i32, _argv: *mut *mut std::ffi::c_char) -> i32 {
+    init_logging();
+
+    std::panic::set_hook(Box::new(|panic_info| {
+        log::error!("fatal panic: {panic_info}");
+    }));
+
+    if let Err(e) = run() {
+        log::error!("{e}");
+        1
+    } else {
+        0
     }
 }
 
@@ -101,9 +119,23 @@ fn run() -> Result<(), DeskunionError> {
             //  run a frontend
             #[cfg(feature = "gtk")]
             {
+                #[cfg(not(target_os = "android"))]
                 let mut service = start_service()?;
+
+                #[cfg(target_os = "android")]
+                let _service_thread = {
+                    let service_config = config::Config::new()?;
+                    std::thread::Builder::new()
+                        .name("deskunion-service".into())
+                        .spawn(move || {
+                            if let Err(e) = run_async(run_service(service_config)) {
+                                log::error!("background service error: {e}");
+                            }
+                        })
+                };
+
                 let res = deskunion_gtk::run();
-                #[cfg(unix)]
+                #[cfg(all(unix, not(target_os = "android")))]
                 {
                     // on unix we give the service a chance to terminate gracefully
                     let pid = service.id() as libc::pid_t;
@@ -114,6 +146,7 @@ fn run() -> Result<(), DeskunionError> {
                     }
                     service.wait()?;
                 }
+                #[cfg(not(target_os = "android"))]
                 service.kill()?;
                 res?;
             }

@@ -5,13 +5,14 @@ fn main() {
     let libei = cfg!(feature = "libei");
     let x11 = cfg!(feature = "x11");
     let macos = target_os == "macos";
+    let android = target_os == "android";
     let wlroots = cfg!(feature = "wlroots");
     let rdp = cfg!(feature = "remote_desktop_portal");
 
-    let libei = unix && !macos && libei;
-    let wlroots = unix && !macos && wlroots;
-    let x11 = unix && !macos && x11;
-    let rdp = unix && !macos && rdp;
+    let libei = unix && !macos && !android && libei;
+    let wlroots = unix && !macos && !android && wlroots;
+    let x11 = unix && !macos && !android && x11;
+    let rdp = unix && !macos && !android && rdp;
 
     println!("cargo::rustc-check-cfg=cfg(wlroots)");
     println!("cargo::rustc-check-cfg=cfg(libei)");

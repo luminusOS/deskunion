@@ -1,0 +1,2 @@
+[binaries]
+rust=['/opt/rust/1.93.1/bin/rustc', '--target', arch + '-linux-android', '-C', 'panic=abort']

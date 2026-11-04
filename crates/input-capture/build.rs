@@ -6,10 +6,11 @@ fn main() {
     let libei = cfg!(feature = "libei");
     let x11 = cfg!(feature = "x11");
     let macos = target_os == "macos";
+    let android = target_os == "android";
 
-    let libei = unix && !macos && libei;
-    let layer_shell = unix && !macos && layer_shell;
-    let x11 = unix && !macos && x11;
+    let libei = unix && !macos && !android && libei;
+    let layer_shell = unix && !macos && !android && layer_shell;
+    let x11 = unix && !macos && !android && x11;
 
     println!("cargo::rustc-check-cfg=cfg(layer_shell)");
     println!("cargo::rustc-check-cfg=cfg(libei)");
