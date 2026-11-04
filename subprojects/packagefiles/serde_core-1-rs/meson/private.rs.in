@@ -1,0 +1,6 @@
+#[doc(hidden)]
+pub mod __private@VERSION_PATCH@ {
+    #[doc(hidden)]
+    pub use crate::private::*;
+}
+

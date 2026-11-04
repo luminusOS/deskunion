@@ -1,0 +1,8 @@
+extra_args += '--cfg'
+extra_args += 'feature="alloc"'
+extra_args += '--cfg'
+extra_args += 'feature="syntax"'
+extra_args += '--cfg'
+extra_args += 'feature="meta"'
+extra_args += '--cfg'
+extra_args += 'feature="nfa-pikevm"'
