@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use gtk::{gdk, gdk::prelude::TextureExt, gio, glib};
+use gtk::{gdk, gdk::prelude::TextureExt, glib};
 use ksni::{
     MenuItem, OfflineReason, ToolTip,
     blocking::TrayMethods,
@@ -17,9 +17,9 @@ use super::{
 };
 
 const ICON_NAME: &str = "io.github.luminusos.DeskUnion-symbolic";
-const ICON_RESOURCE: &str =
-    "/io/github/luminusos/DeskUnion/icons/symbolic/apps/io.github.luminusos.DeskUnion-symbolic.svg";
-const ICON_SIZE: u32 = 22;
+// Generated from resources/io.github.luminusos.DeskUnion-symbolic.svg with:
+// rsvg-convert --width 22 --height 22 --output resources/tray-symbolic.png <svg>
+const ICON_PNG: &[u8] = include_bytes!("../../resources/tray-symbolic.png");
 
 pub struct Tray {
     pixmap: Vec<ksni::Icon>,
@@ -133,19 +133,9 @@ impl ksni::Tray for Tray {
 /// recoloured by the host, so it is light on a dark theme and dark on a light one.
 fn pixmap(dark_theme: bool) -> Vec<ksni::Icon> {
     let render = || -> Option<ksni::Icon> {
-        let data = gio::resources_lookup_data(ICON_RESOURCE, gio::ResourceLookupFlags::NONE)
-            .map_err(|error| log::warn!("tray icon resource: {error}"))
-            .ok()?;
-        let size = ICON_SIZE.to_string();
-        let svg = std::str::from_utf8(&data)
-            .ok()?
-            .replace("#2e3436", if dark_theme { "#eeeeec" } else { "#2e3436" })
-            .replacen(
-                r#"width="16" height="16""#,
-                &format!(r#"width="{size}" height="{size}""#),
-                1,
-            );
-        let texture = gdk::Texture::from_bytes(&glib::Bytes::from_owned(svg.into_bytes()))
+        // Texture loading guarantees PNG support, but not SVG support. Keep the
+        // fallback independent of SVG loaders and the host's installed icons.
+        let texture = gdk::Texture::from_bytes(&glib::Bytes::from_static(ICON_PNG))
             .map_err(|error| log::warn!("tray pixmap: {error}"))
             .ok()?;
         let mut downloader = gdk::TextureDownloader::new(&texture);
@@ -155,6 +145,15 @@ fn pixmap(dark_theme: bool) -> Vec<ksni::Icon> {
         let mut data = Vec::with_capacity(width * height * 4);
         for row in bytes.chunks(stride).take(height) {
             data.extend_from_slice(&row[..width * 4]);
+        }
+        let color = if dark_theme {
+            [0xee, 0xee, 0xec]
+        } else {
+            [0x2e, 0x34, 0x36]
+        };
+        for pixel in data.as_chunks_mut::<4>().0 {
+            // SNI expects A, R, G, B bytes. Preserve the antialiased alpha mask.
+            pixel[1..].copy_from_slice(&color);
         }
         Some(ksni::Icon {
             width: width as i32,
@@ -207,4 +206,27 @@ pub fn spawn(actions: async_channel::Sender<TrayAction>) -> Option<TrayHandle> {
         }
     });
     Some(TrayHandle { handle })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_pixmap_has_visible_pixels_for_both_themes() {
+        for (dark_theme, color) in [(false, [0x2e, 0x34, 0x36]), (true, [0xee, 0xee, 0xec])] {
+            let icons = pixmap(dark_theme);
+            assert_eq!(icons.len(), 1, "missing fallback for dark={dark_theme}");
+            let icon = &icons[0];
+            assert_eq!((icon.width, icon.height), (22, 22));
+            assert_eq!(icon.data.len(), 22 * 22 * 4);
+            let (pixels, remainder) = icon.data.as_chunks::<4>();
+            assert!(remainder.is_empty());
+            assert!(pixels.iter().any(|pixel| pixel[0] == 255));
+            assert!(pixels.iter().any(|pixel| pixel[0] == 0));
+            for pixel in pixels {
+                assert_eq!(&pixel[1..], &color);
+            }
+        }
+    }
 }
