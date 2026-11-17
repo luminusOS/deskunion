@@ -48,6 +48,7 @@ jobs:
           )"
 
           echo "version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Android SDK & Licenses
         run: |
@@ -97,9 +98,16 @@ jobs:
           ./build-aux/android/build-apk.sh
 
       - name: Stage APKs for release
+        env:
+          RELEASE_VERSION: ${{ steps.names.outputs.release_version }}
         run: |
+          set -euo pipefail
           mkdir -p dist
-          find apks/ -name '*.apk' -exec cp {} dist/ \;
+          for apk in apks/*.apk; do
+            abi="$(basename "${apk}" | sed -E 's/^app-//; s/-?release-release-signed\.apk$//')"
+            cp "${apk}" "dist/deskunion-${RELEASE_VERSION}-android-${abi:-universal}.apk"
+          done
+          ls dist
 
       - name: Upload release assets
         uses: actions/upload-artifact@v4
