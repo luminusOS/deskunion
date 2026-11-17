@@ -35,6 +35,36 @@ pub(super) fn connected_to_server(addr: impl Display) -> String {
     format!("Connected to server {addr}")
 }
 
+pub(super) const SERVER_IDENTITY_CHANGED: &str = "Server certificate changed";
+
+pub(super) const SERVER_IDENTITY_BLOCKED: &str =
+    "DeskUnion does not connect until you trust the new certificate";
+
+/// Pango markup: a wrapped fingerprint must not gain hyphens, or it no
+/// longer matches what the server shows.
+pub(super) fn server_identity_changed(expected: &str, got: &str) -> String {
+    let fingerprint = |text: &str| {
+        format!(
+            "<span font_family=\"monospace\" insert_hyphens=\"false\">{}</span>",
+            gtk::glib::markup_escape_text(text)
+        )
+    };
+    let (expected, got) = (fingerprint(expected), fingerprint(got));
+    format!(
+        "The server shows a different certificate than the one it showed before. \
+         Trust it only if you reinstalled DeskUnion on the server or replaced its \
+         certificate; otherwise another computer may be answering in its place.\n\n\
+         Previous SHA-256 fingerprint:\n{expected}\n\nNew SHA-256 fingerprint:\n{got}"
+    )
+}
+
+pub(super) fn server_certificate(pinned: Option<&str>) -> String {
+    match pinned {
+        Some(fingerprint) => fingerprint.to_owned(),
+        None => "Trusted on the first connection".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +100,18 @@ mod tests {
         assert_sentence_case(&device_paired("right"));
         assert_sentence_case(&connected_to_server("192.0.2.1:4242"));
         assert_sentence_case(&device_waiting("192.0.2.1:4242"));
+        assert_sentence_case(SERVER_IDENTITY_CHANGED);
+        assert_sentence_case(SERVER_IDENTITY_BLOCKED);
+        assert_sentence_case(&server_certificate(None));
+    }
+
+    /// the user can only judge the change by comparing both fingerprints,
+    /// e.g. with the one the server shows on its own screen
+    #[test]
+    fn the_identity_warning_shows_both_fingerprints() {
+        let text = server_identity_changed("aa:bb", "cc:dd");
+        assert!(text.contains("aa:bb") && text.contains("cc:dd"));
+        assert!(text.find("aa:bb") < text.find("cc:dd"));
+        assert_eq!(server_certificate(Some("aa:bb")), "aa:bb");
     }
 }

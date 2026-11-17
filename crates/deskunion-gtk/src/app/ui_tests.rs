@@ -545,6 +545,116 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
         ClientEmulation::Running
     );
 
+    // a server whose certificate changed is refused until the user trusts it
+    let pinned = "aa:".repeat(31) + "aa";
+    let shown = "bb:".repeat(31) + "bb";
+    controller.emit(AppMsg::Frontend(FrontendEvent::ServerEndpoint {
+        hostname: Some("luminus-desktop".to_owned()),
+        ips: Vec::new(),
+        port: DEFAULT_PORT,
+    }));
+    controller.emit(AppMsg::Frontend(FrontendEvent::ServerFingerprint(Some(
+        pinned.clone(),
+    ))));
+    settle();
+    {
+        let widgets = controller.widgets();
+        assert!(widgets.server_fingerprint_row.is_visible());
+        assert_eq!(
+            widgets.server_fingerprint_row.subtitle().as_deref(),
+            Some(pinned.as_str())
+        );
+        assert!(!widgets.server_fingerprint_mismatch_row.is_visible());
+    }
+
+    controller.emit(AppMsg::Frontend(FrontendEvent::ServerFingerprintMismatch {
+        expected: pinned.clone(),
+        got: shown.clone(),
+    }));
+    settle();
+    assert!(
+        controller
+            .widgets()
+            .server_fingerprint_mismatch_row
+            .is_visible()
+    );
+    let dialog = window
+        .visible_dialog()
+        .expect("the identity warning is shown");
+    capture(window, "client-server-certificate-changed");
+    dialog.force_close();
+    settle();
+    // the same report on the next dial does not ask again
+    controller.emit(AppMsg::Frontend(FrontendEvent::ServerFingerprintMismatch {
+        expected: pinned,
+        got: shown.clone(),
+    }));
+    settle();
+    assert!(window.visible_dialog().is_none());
+    // a resync repeats the endpoint: the server is still refused
+    controller.emit(AppMsg::Frontend(FrontendEvent::ServerEndpoint {
+        hostname: Some("luminus-desktop".to_owned()),
+        ips: Vec::new(),
+        port: DEFAULT_PORT,
+    }));
+    settle();
+    assert!(
+        controller
+            .widgets()
+            .server_fingerprint_mismatch_row
+            .is_visible()
+    );
+
+    // trusting it pins the shown certificate, which clears the warning
+    controller.emit(AppMsg::Frontend(FrontendEvent::ServerFingerprint(Some(
+        shown.clone(),
+    ))));
+    settle();
+    assert!(
+        !controller
+            .widgets()
+            .server_fingerprint_mismatch_row
+            .is_visible()
+    );
+
+    // another server makes the warning obsolete
+    controller.emit(AppMsg::Frontend(FrontendEvent::ServerFingerprintMismatch {
+        expected: shown,
+        got: "cc:".repeat(31) + "cc",
+    }));
+    settle();
+    window.visible_dialog().expect("warning").force_close();
+    // a dial that proves the pinned certificate settles the warning
+    controller.emit(AppMsg::Frontend(FrontendEvent::DeviceConnected {
+        addr: "192.0.2.1:4242".parse().unwrap(),
+        fingerprint: "dd:".repeat(31) + "dd",
+    }));
+    settle();
+    assert!(
+        !controller
+            .widgets()
+            .server_fingerprint_mismatch_row
+            .is_visible()
+    );
+    controller.emit(AppMsg::Frontend(FrontendEvent::ServerFingerprintMismatch {
+        expected: "aa".to_owned(),
+        got: "ee".to_owned(),
+    }));
+    settle();
+    window.visible_dialog().expect("warning").force_close();
+    controller.emit(AppMsg::Frontend(FrontendEvent::ServerEndpoint {
+        hostname: Some("other-desktop".to_owned()),
+        ips: Vec::new(),
+        port: DEFAULT_PORT,
+    }));
+    settle();
+    assert!(
+        !controller
+            .widgets()
+            .server_fingerprint_mismatch_row
+            .is_visible()
+    );
+
     window.close();
     drop(controller);
     drop(connection);

@@ -269,6 +269,12 @@ pub enum FrontendEvent {
         ips: Vec<IpAddr>,
         port: u16,
     },
+    /// the certificate fingerprint pinned for the configured server
+    /// (`None` until the first connection, trust on first use)
+    ServerFingerprint(Option<String>),
+    /// the server showed another certificate than the pinned `expected`
+    /// one; no session is made until the user trusts `got`
+    ServerFingerprintMismatch { expected: String, got: String },
     /// client mode: a dial to the server failed and the next attempt is
     /// scheduled. Cleared by `DeviceConnected`, a stopped emulation or a new
     /// `ServerEndpoint`.
@@ -372,6 +378,9 @@ pub enum FrontendRequest {
     },
     /// dial the configured server now, skipping the retry delay (client mode)
     ReconnectNow,
+    /// pin this certificate fingerprint for the configured server, after
+    /// the user checked a reported mismatch
+    TrustServerFingerprint(String),
     /// request reenabling input capture
     EnableCapture,
     /// request reenabling input emulation

@@ -1212,7 +1212,7 @@ mod test {
                 .await
                 .expect("listener");
                 let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
-                let (conn, _) = crate::connect::connect(addr, client_cert)
+                let (conn, _) = crate::connect::connect(addr, client_cert, None)
                     .await
                     .map_err(|(_, e)| e)
                     .expect("connect");
@@ -1312,7 +1312,7 @@ mod test {
                 .await
                 .expect("listener");
                 let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
-                let (conn, _) = crate::connect::connect(addr, client_cert)
+                let (conn, _) = crate::connect::connect(addr, client_cert, None)
                     .await
                     .map_err(|(_, e)| e)
                     .expect("connect");
@@ -1345,6 +1345,158 @@ mod test {
 
                 conn.close().await.expect("close");
                 listener.terminate().await;
+            })
+            .await;
+    }
+
+    /// A real DTLS dial: a server whose certificate is not the pinned one
+    /// is refused and reported with the certificate it showed, while the
+    /// pinned certificate connects.
+    #[tokio::test]
+    async fn the_dialer_refuses_a_server_that_is_not_the_pinned_one() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let server_cert = Certificate::generate_self_signed(["ignored".to_owned()])
+                    .expect("server certificate");
+                let server_fingerprint = crypto::certificate_fingerprint(&server_cert);
+                let client_cert = Certificate::generate_self_signed(["ignored".to_owned()])
+                    .expect("client certificate");
+                let authorized = Arc::new(RwLock::new(HashMap::from([(
+                    crypto::certificate_fingerprint(&client_cert),
+                    "test".to_owned(),
+                )])));
+                let port = ephemeral_port();
+                let mut listener = DeskunionListener::new(
+                    port,
+                    server_cert,
+                    authorized,
+                    ClientManager::default(),
+                    test_audio_settings(),
+                )
+                .await
+                .expect("listener");
+                spawn_local(async move { while listener.next().await.is_some() {} });
+
+                let mut dialer =
+                    crate::connect::DeskunionConnection::new(client_cert, test_audio_settings());
+                let impostor_pin = crypto::certificate_fingerprint(
+                    &Certificate::generate_self_signed(["ignored".to_owned()])
+                        .expect("other certificate"),
+                );
+                let target = crate::connect::ServerTarget {
+                    hostname: None,
+                    ips: vec!["127.0.0.1".parse().unwrap()],
+                    port,
+                    fingerprint: Some(impostor_pin.clone()),
+                };
+                dialer.set_server(Some(target.clone())).await;
+                let (expected, got) = tokio::time::timeout(Duration::from_secs(6), async {
+                    loop {
+                        match dialer.recv().await {
+                            crate::connect::ConnectionEvent::ServerFingerprintMismatch {
+                                expected,
+                                got,
+                            } => break (expected, got),
+                            crate::connect::ConnectionEvent::Connected { .. } => {
+                                panic!("connected to a server that is not the pinned one")
+                            }
+                            _ => {}
+                        }
+                    }
+                })
+                .await
+                .expect("a mismatch report");
+                assert_eq!(expected, impostor_pin);
+                assert_eq!(got, server_fingerprint);
+
+                dialer
+                    .set_server(Some(crate::connect::ServerTarget {
+                        fingerprint: Some(server_fingerprint.clone()),
+                        ..target
+                    }))
+                    .await;
+                let fingerprint = tokio::time::timeout(Duration::from_secs(6), async {
+                    loop {
+                        if let crate::connect::ConnectionEvent::Connected { fingerprint, .. } =
+                            dialer.recv().await
+                        {
+                            break fingerprint;
+                        }
+                    }
+                })
+                .await
+                .expect("trusting the shown certificate connects at once");
+                assert_eq!(fingerprint, server_fingerprint);
+                dialer.terminate().await;
+            })
+            .await;
+    }
+
+    /// Trust on first use pins the certificate of the live session: that
+    /// pin must not drop the session it was learned from.
+    #[tokio::test]
+    async fn pinning_the_live_server_keeps_its_session() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let server_cert = Certificate::generate_self_signed(["ignored".to_owned()])
+                    .expect("server certificate");
+                let client_cert = Certificate::generate_self_signed(["ignored".to_owned()])
+                    .expect("client certificate");
+                let authorized = Arc::new(RwLock::new(HashMap::from([(
+                    crypto::certificate_fingerprint(&client_cert),
+                    "test".to_owned(),
+                )])));
+                let port = ephemeral_port();
+                let mut listener = DeskunionListener::new(
+                    port,
+                    server_cert,
+                    authorized,
+                    ClientManager::default(),
+                    test_audio_settings(),
+                )
+                .await
+                .expect("listener");
+                spawn_local(async move { while listener.next().await.is_some() {} });
+
+                let mut dialer =
+                    crate::connect::DeskunionConnection::new(client_cert, test_audio_settings());
+                let target = crate::connect::ServerTarget {
+                    hostname: None,
+                    ips: vec!["127.0.0.1".parse().unwrap()],
+                    port,
+                    fingerprint: None,
+                };
+                dialer.set_server(Some(target.clone())).await;
+                let fingerprint = tokio::time::timeout(Duration::from_secs(6), async {
+                    loop {
+                        if let crate::connect::ConnectionEvent::Connected { fingerprint, .. } =
+                            dialer.recv().await
+                        {
+                            break fingerprint;
+                        }
+                    }
+                })
+                .await
+                .expect("an unpinned first connection");
+
+                dialer
+                    .set_server(Some(crate::connect::ServerTarget {
+                        fingerprint: Some(fingerprint),
+                        ..target
+                    }))
+                    .await;
+                let dropped = tokio::time::timeout(Duration::from_millis(1500), async {
+                    loop {
+                        match dialer.recv().await {
+                            crate::connect::ConnectionEvent::Disconnected { .. }
+                            | crate::connect::ConnectionEvent::Connected { .. } => break,
+                            _ => {}
+                        }
+                    }
+                })
+                .await;
+                assert!(dropped.is_err(), "pinning redialed the live session");
+                dialer.terminate().await;
             })
             .await;
     }
@@ -1382,6 +1534,7 @@ mod test {
                         hostname: None,
                         ips: vec!["127.0.0.1".parse().unwrap()],
                         port,
+                        fingerprint: None,
                     }))
                     .await;
 
@@ -1461,7 +1614,7 @@ mod test {
                 .await
                 .expect("listener");
                 let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
-                let (conn, _) = crate::connect::connect(addr, client_cert)
+                let (conn, _) = crate::connect::connect(addr, client_cert, None)
                     .await
                     .map_err(|(_, e)| e)
                     .expect("connect");

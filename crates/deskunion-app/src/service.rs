@@ -73,6 +73,9 @@ pub struct Service {
     incoming_conns: HashSet<SocketAddr>,
     /// map from capture handle to connection info
     incoming_conn_info: HashMap<ClientHandle, Incoming>,
+    /// (pinned, shown) while the server is refused for showing another
+    /// certificate, replayed to every frontend that syncs
+    server_mismatch: Option<(String, String)>,
     next_trigger_handle: u64,
 }
 
@@ -166,6 +169,7 @@ impl Service {
             capture_status: Default::default(),
             emulation_status: Default::default(),
             incoming_conn_info: Default::default(),
+            server_mismatch: None,
             incoming_conns: Default::default(),
             next_trigger_handle: 0,
         };
@@ -235,7 +239,11 @@ impl Service {
                 request_id,
                 hostname,
                 port,
-            } => self.emulation.test_connection(request_id, hostname, port),
+            } => {
+                let pinned = self.pin_for(&hostname, port);
+                self.emulation
+                    .test_connection(request_id, hostname, port, pinned)
+            }
             FrontendRequest::Delete(handle) => {
                 self.remove_client(handle);
                 self.save_config();
@@ -250,6 +258,12 @@ impl Service {
             FrontendRequest::EnableEmulation => {
                 if self.operation_mode == OperationMode::Client {
                     self.emulation.reenable();
+                }
+            }
+            FrontendRequest::TrustServerFingerprint(fingerprint) => {
+                if let Some(fingerprint) = self.checked_fingerprint(&fingerprint) {
+                    log::info!("trusting server certificate {fingerprint}");
+                    self.pin_server(fingerprint);
                 }
             }
             FrontendRequest::ReconnectNow => {
@@ -443,6 +457,12 @@ impl Service {
         if self.operation_mode == OperationMode::Client {
             self.push_server_target();
         }
+        // a hand-edited pin or endpoint may have settled the reported change
+        if self.server_mismatch.as_ref().is_some_and(|(expected, _)| {
+            self.config.server_fingerprint().as_deref() != Some(expected.as_str())
+        }) {
+            self.server_mismatch = None;
+        }
         self.sync_frontend();
     }
 
@@ -502,6 +522,13 @@ impl Service {
                 self.emulation.set_server(None);
                 self.notify_frontend(FrontendEvent::EmulationStatus(self.emulation_status));
             }
+            EmulationEvent::EmulationRestarting { delay } => {
+                // the dial survives a short restart: keep the server target,
+                // the server sees `Pong(false)` until emulation is back
+                log::warn!("input emulation stopped; restarting it in {delay:?}");
+                let retry_in_ms = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
+                self.notify_frontend(FrontendEvent::EmulationRestarting { retry_in_ms });
+            }
             EmulationEvent::EmulationEnabled => {
                 self.emulation_status = Status::Enabled;
                 self.push_server_target();
@@ -517,17 +544,39 @@ impl Service {
                     });
                 }
             }
-            EmulationEvent::Connected { addr, fingerprint } => {
+            EmulationEvent::Connected {
+                addr,
+                fingerprint,
+                target,
+            } => {
                 if self.operation_mode == OperationMode::Client {
+                    self.server_mismatch = None;
+                    // the event may have been queued while the endpoint
+                    // changed: never pin one server's certificate to another
+                    let current = self
+                        .server_target()
+                        .is_some_and(|current| !current.endpoint_differs(&target));
+                    if current
+                        && self.config.server_fingerprint().is_none()
+                        && !fingerprint.is_empty()
+                    {
+                        log::info!("pinning server certificate {fingerprint} on first use");
+                        self.pin_server(fingerprint.clone());
+                    }
                     self.notify_frontend(FrontendEvent::DeviceConnected { addr, fingerprint });
                 }
             }
-            EmulationEvent::EmulationRestarting { delay } => {
-                // the dial survives a short restart: keep the server target,
-                // the server sees `Pong(false)` until emulation is back
-                log::warn!("input emulation stopped; restarting it in {delay:?}");
-                let retry_in_ms = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
-                self.notify_frontend(FrontendEvent::EmulationRestarting { retry_in_ms });
+            EmulationEvent::ServerFingerprintMismatch { expected, got } => {
+                log::warn!(
+                    "the server shows certificate {got} instead of the pinned {expected}; refusing it"
+                );
+                if self.operation_mode == OperationMode::Client {
+                    self.server_mismatch = Some((expected.clone(), got.clone()));
+                    self.notify_frontend(FrontendEvent::ServerFingerprintMismatch {
+                        expected,
+                        got,
+                    });
+                }
             }
         }
     }
@@ -667,20 +716,55 @@ impl Service {
         {
             return;
         }
+        // the connection resolves the host name itself before every dial, so a
+        // lookup that fails now is retried instead of leaving the target unset
+        if let Some(target) = self.server_target() {
+            self.emulation.set_server(Some(target));
+        }
+    }
+
+    /// the pin to test `hostname:port` with: the saved server's pin when
+    /// it is that server, none for a new endpoint
+    fn pin_for(&self, hostname: &str, port: u16) -> Option<String> {
         let endpoint = self.config.server_endpoint();
-        let mut ips = endpoint.ips.clone();
+        let saved = endpoint
+            .hostname
+            .or_else(|| endpoint.ips.first().map(|ip| ip.to_string()));
+        saved
+            .is_some_and(|saved| {
+                saved.eq_ignore_ascii_case(hostname.trim()) && endpoint.port == port
+            })
+            .then(|| self.config.server_fingerprint())
+            .flatten()
+    }
+
+    /// the configured server endpoint as a dial target, if there is one
+    fn server_target(&self) -> Option<ServerTarget> {
+        let endpoint = self.config.server_endpoint();
+        let mut ips = endpoint.ips;
         ips.sort();
         ips.dedup();
         if ips.is_empty() && endpoint.hostname.is_none() {
-            return;
+            return None;
         }
-        // the connection resolves the host name itself before every dial, so a
-        // lookup that fails now is retried instead of leaving the target unset
-        self.emulation.set_server(Some(ServerTarget {
+        Some(ServerTarget {
             hostname: endpoint.hostname,
             ips,
             port: endpoint.port,
-        }));
+            fingerprint: self.config.server_fingerprint(),
+        })
+    }
+
+    /// pin the server's certificate and dial under the new pin; a session
+    /// that already shows it stays up
+    fn pin_server(&mut self, fingerprint: String) {
+        self.server_mismatch = None;
+        self.config.set_server_fingerprint(Some(fingerprint));
+        self.save_config();
+        self.push_server_target();
+        self.notify_frontend(FrontendEvent::ServerFingerprint(
+            self.config.server_fingerprint(),
+        ));
     }
 
     fn set_server_endpoint(&mut self, hostname: Option<String>, ips: Vec<IpAddr>, port: u16) {
@@ -689,6 +773,10 @@ impl Service {
             ips,
             port,
         });
+        if self.config.server_fingerprint().is_none() {
+            // another server: the old mismatch no longer applies
+            self.server_mismatch = None;
+        }
         self.push_server_target();
         let endpoint = self.config.server_endpoint();
         self.notify_frontend(FrontendEvent::ServerEndpoint {
@@ -696,6 +784,9 @@ impl Service {
             ips: endpoint.ips,
             port: endpoint.port,
         });
+        self.notify_frontend(FrontendEvent::ServerFingerprint(
+            self.config.server_fingerprint(),
+        ));
     }
 
     /// pair a connected (authorized but unpaired) device: bind its
@@ -750,6 +841,13 @@ impl Service {
             ips: endpoint.ips,
             port: endpoint.port,
         });
+        self.notify_frontend(FrontendEvent::ServerFingerprint(
+            self.config.server_fingerprint(),
+        ));
+        // a frontend started while the server is refused must still learn why
+        if let Some((expected, got)) = self.server_mismatch.clone() {
+            self.notify_frontend(FrontendEvent::ServerFingerprintMismatch { expected, got });
+        }
         self.notify_audio_status();
         self.notify_clipboard_status();
     }

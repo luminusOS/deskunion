@@ -96,6 +96,48 @@ struct ConfigToml {
     server_hostname: Option<String>,
     server_ips: Option<Vec<IpAddr>>,
     server_port: Option<u16>,
+    /// the server's certificate fingerprint, pinned on the first connection
+    server_fingerprint: Option<String>,
+}
+
+impl ConfigToml {
+    fn server_pin(&self) -> Option<String> {
+        let pin = self.server_fingerprint.as_deref()?;
+        match deskunion_ipc::normalize_fingerprint(pin) {
+            Ok(pin) => Some(pin),
+            Err(e) => {
+                // fail closed: no certificate matches it, so the user is asked
+                // instead of the next server that answers being pinned
+                log::warn!("the server_fingerprint `{pin}` is invalid ({e}); no server matches it");
+                Some(pin.trim().to_owned())
+            }
+        }
+    }
+
+    /// A pin belongs to the endpoint it was learned from: another server
+    /// has another certificate, so a new endpoint starts unpinned.
+    fn set_server_endpoint(&mut self, endpoint: ServerEndpoint) {
+        let hostname = endpoint.hostname;
+        let mut ips = endpoint.ips;
+        ips.sort();
+        ips.dedup();
+        let ips = (!ips.is_empty()).then_some(ips);
+        let port = (endpoint.port != DEFAULT_PORT).then_some(endpoint.port);
+        let same_host = match (&self.server_hostname, &hostname) {
+            (Some(old), Some(new)) => old.eq_ignore_ascii_case(new),
+            (old, new) => old == new,
+        };
+        let mut old_ips = self.server_ips.clone().unwrap_or_default();
+        old_ips.sort();
+        old_ips.dedup();
+        let same_ips = old_ips == ips.clone().unwrap_or_default();
+        if !(same_host && same_ips && self.server_port == port) {
+            self.server_fingerprint = None;
+        }
+        self.server_hostname = hostname;
+        self.server_ips = ips;
+        self.server_port = port;
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq)]
@@ -582,13 +624,21 @@ impl Config {
 
     /// set the server endpoint dialed in client mode
     pub fn set_server_endpoint(&mut self, endpoint: ServerEndpoint) {
-        if self.config_toml.is_none() {
-            self.config_toml = Some(Default::default());
-        }
-        let toml = self.config_toml.as_mut().expect("config");
-        toml.server_hostname = endpoint.hostname;
-        toml.server_ips = (!endpoint.ips.is_empty()).then_some(endpoint.ips);
-        toml.server_port = (endpoint.port != DEFAULT_PORT).then_some(endpoint.port);
+        self.config_toml
+            .get_or_insert_with(Default::default)
+            .set_server_endpoint(endpoint);
+    }
+
+    /// the certificate fingerprint the server proved on its first
+    /// connection (trust on first use)
+    pub fn server_fingerprint(&self) -> Option<String> {
+        self.config_toml.as_ref()?.server_pin()
+    }
+
+    pub fn set_server_fingerprint(&mut self, fingerprint: Option<String>) {
+        self.config_toml
+            .get_or_insert_with(Default::default)
+            .server_fingerprint = fingerprint;
     }
 
     /// public key fingerprints authorized for connection
@@ -805,5 +855,98 @@ mod clipboard_config_tests {
         let serialized = toml::to_string(&config).expect("serialize");
         let restored: ConfigToml = toml::from_str(&serialized).expect("deserialize");
         assert!(!restored.clipboard_enabled());
+    }
+}
+
+#[cfg(test)]
+mod server_pin_tests {
+    use super::{ConfigToml, DEFAULT_PORT, ServerEndpoint};
+
+    const PIN: &str = "ab:cd";
+
+    fn endpoint(hostname: &str) -> ServerEndpoint {
+        ServerEndpoint {
+            hostname: Some(hostname.to_owned()),
+            ips: Vec::new(),
+            port: DEFAULT_PORT,
+        }
+    }
+
+    fn pinned(hostname: &str) -> ConfigToml {
+        let mut config = ConfigToml::default();
+        config.set_server_endpoint(endpoint(hostname));
+        config.server_fingerprint = Some(PIN.to_owned());
+        config
+    }
+
+    #[test]
+    fn the_pin_round_trips_in_toml() {
+        let config: ConfigToml =
+            toml::from_str("server_hostname = \"desk\"\nserver_fingerprint = \"ab:cd\"")
+                .expect("config");
+        assert_eq!(config.server_fingerprint.as_deref(), Some(PIN));
+        let restored: ConfigToml =
+            toml::from_str(&toml::to_string(&config).expect("serialize")).expect("deserialize");
+        assert_eq!(restored.server_fingerprint.as_deref(), Some(PIN));
+    }
+
+    /// saving the same server again (the settings page does that on every
+    /// apply) must not throw away the pin
+    #[test]
+    fn saving_the_same_endpoint_keeps_the_pin() {
+        let mut config = pinned("desk");
+        config.set_server_endpoint(endpoint("desk"));
+        assert_eq!(config.server_fingerprint.as_deref(), Some(PIN));
+    }
+
+    /// a mistyped pin must not count as no pin: then the next server that
+    /// answers would be trusted silently
+    #[test]
+    fn a_mistyped_pin_matches_no_server_instead_of_none() {
+        let mut config = pinned("desk");
+        config.server_fingerprint = Some("AB:CD:typo".to_owned());
+        assert_eq!(config.server_pin().as_deref(), Some("AB:CD:typo"));
+        config.server_fingerprint = Some(format!(" {} ", "AA:".repeat(31) + "AA"));
+        assert_eq!(config.server_pin(), Some("aa:".repeat(31) + "aa"));
+    }
+
+    /// writing the same server differently must not drop the pin: the next
+    /// connection would trust whoever answers
+    #[test]
+    fn the_same_server_written_differently_keeps_the_pin() {
+        let a: std::net::IpAddr = "10.0.0.2".parse().expect("ip");
+        let b: std::net::IpAddr = "10.0.0.3".parse().expect("ip");
+        let mut config = ConfigToml::default();
+        config.set_server_endpoint(ServerEndpoint {
+            ips: vec![a, b],
+            ..endpoint("Desk.local")
+        });
+        config.server_fingerprint = Some(PIN.to_owned());
+        config.set_server_endpoint(ServerEndpoint {
+            ips: vec![b, a, b],
+            ..endpoint("desk.local")
+        });
+        assert_eq!(config.server_fingerprint.as_deref(), Some(PIN));
+    }
+
+    /// another server has another certificate: keeping the old pin would
+    /// reject it as an impostor
+    #[test]
+    fn a_new_endpoint_drops_the_pin() {
+        let mut config = pinned("desk");
+        config.set_server_endpoint(endpoint("laptop"));
+        assert_eq!(config.server_fingerprint, None);
+
+        let mut config = pinned("desk");
+        let mut with_ip = endpoint("desk");
+        with_ip.ips = vec!["10.0.0.2".parse().expect("ip")];
+        config.set_server_endpoint(with_ip);
+        assert_eq!(config.server_fingerprint, None);
+
+        let mut config = pinned("desk");
+        let mut other_port = endpoint("desk");
+        other_port.port = DEFAULT_PORT + 1;
+        config.set_server_endpoint(other_port);
+        assert_eq!(config.server_fingerprint, None);
     }
 }

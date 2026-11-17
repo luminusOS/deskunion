@@ -608,6 +608,11 @@ port = 4242
 # server_hostname = "my-server.local"
 # server_ips = ["192.168.178.10"]
 # server_port = 4242
+# sha256 fingerprint of the server's certificate. Written on the first
+# connection (trust on first use) and cleared when the endpoint above
+# changes; a server showing another certificate is refused until you
+# trust it in the app. Compare it with the fingerprint the server shows.
+# server_fingerprint = "3f:2a:..."
 
 # list of authorized tls certificate fingerprints that
 # are accepted for incoming traffic

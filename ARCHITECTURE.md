@@ -217,6 +217,22 @@ placed automatically on the first free edge (right, left, top, bottom) and waits
 parked only when all four are taken. The binding is persisted as `fingerprint`
 in the `[[clients]]` entry of `config.toml`. Only bound devices can be entered.
 
+The client checks the server the same way, by trust on first use: it accepts any
+certificate on the first connection and pins its fingerprint as
+`server_fingerprint` in `config.toml`. From then on `connect.rs::verify_server`
+refuses a server with another certificate. The dial reports
+`ServerFingerprintMismatch` with both fingerprints, the frontend asks the user,
+and `TrustServerFingerprint` pins the new one. Saving another endpoint clears the
+pin. Changing only the pin keeps a session whose server already shows it, so
+pinning on first use does not reconnect. The service pins only when the
+`Connected` event belongs to the endpoint still configured. It keeps the last
+mismatch and replays it to every frontend that syncs. A `server_fingerprint`
+that is not a valid fingerprint fails closed: no server matches it. Endpoints
+are compared without regard to IP order or host-name case. A connection test
+uses the pin only when it tests the saved endpoint. On a dial to several
+addresses, a mismatch is reported over a pending authorization, and that over
+any other failure.
+
 A client announces its computer name right after connecting and again every two
 seconds. `ClientManager::set_announced_name` fills only an empty label of a bound
 client and never overwrites a name the user typed.
@@ -266,22 +282,6 @@ pointer at its edge, on Linux through the portal or on Windows through the hook.
 When the client that held the pointer loses its barrier, the pointer is released
 first.
 
-## Liveness and Link Quality
-
-The listener is the pinger. Immediately after a device connects, and then every
-5 seconds, it sends `Ping`; the client answers `Pong(emulation_active)`. Any
-received datagram counts as proof of life, so a busy audio stream cannot trip the
-keepalive; six consecutive probes without any datagram close the connection.
-
-The listener also times each `Ping` against the `Pong` that answers it
-(`Liveness::probed_at`) and reports `ListenEvent::Latency`, which is stored in
-`ClientState::ping_ms` and shown in the client row as a signal icon and a value
-in milliseconds. The icon steps are 20, 50 and 120 ms. The client has a mirrored
-watchdog that closes the session when the server goes silent.
-
-## Client Connection Retry
-
-```mermaid
 ## Session Recovery
 
 A compositor can end a portal session on its own, for example GNOME closing the
@@ -328,6 +328,22 @@ of failed restarts and then waits for the user, because a client that keeps
 failing should show as disabled; capture keeps trying every 60 s, because the
 server has nothing else to do until its desktop is unlocked.
 
+## Liveness and Link Quality
+
+The listener is the pinger. Immediately after a device connects, and then every
+5 seconds, it sends `Ping`; the client answers `Pong(emulation_active)`. Any
+received datagram counts as proof of life, so a busy audio stream cannot trip the
+keepalive; six consecutive probes without any datagram close the connection.
+
+The listener also times each `Ping` against the `Pong` that answers it
+(`Liveness::probed_at`) and reports `ListenEvent::Latency`, which is stored in
+`ClientState::ping_ms` and shown in the client row as a signal icon and a value
+in milliseconds. The icon steps are 20, 50 and 120 ms. The client has a mirrored
+watchdog that closes the session when the server goes silent.
+
+## Client Connection Retry
+
+```mermaid
 flowchart TD
     Start["set_server / reconnect_now / session dropped"] --> Resolve[resolve the host name<br/>merge with manual addresses]
     Resolve --> Dial[dial all addresses in parallel]

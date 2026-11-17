@@ -152,6 +152,17 @@ impl LogState {
                 format!("authorized keys updated: {} key(s)", keys.len()),
             ),
             FrontendEvent::PublicKeyFingerprint(_) => return None,
+            FrontendEvent::ServerFingerprint(fingerprint) => (
+                LogCategory::Connections,
+                match fingerprint {
+                    Some(fingerprint) => format!("server certificate pinned: {fingerprint}"),
+                    None => "server certificate not pinned yet".to_owned(),
+                },
+            ),
+            FrontendEvent::ServerFingerprintMismatch { expected, got } => (
+                LogCategory::Errors,
+                format!("server certificate changed: expected {expected}, got {got}; refused"),
+            ),
             FrontendEvent::DeviceConnected { addr, .. } => (
                 LogCategory::Connections,
                 format!("device connected: {addr}"),

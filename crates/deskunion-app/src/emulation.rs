@@ -27,6 +27,7 @@ pub(crate) enum EmulationEvent {
     Connected {
         addr: SocketAddr,
         fingerprint: String,
+        target: ServerTarget,
     },
     /// the server's pointer entered this device
     Entered {
@@ -41,6 +42,8 @@ pub(crate) enum EmulationEvent {
     Disconnected { addr: SocketAddr },
     /// a dial failed; the next attempt is scheduled
     Retrying(crate::retry::RetryNotice),
+    /// the server showed another certificate than the pinned one
+    ServerFingerprintMismatch { expected: String, got: String },
     #[cfg(feature = "audio")]
     AudioError { addr: SocketAddr, error: String },
     /// result of a dial-out test requested by the frontend
@@ -73,6 +76,7 @@ enum EmulationRequest {
         request_id: u64,
         hostname: String,
         port: u16,
+        pinned: Option<String>,
     },
     Terminate,
 }
@@ -132,12 +136,19 @@ impl Emulation {
             .expect("channel closed");
     }
 
-    pub(crate) fn test_connection(&self, request_id: u64, hostname: String, port: u16) {
+    pub(crate) fn test_connection(
+        &self,
+        request_id: u64,
+        hostname: String,
+        port: u16,
+        pinned: Option<String>,
+    ) {
         self.request_tx
             .send(EmulationRequest::TestConnection {
                 request_id,
                 hostname,
                 port,
+                pinned,
             })
             .expect("channel closed");
     }
@@ -249,9 +260,14 @@ impl DialTask {
                     ConnectionEvent::Retrying(notice) => {
                         self.event_tx.send(EmulationEvent::Retrying(notice)).expect("channel closed");
                     }
-                    ConnectionEvent::Connected { addr, fingerprint } => {
+                    ConnectionEvent::ServerFingerprintMismatch { expected, got } => {
+                        self.event_tx
+                            .send(EmulationEvent::ServerFingerprintMismatch { expected, got })
+                            .expect("channel closed");
+                    }
+                    ConnectionEvent::Connected { addr, fingerprint, target } => {
                         last_response.insert(addr, Instant::now());
-                        self.event_tx.send(EmulationEvent::Connected { addr, fingerprint }).expect("channel closed");
+                        self.event_tx.send(EmulationEvent::Connected { addr, fingerprint, target }).expect("channel closed");
                     }
                     ConnectionEvent::Disconnected { addr } => {
                         last_response.remove(&addr);
@@ -314,8 +330,8 @@ impl DialTask {
                         self.conn.set_server(target).await;
                     }
                     EmulationRequest::Reconnect => self.conn.reconnect_now().await,
-                    EmulationRequest::TestConnection { request_id, hostname, port } => {
-                        let test = self.conn.test_connection(hostname, port);
+                    EmulationRequest::TestConnection { request_id, hostname, port, pinned } => {
+                        let test = self.conn.test_connection(hostname, port, pinned);
                         let event_tx = self.event_tx.clone();
                         spawn_local(async move {
                             let error = test.await.err().map(|error| error.to_string());

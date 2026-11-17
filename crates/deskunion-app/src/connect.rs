@@ -5,11 +5,12 @@ use deskunion_proto::{
     MAX_CLIPBOARD_TEXT_SIZE, MAX_DATAGRAM_SIZE, MAX_EVENT_SIZE, ProtoEvent, decode, encode_into,
 };
 use local_channel::mpsc::{Receiver, Sender, channel};
+use rustls::pki_types::CertificateDer;
 use std::{
     cell::{Cell, RefCell},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 use thiserror::Error;
@@ -45,6 +46,10 @@ pub(crate) enum DeskunionConnectionError {
         "the remote server rejected this certificate; authorize this computer in DeskUnion on the remote machine, then try again"
     )]
     AuthorizationRequired,
+    #[error(
+        "the server's certificate changed (expected `{expected}`, got `{got}`); someone may be impersonating it, or it was reinstalled"
+    )]
+    ServerFingerprintMismatch { expected: String, got: String },
 }
 
 pub(crate) enum ConnectionEvent {
@@ -72,6 +77,8 @@ pub(crate) enum ConnectionEvent {
     Connected {
         addr: SocketAddr,
         fingerprint: String,
+        /// the target this session was dialed for
+        target: ServerTarget,
     },
     /// the DTLS session to the server ended; the reconnect loop already
     /// redials while a server target is configured
@@ -80,6 +87,12 @@ pub(crate) enum ConnectionEvent {
     },
     /// a dial failed and the next one is scheduled
     Retrying(RetryNotice),
+    /// the server presented another certificate than the pinned one; the
+    /// session was refused until the user trusts the new fingerprint
+    ServerFingerprintMismatch {
+        expected: String,
+        got: String,
+    },
     #[cfg(feature = "audio")]
     AudioError {
         addr: SocketAddr,
@@ -96,9 +109,21 @@ pub(crate) struct ServerTarget {
     /// addresses entered by hand
     pub ips: Vec<IpAddr>,
     pub port: u16,
+    /// the certificate fingerprint the server must present; `None` accepts
+    /// any certificate (trust on first use)
+    pub fingerprint: Option<String>,
 }
 
 impl ServerTarget {
+    /// whether `other` dials somewhere else; a new pin alone does not
+    pub(crate) fn endpoint_differs(&self, other: &ServerTarget) -> bool {
+        let same_host = match (&self.hostname, &other.hostname) {
+            (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+            (a, b) => a == b,
+        };
+        !(same_host && self.ips == other.ips && self.port == other.port)
+    }
+
     fn addrs(&self) -> Vec<SocketAddr> {
         self.ips
             .iter()
@@ -184,9 +209,28 @@ fn local_bind_addr(addr: SocketAddr) -> SocketAddr {
     }
 }
 
+/// Certificates are self-signed, so instead of a chain the client checks the
+/// server's fingerprint against the pin, recording a mismatch in `rejected`.
+fn verify_server(
+    certs: &[Vec<u8>],
+    pinned: Option<&str>,
+    rejected: &OnceLock<String>,
+) -> Result<(), webrtc_dtls::Error> {
+    let cert = certs.first().ok_or(webrtc_dtls::Error::ErrNoCertificates)?;
+    let fingerprint = crate::crypto::generate_fingerprint(cert);
+    match pinned {
+        Some(pinned) if !pinned.eq_ignore_ascii_case(&fingerprint) => {
+            let _ = rejected.set(fingerprint);
+            Err(webrtc_dtls::Error::ErrVerifyDataMismatch)
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(crate) async fn connect(
     addr: SocketAddr,
     cert: Certificate,
+    pinned: Option<String>,
 ) -> Result<(ArcConn, SocketAddr), (SocketAddr, DeskunionConnectionError)> {
     log::info!("connecting to {addr} ...");
     let conn = Arc::new(
@@ -195,10 +239,20 @@ pub(crate) async fn connect(
             .map_err(|e| (addr, e.into()))?,
     );
     conn.connect(addr).await.map_err(|e| (addr, e.into()))?;
+    let rejected = Arc::new(OnceLock::new());
+    let verify_peer_certificate = {
+        let rejected = rejected.clone();
+        let pinned = pinned.clone();
+        Arc::new(move |certs: &[Vec<u8>], _: &[CertificateDer<'static>]| {
+            verify_server(certs, pinned.as_deref(), &rejected)
+        })
+    };
     let config = Config {
         certificates: vec![cert],
         server_name: "ignored".to_owned(),
+        // no chain to verify: `verify_server` checks the pin instead
         insecure_skip_verify: true,
+        verify_peer_certificate: Some(verify_peer_certificate),
         extended_master_secret: ExtendedMasterSecretType::Require,
         ..Default::default()
     };
@@ -207,6 +261,13 @@ pub(crate) async fn connect(
         _ = timeout => Err((addr, DeskunionConnectionError::Timeout)),
         result = DTLSConn::new(conn, config, true, None) => match result {
             Ok(dtls_conn) => Ok((Arc::new(dtls_conn), addr)),
+            Err(_) if rejected.get().is_some() => Err((
+                addr,
+                DeskunionConnectionError::ServerFingerprintMismatch {
+                    expected: pinned.unwrap_or_default(),
+                    got: rejected.get().cloned().unwrap_or_default(),
+                },
+            )),
             Err(webrtc_dtls::Error::ErrAlertFatalOrClose) => {
                 Err((addr, DeskunionConnectionError::AuthorizationRequired))
             }
@@ -215,14 +276,26 @@ pub(crate) async fn connect(
     }
 }
 
+/// how much an error says about the server, to keep the most telling one
+/// when several addresses fail: an impostor beats a pending authorization,
+/// which beats a local or generic failure
+fn error_rank(error: &DeskunionConnectionError) -> u8 {
+    match error {
+        DeskunionConnectionError::ServerFingerprintMismatch { .. } => 2,
+        DeskunionConnectionError::AuthorizationRequired => 1,
+        _ => 0,
+    }
+}
+
 async fn connect_any(
     addrs: &[SocketAddr],
     cert: Certificate,
+    pinned: Option<String>,
 ) -> Result<(ArcConn, SocketAddr), DeskunionConnectionError> {
     let mut joinset = JoinSet::new();
-    let mut best_error = None;
+    let mut best_error: Option<DeskunionConnectionError> = None;
     for &addr in addrs {
-        joinset.spawn_local(connect(addr, cert.clone()));
+        joinset.spawn_local(connect(addr, cert.clone(), pinned.clone()));
     }
     loop {
         match joinset.join_next().await {
@@ -237,11 +310,9 @@ async fn connect_any(
                     // the peer and is rejected only because authorization is
                     // pending. Preserve the actionable remote error instead
                     // of replacing it with a generic/local socket failure.
-                    if matches!(e, DeskunionConnectionError::AuthorizationRequired)
-                        || !matches!(
-                            best_error.as_ref(),
-                            Some(DeskunionConnectionError::AuthorizationRequired)
-                        )
+                    if best_error
+                        .as_ref()
+                        .is_none_or(|best| error_rank(&e) >= error_rank(best))
                     {
                         best_error = Some(e);
                     }
@@ -413,16 +484,21 @@ impl DeskunionConnection {
     /// reconnect loop; `None` tears the current connection down and
     /// stops redialing.
     pub(crate) async fn set_server(&self, target: Option<ServerTarget>) {
-        let changed = {
+        let redial = {
             let mut current = self.shared.target.lock().await;
             if *current == target {
-                false
-            } else {
-                *current = target;
-                true
+                return;
             }
+            let redial = match (current.as_ref(), target.as_ref()) {
+                (Some(old), Some(new)) if !old.endpoint_differs(new) => {
+                    self.pin_changed(new.fingerprint.as_deref()).await
+                }
+                _ => true,
+            };
+            *current = target;
+            redial
         };
-        if !changed {
+        if !redial {
             return;
         }
         self.clear_clipboard_text();
@@ -442,6 +518,22 @@ impl DeskunionConnection {
         }
         if self.shared.target.lock().await.is_some() {
             self.ensure_connecting();
+        }
+    }
+
+    /// Only the pin of the same endpoint changed. A session whose server
+    /// already shows the new pin (it was pinned from this very session)
+    /// stays up; any other one is dialed again under the new pin.
+    async fn pin_changed(&self, pinned: Option<&str>) -> bool {
+        let connected = self.shared.conn.lock().await.as_ref().map(|(a, _)| *a);
+        let Some(addr) = connected else {
+            return true;
+        };
+        let current = self.get_certificate_fingerprint(addr).await;
+        match (pinned, current) {
+            (None, _) => false,
+            (Some(pinned), Some(current)) => !pinned.eq_ignore_ascii_case(&current),
+            (Some(_), None) => true,
         }
     }
 
@@ -512,10 +604,13 @@ impl DeskunionConnection {
     /// saved. Succeeds once the server proves the session is alive by
     /// pinging us (the listener is the pinger) or echoing our Hello;
     /// the temporary connection is closed afterwards.
+    /// `pinned` is the saved pin when the tested endpoint is the saved
+    /// server; a new endpoint starts without one.
     pub(crate) fn test_connection(
         &self,
         hostname: String,
         port: u16,
+        pinned: Option<String>,
     ) -> impl std::future::Future<Output = Result<(), DeskunionConnectionError>> + use<> {
         let cert = self.cert.clone();
         async move {
@@ -529,7 +624,7 @@ impl DeskunionConnection {
 
             let authorization_deadline = Instant::now() + AUTHORIZATION_WAIT_TIMEOUT;
             let (conn, _addr) = loop {
-                match connect_any(&addrs, cert.clone()).await {
+                match connect_any(&addrs, cert.clone(), pinned.clone()).await {
                     Ok(connection) => break connection,
                     Err(DeskunionConnectionError::AuthorizationRequired)
                         if Instant::now() < authorization_deadline =>
@@ -649,7 +744,7 @@ async fn connect_loop(
         let attempt = if addrs.is_empty() {
             Err(DeskunionConnectionError::Unresolved)
         } else {
-            connect_any(&addrs, cert.clone()).await
+            connect_any(&addrs, cert.clone(), target.fingerprint.clone()).await
         };
         let (conn, addr) = match attempt {
             Ok(c) => c,
@@ -661,7 +756,23 @@ async fn connect_loop(
                 }
                 let awaiting_authorization =
                     matches!(error, DeskunionConnectionError::AuthorizationRequired);
-                let delay = if awaiting_authorization {
+                if let DeskunionConnectionError::ServerFingerprintMismatch { expected, got } =
+                    &error
+                    && last_error.as_deref() != Some(error.to_string().as_str())
+                {
+                    tx.send(ConnectionEvent::ServerFingerprintMismatch {
+                        expected: expected.clone(),
+                        got: got.clone(),
+                    })
+                    .expect("channel closed");
+                }
+                // a changed certificate stays changed until the user trusts
+                // it: dialing it often only fills the log
+                let delay = if awaiting_authorization
+                    || matches!(
+                        error,
+                        DeskunionConnectionError::ServerFingerprintMismatch { .. }
+                    ) {
                     AUTHORIZATION_RETRY_INTERVAL
                 } else {
                     let mut backoff = shared.backoff.get();
@@ -694,8 +805,12 @@ async fn connect_loop(
             .unwrap_or_default();
         log::info!("connected to server @ {addr}");
         shared.conn.lock().await.replace((addr, conn.clone()));
-        tx.send(ConnectionEvent::Connected { addr, fingerprint })
-            .expect("channel closed");
+        tx.send(ConnectionEvent::Connected {
+            addr,
+            fingerprint,
+            target: target.clone(),
+        })
+        .expect("channel closed");
 
         // Best-effort compatibility metadata. Send our commit hash once
         // immediately after the DTLS handshake; the listen side mirrors
@@ -1089,6 +1204,76 @@ mod test {
         assert_eq!(v6.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
     }
 
+    fn server_cert() -> Vec<u8> {
+        let cert = Certificate::generate_self_signed(["ignored".to_owned()]).expect("certificate");
+        cert.certificate[0].to_vec()
+    }
+
+    #[test]
+    fn an_unpinned_server_is_trusted_on_first_use() {
+        let rejected = OnceLock::new();
+        assert!(verify_server(&[server_cert()], None, &rejected).is_ok());
+        assert!(rejected.get().is_none());
+    }
+
+    #[test]
+    fn a_server_showing_its_pinned_certificate_is_accepted() {
+        let cert = server_cert();
+        let pin = crate::crypto::generate_fingerprint(&cert).to_uppercase();
+        let rejected = OnceLock::new();
+        assert!(verify_server(&[cert], Some(&pin), &rejected).is_ok());
+        assert!(rejected.get().is_none());
+    }
+
+    /// a server that shows another certificate than the pinned one is
+    /// refused, and the certificate it showed is kept for the user to judge
+    #[test]
+    fn a_server_with_another_certificate_is_refused() {
+        let cert = server_cert();
+        let shown = crate::crypto::generate_fingerprint(&cert);
+        let pin = crate::crypto::generate_fingerprint(&server_cert());
+        let rejected = OnceLock::new();
+        assert!(verify_server(&[cert], Some(&pin), &rejected).is_err());
+        assert_eq!(rejected.get(), Some(&shown));
+        assert!(verify_server(&[], None, &OnceLock::new()).is_err());
+    }
+
+    #[test]
+    fn an_impostor_outranks_every_other_dial_error() {
+        let mismatch = DeskunionConnectionError::ServerFingerprintMismatch {
+            expected: "a".into(),
+            got: "b".into(),
+        };
+        let authorization = DeskunionConnectionError::AuthorizationRequired;
+        assert!(error_rank(&mismatch) > error_rank(&authorization));
+        assert!(error_rank(&authorization) > error_rank(&DeskunionConnectionError::Timeout));
+    }
+
+    #[test]
+    fn a_new_pin_alone_keeps_the_endpoint() {
+        let target = ServerTarget {
+            hostname: Some("desk".into()),
+            ips: Vec::new(),
+            port: 4242,
+            fingerprint: None,
+        };
+        let pinned = ServerTarget {
+            fingerprint: Some("ab:cd".into()),
+            ..target.clone()
+        };
+        assert!(!target.endpoint_differs(&pinned));
+        let moved = ServerTarget {
+            port: 4243,
+            ..target.clone()
+        };
+        assert!(target.endpoint_differs(&moved));
+        let shouted = ServerTarget {
+            hostname: Some("DESK".into()),
+            ..target.clone()
+        };
+        assert!(!target.endpoint_differs(&shouted), "host names ignore case");
+    }
+
     #[test]
     fn merge_keeps_manual_addresses_first_and_drops_repeats() {
         let manual: SocketAddr = "10.0.0.2:4242".parse().expect("addr");
@@ -1106,6 +1291,7 @@ mod test {
             hostname: Some("127.0.0.1".to_owned()),
             ips: vec!["10.0.0.2".parse().expect("ip")],
             port: 4242,
+            fingerprint: None,
         };
         assert_eq!(
             resolve_target(&target).await,
@@ -1162,6 +1348,7 @@ mod test {
                         hostname: None,
                         ips: vec!["127.0.0.1".parse().expect("ip")],
                         port,
+                        fingerprint: None,
                     }))
                     .await;
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1218,6 +1405,7 @@ mod test {
                         hostname: None,
                         ips: vec!["127.0.0.1".parse().expect("ip")],
                         port,
+                        fingerprint: None,
                     }))
                     .await;
 

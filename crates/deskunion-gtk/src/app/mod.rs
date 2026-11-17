@@ -151,6 +151,8 @@ pub enum AppMsg {
     ServerConnect,
     CopyHostname,
     CopyFingerprint,
+    ReviewServerFingerprint,
+    TrustServerFingerprint(String),
     PortEntryChanged(String),
     PortEditApply,
     PortEditCancel,
@@ -249,6 +251,11 @@ pub struct AppModel {
     server_connected_addr: Option<SocketAddr>,
     /// the service is waiting before dialing the server again
     server_retry: Option<ServerRetry>,
+    /// the certificate fingerprint pinned for the server
+    server_fingerprint: Option<String>,
+    /// (pinned, shown) when the server showed another certificate; the
+    /// connection stays refused until the user trusts the shown one
+    server_fingerprint_mismatch: Option<(String, String)>,
     /// in-flight `TestConnection` for the client-mode connect flow
     pending_server_test: Option<(u64, String, u16)>,
     next_test_id: u64,
@@ -709,6 +716,31 @@ impl AppModel {
         self.authorization_dialog = Some(controller);
     }
 
+    /// Ask before trusting a server whose certificate changed: either it
+    /// was reinstalled, or another machine answers in its place.
+    fn present_server_fingerprint_dialog(&self, sender: &ComponentSender<Self>) {
+        let Some((expected, got)) = self.server_fingerprint_mismatch.clone() else {
+            return;
+        };
+        let dialog = adw::AlertDialog::new(
+            Some(copy::SERVER_IDENTITY_CHANGED),
+            Some(&copy::server_identity_changed(&expected, &got)),
+        );
+        dialog.set_body_use_markup(true);
+        dialog.add_response("cancel", "_Keep blocked");
+        dialog.add_response("trust", "_Trust new certificate");
+        dialog.set_response_appearance("trust", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let sender = sender.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "trust" {
+                sender.input(AppMsg::TrustServerFingerprint(got.clone()));
+            }
+        });
+        dialog.present(Some(&self.root));
+    }
+
     fn open_add_client_dialog(&mut self, sender: &ComponentSender<Self>) {
         if let Some(existing) = self.add_client_dialog.take() {
             existing.widget().force_close();
@@ -855,6 +887,23 @@ impl AppModel {
                 }
             }
             FrontendEvent::PublicKeyFingerprint(fp) => self.pk_fingerprint = fp,
+            FrontendEvent::ServerFingerprint(fingerprint) => {
+                if self
+                    .server_fingerprint_mismatch
+                    .as_ref()
+                    .is_some_and(|(_, shown)| Some(shown) == fingerprint.as_ref())
+                {
+                    self.server_fingerprint_mismatch = None;
+                }
+                self.server_fingerprint = fingerprint;
+            }
+            FrontendEvent::ServerFingerprintMismatch { expected, got } => {
+                let mismatch = (expected, got);
+                if self.server_fingerprint_mismatch.as_ref() != Some(&mismatch) {
+                    self.server_fingerprint_mismatch = Some(mismatch);
+                    self.present_server_fingerprint_dialog(sender);
+                }
+            }
             FrontendEvent::ConnectionAttempt { fingerprint } => {
                 self.open_authorization_dialog(sender, fingerprint);
             }
@@ -881,6 +930,9 @@ impl AppModel {
                     _ => {
                         self.server_connected_addr = Some(addr);
                         self.server_retry = None;
+                        // the server proved the pinned certificate: offering
+                        // to trust the other one now could pin an impostor
+                        self.server_fingerprint_mismatch = None;
                         self.toast_overlay
                             .add_toast(adw::Toast::new(&copy::connected_to_server(addr)));
                     }
@@ -1020,8 +1072,14 @@ impl AppModel {
             } => {
                 // a server entered as a bare IP is saved with no hostname;
                 // fall back to that IP so the field and status keep showing it
-                self.server_hostname =
+                let hostname =
                     hostname.or_else(|| ips.first().map(std::string::ToString::to_string));
+                // the daemon sends the endpoint on every sync: only another
+                // server makes a reported certificate change obsolete
+                if (&hostname, port) != (&self.server_hostname, self.server_port) {
+                    self.server_fingerprint_mismatch = None;
+                }
+                self.server_hostname = hostname;
                 self.server_port = port;
                 self.server_host_draft = self.server_hostname.clone().unwrap_or_default();
                 self.server_port_draft = port;
@@ -1554,6 +1612,40 @@ impl SimpleComponent for AppModel {
                                                     add_css_class: "status-pill",
                                                     add_css_class: "connected",
                                                 },
+                                            },
+
+                                            #[name(server_fingerprint_mismatch_row)]
+                                            adw::ActionRow {
+                                                set_title: copy::SERVER_IDENTITY_CHANGED,
+                                                set_subtitle: copy::SERVER_IDENTITY_BLOCKED,
+                                                set_subtitle_lines: 0,
+                                                add_css_class: "error",
+                                                add_prefix = &gtk::Image {
+                                                    set_icon_name: Some("dialog-warning-symbolic"),
+                                                },
+                                                #[watch]
+                                                set_visible: model.server_fingerprint_mismatch.is_some(),
+
+                                                add_suffix = &gtk::Button {
+                                                    set_label: "Review…",
+                                                    set_valign: gtk::Align::Center,
+                                                    add_css_class: "pill",
+                                                    connect_clicked => AppMsg::ReviewServerFingerprint,
+                                                },
+                                            },
+
+                                            #[name(server_fingerprint_row)]
+                                            adw::ActionRow {
+                                                set_title: "Server certificate",
+                                                set_use_markup: false,
+                                                set_subtitle_lines: 0,
+                                                add_prefix = &gtk::Image {
+                                                    set_icon_name: Some("channel-secure-symbolic"),
+                                                },
+                                                #[watch]
+                                                set_visible: model.server_hostname.is_some(),
+                                                #[watch]
+                                                set_subtitle: &copy::server_certificate(model.server_fingerprint.as_deref()),
                                             },
                                         },
 
@@ -2190,6 +2282,8 @@ impl SimpleComponent for AppModel {
             updating_port_entry: updating_port_entry.clone(),
             port_entry: gtk::Entry::new(), // throwaway, overwritten below once `widgets` exists
             pk_fingerprint: String::new(),
+            server_fingerprint: None,
+            server_fingerprint_mismatch: None,
             capture_active: false,
             emulation_active: false,
             emulation_restarting: false,
@@ -2399,6 +2493,10 @@ impl SimpleComponent for AppModel {
                 if let Some(display) = gtk::gdk::Display::default() {
                     display.clipboard().set_text(&self.hostname);
                 }
+            }
+            AppMsg::ReviewServerFingerprint => self.present_server_fingerprint_dialog(&sender),
+            AppMsg::TrustServerFingerprint(fingerprint) => {
+                self.request(FrontendRequest::TrustServerFingerprint(fingerprint));
             }
             AppMsg::CopyFingerprint => {
                 if let Some(display) = gtk::gdk::Display::default() {
