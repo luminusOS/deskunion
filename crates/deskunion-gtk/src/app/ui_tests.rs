@@ -222,6 +222,13 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
             .is_visible()
     );
     assert!(controller.widgets().server_connect_button.is_sensitive());
+    // the primary action of the server form, as in the prototype (D2)
+    assert!(
+        controller
+            .widgets()
+            .server_connect_button
+            .has_css_class("suggested-action")
+    );
     assert_eq!(
         controller.widgets().server_host_entry.text(),
         "workstation.local"

@@ -1581,6 +1581,7 @@ impl SimpleComponent for AppModel {
                                                     set_sensitive: model.pending_server_test.is_none() && !model.server_host_draft.trim().is_empty(),
                                                     set_valign: gtk::Align::Center,
                                                     add_css_class: "pill",
+                                                    add_css_class: "suggested-action",
                                                     connect_clicked => AppMsg::ServerConnect,
                                                 },
                                             },
