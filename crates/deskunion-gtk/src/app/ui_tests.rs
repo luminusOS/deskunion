@@ -79,8 +79,10 @@ fn drain(connection: &mut std::os::unix::net::UnixStream) -> String {
     String::from_utf8_lossy(&sent).into_owned()
 }
 
+/// the requested window width covers the client-side decoration, which the
+/// allocated content width excludes by a compositor-dependent margin
 fn fits(window: &adw::ApplicationWindow, widget: &impl IsA<gtk::Widget>) -> bool {
-    widget.measure(gtk::Orientation::Horizontal, -1).0 <= window.width()
+    widget.measure(gtk::Orientation::Horizontal, -1).0 <= window.width_request()
 }
 
 #[test]

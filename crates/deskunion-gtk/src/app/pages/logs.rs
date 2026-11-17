@@ -6,6 +6,34 @@ use deskunion_ipc::FrontendEvent;
 use super::PageOutput;
 use super::log_state::{LogCategory, LogState};
 
+/// A label that gives up its tail before it widens the header bar: at large
+/// text sizes the default factory pushes the window past its minimum width.
+fn ellipsizing_factory() -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
+            let label = gtk::Label::builder()
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .build();
+            item.set_child(Some(&label));
+        }
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let text = item
+            .item()
+            .and_downcast::<gtk::StringObject>()
+            .map(|text| text.string());
+        if let Some(label) = item.child().and_downcast::<gtk::Label>() {
+            label.set_label(text.as_deref().unwrap_or_default());
+        }
+    });
+    factory
+}
+
 #[derive(Debug)]
 pub enum LogsMsg {
     Frontend(Box<FrontendEvent>),
@@ -38,6 +66,7 @@ impl SimpleComponent for LogsPage {
                 #[wrap(Some)]
                 set_title_widget = &gtk::DropDown {
                     set_model: Some(&gtk::StringList::new(&["All events", "Connections", "Audio", "Errors"])),
+                    set_factory: Some(&ellipsizing_factory()),
                     set_tooltip_text: Some("Filter events"),
                     update_property: &[gtk::accessible::Property::Label("Filter events")],
                     connect_selected_notify[sender] => move |dropdown| {
