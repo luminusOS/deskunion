@@ -8,7 +8,7 @@ Deskunion is an open-source Software KVM sharing mouse/keyboard input across loc
 
 - **Scope discipline.** Only implement what was requested; describe follow-up work instead of absorbing it.
 - **Clarify OS behavior.** Ask when requirements touch OS-specific capture/emulation (they differ significantly).
-- **Docs stay current.** Update [README.md](README.md) when touching public APIs or platform support, and [ARCHITECTURE.md](ARCHITECTURE.md) when changing how the pieces fit together.
+- **Docs stay current.** Update [README.md](README.md) and the matching file in [docs/](docs/) when touching public APIs or platform support, and [ARCHITECTURE.md](ARCHITECTURE.md) when changing how the pieces fit together.
 - **Rust idioms.** Use `Result`/`Option`, `thiserror` for errors, descriptive logs, and concise comments for non-obvious invariants.
 
 ## Terminology
