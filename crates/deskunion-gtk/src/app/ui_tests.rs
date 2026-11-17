@@ -97,7 +97,7 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
         .unwrap()
         .set_gtk_decoration_layout(Some(":close"));
     let app = adw::Application::builder()
-        .application_id("io.github.luminusos.DeskUnion.UITest")
+        .application_id("org.luminusos.DeskUnion.UITest")
         .build();
     app.register(None::<&gtk::gio::Cancellable>).unwrap();
 

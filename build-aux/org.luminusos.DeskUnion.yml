@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/flatpak/flatpak-builder/refs/heads/main/data/flatpak-manifest.schema.json
-app-id: io.github.luminusos.DeskUnion
+app-id: org.luminusos.DeskUnion
 runtime: org.gnome.Platform
 runtime-version: "50"
 sdk: org.gnome.Sdk
@@ -37,10 +37,10 @@ modules:
       - cargo fetch --manifest-path Cargo.toml --verbose
       - cargo build --release --locked
       - install -Dm0755 target/release/deskunion /app/bin/deskunion
-      - install -Dm0644 crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
-      - install -Dm0644 crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion-symbolic.svg ${FLATPAK_DEST}/share/icons/hicolor/symbolic/apps/${FLATPAK_ID}-symbolic.svg
-      - install -Dm0644 io.github.luminusos.DeskUnion.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
-      - install -Dm0644 io.github.luminusos.DeskUnion.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
+      - install -Dm0644 crates/deskunion-gtk/resources/org.luminusos.DeskUnion.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
+      - install -Dm0644 crates/deskunion-gtk/resources/org.luminusos.DeskUnion-symbolic.svg ${FLATPAK_DEST}/share/icons/hicolor/symbolic/apps/${FLATPAK_ID}-symbolic.svg
+      - install -Dm0644 org.luminusos.DeskUnion.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm0644 org.luminusos.DeskUnion.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
     sources:
       - type: dir
         path: ..

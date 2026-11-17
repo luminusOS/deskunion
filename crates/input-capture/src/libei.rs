@@ -352,7 +352,7 @@ async fn connect_to_eis(
     // create ei context
     let context = ei::Context::new(stream)?;
     let (conn, event_stream) = context
-        .handshake_tokio("io.github.luminusos.DeskUnion", ContextType::Receiver)
+        .handshake_tokio("org.luminusos.DeskUnion", ContextType::Receiver)
         .await?;
 
     Ok((context, conn, event_stream))

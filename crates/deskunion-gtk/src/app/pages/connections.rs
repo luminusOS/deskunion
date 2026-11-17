@@ -535,7 +535,7 @@ impl SimpleComponent for ConnectionsPage {
                     set_vexpand: true,
                     #[watch]
                     set_visible: model.mode() == OperationMode::Unconfigured,
-                    set_icon_name: Some("io.github.luminusos.DeskUnion"),
+                    set_icon_name: Some("org.luminusos.DeskUnion"),
                     set_title: "Share a keyboard and mouse",
                     set_description: Some("Choose what this computer does"),
 

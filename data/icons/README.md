@@ -7,12 +7,12 @@ desktops connected through shared input. The arrangement, rather than color
 alone, distinguishes the links. No lettering, computer screenshot, stock app
 identity, raster image, or external font is embedded.
 
-- Editable source: `io.github.luminusos.DeskUnion.Source.svg`, a 192×152 board
+- Editable source: `org.luminusos.DeskUnion.Source.svg`, a 192×152 board
   with named full-color, symbolic, and hidden guide layers.
-- Runtime full-color: `../../crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg`,
+- Runtime full-color: `../../crates/deskunion-gtk/resources/org.luminusos.DeskUnion.svg`,
   nominal 128×128. Flat GNOME Blue 3 / Green 2 surfaces, Blue 5 / Green 5
   lower profiles, 4px nominal depth. Artwork spans x=14…114 and y=12…116.
-- Runtime symbolic: `../../crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion-symbolic.svg`,
+- Runtime symbolic: `../../crates/deskunion-gtk/resources/org.luminusos.DeskUnion-symbolic.svg`,
   nominal 16×16, redrawn without perspective. The small interruption at the
   upper crossing separates the two links. Holes are transparent geometry.
 - Windows: `../../crates/deskunion-gtk/resources/deskunion.ico`, containing

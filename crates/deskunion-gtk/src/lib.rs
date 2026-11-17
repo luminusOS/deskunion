@@ -128,7 +128,7 @@ fn gtk_main() -> glib::ExitCode {
     }
 
     let app = Application::builder()
-        .application_id("io.github.luminusos.DeskUnion")
+        .application_id("org.luminusos.DeskUnion")
         .build();
 
     app.connect_startup(|app| {
@@ -206,7 +206,7 @@ fn configure_macos_bundle_environment() {
 
 fn load_css() {
     let provider = CssProvider::default();
-    provider.load_from_resource("io/github/luminusos/DeskUnion/style.css");
+    provider.load_from_resource("org/luminusos/DeskUnion/style.css");
     gtk::style_context_add_provider_for_display(
         &Display::default().expect("Could not connect to a display"),
         &provider,
@@ -217,7 +217,7 @@ fn load_css() {
 fn load_icons() {
     let display = &Display::default().expect("Could not connect to a display.");
     let icon_theme = IconTheme::for_display(display);
-    icon_theme.add_resource_path("/io/github/luminusos/DeskUnion/icons");
+    icon_theme.add_resource_path("/org/luminusos/DeskUnion/icons");
 }
 
 // Add application actions
@@ -240,7 +240,7 @@ fn setup_actions(app: &adw::Application) {
         move |_, _| {
             let dialog = adw::AboutDialog::builder()
                 .application_name("DeskUnion")
-                .application_icon("io.github.luminusos.DeskUnion")
+                .application_icon("org.luminusos.DeskUnion")
                 .version(option_env!("DESKUNION_APP_VERSION").unwrap_or("0.2.11"))
                 .developer_name("LuminusOS")
                 .website("https://github.com/luminusOS/deskunion")

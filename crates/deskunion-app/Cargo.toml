@@ -95,10 +95,10 @@ rdp_emulation = ["input-emulation/remote_desktop_portal"]
 
 [package.metadata.appimage]
 # PNG is rendered from the SVG by the AppImage workflow.
-icon = "../../target/io.github.luminusos.DeskUnion.png"
-desktop_entry = "../../io.github.luminusos.DeskUnion.desktop"
+icon = "../../target/org.luminusos.DeskUnion.png"
+desktop_entry = "../../org.luminusos.DeskUnion.desktop"
 # The desktop file's Icon= must resolve to a file in the AppDir root.
-assets = ["../../target/io.github.luminusos.DeskUnion.png"]
+assets = ["../../target/org.luminusos.DeskUnion.png"]
 auto_link = true
 auto_link_exclude_list = [
   "ld-linux*.so*",
@@ -120,8 +120,8 @@ auto_link_exclude_list = [
 
 [package.metadata.bundle]
 name = "Deskunion"
-icon = ["../../target/icon.icns", "../deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"]
-identifier = "io.github.luminusos.DeskUnion"
+icon = ["../../target/icon.icns", "../deskunion-gtk/resources/org.luminusos.DeskUnion.svg"]
+identifier = "org.luminusos.DeskUnion"
 deb_depends = ["libadwaita-1-0"]
 resources = ["../../target/menubar-template.png"]
 

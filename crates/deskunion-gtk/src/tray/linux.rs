@@ -16,8 +16,8 @@ use super::{
     menu::{Entry, TrayInfo, escape_underscores, menu_model},
 };
 
-const ICON_NAME: &str = "io.github.luminusos.DeskUnion-symbolic";
-// Generated from resources/io.github.luminusos.DeskUnion-symbolic.svg with:
+const ICON_NAME: &str = "org.luminusos.DeskUnion-symbolic";
+// Generated from resources/org.luminusos.DeskUnion-symbolic.svg with:
 // rsvg-convert --width 22 --height 22 --output resources/tray-symbolic.png <svg>
 const ICON_PNG: &[u8] = include_bytes!("../../resources/tray-symbolic.png");
 
@@ -77,7 +77,7 @@ impl Tray {
 
 impl ksni::Tray for Tray {
     fn id(&self) -> String {
-        "io.github.luminusos.DeskUnion".into()
+        "org.luminusos.DeskUnion".into()
     }
 
     fn title(&self) -> String {

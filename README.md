@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"
+  <img src="crates/deskunion-gtk/resources/org.luminusos.DeskUnion.svg"
        alt="DeskUnion logo"
        width="240">
 </p>

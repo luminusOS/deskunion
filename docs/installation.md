@@ -65,18 +65,18 @@ sudo cp path/to/deskunion /usr/local/bin/
 
 # install app icon
 sudo mkdir -p /usr/local/share/icons/hicolor/scalable/apps
-sudo cp crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg /usr/local/share/icons/hicolor/scalable/apps
+sudo cp crates/deskunion-gtk/resources/org.luminusos.DeskUnion.svg /usr/local/share/icons/hicolor/scalable/apps
 
 # install the symbolic app icon
 sudo mkdir -p /usr/local/share/icons/hicolor/symbolic/apps
-sudo cp crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion-symbolic.svg /usr/local/share/icons/hicolor/symbolic/apps
+sudo cp crates/deskunion-gtk/resources/org.luminusos.DeskUnion-symbolic.svg /usr/local/share/icons/hicolor/symbolic/apps
 
 # update icon cache
 gtk-update-icon-cache /usr/local/share/icons/hicolor/
 
 # install desktop entry
 sudo mkdir -p /usr/local/share/applications
-sudo cp io.github.luminusos.DeskUnion.desktop /usr/local/share/applications
+sudo cp org.luminusos.DeskUnion.desktop /usr/local/share/applications
 
 # when using firewalld: install the firewall rule, then enable the
 # service in the firewalld settings

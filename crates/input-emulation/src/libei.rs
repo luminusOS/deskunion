@@ -140,7 +140,7 @@ impl LibeiEmulation {
         stream.set_nonblocking(true)?;
         let context = ei::Context::new(stream)?;
         let (conn, events) = context
-            .handshake_tokio("io.github.luminusos.DeskUnion", ContextType::Sender)
+            .handshake_tokio("org.luminusos.DeskUnion", ContextType::Sender)
             .await?;
         let devices = Devices::default();
         let libei_error = Arc::new(AtomicBool::default());

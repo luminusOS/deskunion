@@ -8,7 +8,7 @@
             xmlns="https://specifications.freedesktop.org/metainfo/1.0"
             type="desktop"
         >
-			<id>io.github.luminusos.DeskUnion</id>
+			<id>org.luminusos.DeskUnion</id>
 			<name>DeskUnion</name>
 			<releases>
 				<release version="0.3.0">
@@ -26,14 +26,14 @@
                 target="foreground"
                 scale=".5"
                 type="svg"
-                path="src://crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg"
+                path="src://crates/deskunion-gtk/resources/org.luminusos.DeskUnion.svg"
             />
 			<color target="background">#FFFFFF</color>
 			<drawable
                 target="monochrome"
                 scale=".5"
                 type="svg"
-                path="src://crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion-symbolic.svg"
+                path="src://crates/deskunion-gtk/resources/org.luminusos.DeskUnion-symbolic.svg"
             />
 		</icon>
 	</style>

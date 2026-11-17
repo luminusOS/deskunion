@@ -36,8 +36,8 @@ jobs:
             exit 1
           fi
 
-          if ! grep -q "<release version=\"${APP_VERSION}\"" io.github.luminusos.DeskUnion.metainfo.xml; then
-            echo "io.github.luminusos.DeskUnion.metainfo.xml has no <release> for ${APP_VERSION}." >&2
+          if ! grep -q "<release version=\"${APP_VERSION}\"" org.luminusos.DeskUnion.metainfo.xml; then
+            echo "org.luminusos.DeskUnion.metainfo.xml has no <release> for ${APP_VERSION}." >&2
             exit 1
           fi
 
@@ -71,12 +71,12 @@ jobs:
             --default-branch="${BRANCH}" \
             --repo=target/flatpak/repo \
             target/flatpak/build \
-            build-aux/io.github.luminusos.DeskUnion.yml
+            build-aux/org.luminusos.DeskUnion.yml
           flatpak build-bundle \
             --arch="${ARCH}" \
             target/flatpak/repo \
             "dist/${BUNDLE}" \
-            io.github.luminusos.DeskUnion \
+            org.luminusos.DeskUnion \
             "${BRANCH}"
 
       - name: Verify the bundle ref
@@ -89,7 +89,7 @@ jobs:
           check="$(mktemp -d)"
           ostree init --repo="${check}/repo" --mode=archive-z2
           flatpak build-import-bundle --no-update-summary "${check}/repo" "dist/${BUNDLE}"
-          test "$(ostree refs --repo="${check}/repo" --list)" = "app/io.github.luminusos.DeskUnion/${ARCH}/${BRANCH}"
+          test "$(ostree refs --repo="${check}/repo" --list)" = "app/org.luminusos.DeskUnion/${ARCH}/${BRANCH}"
           rm -rf "${check}"
 
       - name: Upload release assets

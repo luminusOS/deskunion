@@ -94,8 +94,8 @@ jobs:
           set -euo pipefail
           mkdir -p target
           rsvg-convert -w 256 -h 256 \
-            crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg \
-            -o target/io.github.luminusos.DeskUnion.png
+            crates/deskunion-gtk/resources/org.luminusos.DeskUnion.svg \
+            -o target/org.luminusos.DeskUnion.png
           (
             cd crates/deskunion-app
             # cargo-appimage 2.4.0 cannot resolve virtual-workspace lint inheritance.

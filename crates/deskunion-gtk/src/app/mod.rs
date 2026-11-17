@@ -307,7 +307,7 @@ impl SimpleComponent for AppModel {
             set_default_width: 1100,
             set_default_height: 750,
             set_title: Some("DeskUnion"),
-            set_icon_name: Some("io.github.luminusos.DeskUnion"),
+            set_icon_name: Some("org.luminusos.DeskUnion"),
 
             #[name(toast_overlay)]
             adw::ToastOverlay {

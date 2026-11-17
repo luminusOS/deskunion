@@ -18,7 +18,7 @@ deskunion_deps = []
 deskunion_deps += dependency('gtk4', version: '>= 4.14')
 deskunion_deps += dependency('libadwaita-1', version: '>= 1.5')
 
-application_id = 'io.github.luminusos.DeskUnion'
+application_id = 'org.luminusos.DeskUnion'
 application_name = 'DeskUnion'
 
 prefix = get_option('prefix')
@@ -27,22 +27,22 @@ datadir = prefix / get_option('datadir')
 iconsdir = datadir / 'icons'
 
 install_data(
-    'io.github.luminusos.DeskUnion.metainfo.xml',
+    'org.luminusos.DeskUnion.metainfo.xml',
     install_dir: datadir / 'metainfo',
 )
 
 install_data(
-    'io.github.luminusos.DeskUnion.desktop',
+    'org.luminusos.DeskUnion.desktop',
     install_dir: datadir / 'applications',
 )
 
 install_data(
-    'crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion.svg',
+    'crates/deskunion-gtk/resources/org.luminusos.DeskUnion.svg',
     install_dir: iconsdir / 'hicolor' / 'scalable' / 'apps',
 )
 
 install_data(
-    'crates/deskunion-gtk/resources/io.github.luminusos.DeskUnion-symbolic.svg',
+    'crates/deskunion-gtk/resources/org.luminusos.DeskUnion-symbolic.svg',
     install_dir: iconsdir / 'hicolor' / 'symbolic' / 'apps',
 )
 
