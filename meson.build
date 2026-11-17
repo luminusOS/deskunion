@@ -1,7 +1,7 @@
 project(
     'deskunion',
     'rust',
-    version: '0.2.11',
+    version: '0.3.0',
     meson_version: '>= 1.12.0',
     default_options: [
         'warning_level=2',

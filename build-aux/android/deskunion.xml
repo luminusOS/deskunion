@@ -11,9 +11,9 @@
 			<id>io.github.luminusos.DeskUnion</id>
 			<name>DeskUnion</name>
 			<releases>
-				<release version="0.2.11">
+				<release version="0.3.0">
 					<description>
-						<p>Initial Android release</p>
+						<p>Rebuilt interface on libadwaita navigation</p>
 					</description>
 				</release>
 			</releases>

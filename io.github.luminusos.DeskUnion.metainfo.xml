@@ -47,6 +47,11 @@
   <launchable type="desktop-id">io.github.luminusos.DeskUnion.desktop</launchable>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.3.0" date="2026-11-17">
+      <description>
+        <p>Rebuilds the window on libadwaita navigation and pages: the sidebar collapses on narrow screens, each view has one suggested action, and the role is chosen on a first-run page and in Settings. Rows of clients that are not connected now say Offline, and Connect shows a spinner while the server is checked. A client pins the server certificate the first time it connects and refuses a different one until you trust it. Recovers capture and emulation sessions that the desktop ended, stops wlroots from dropping emulated input, ignores outputs that were removed, and fixes the tray fallback icon on Linux. Android APKs are now named like the other release assets.</p>
+      </description>
+    </release>
     <release version="0.2.11" date="2026-11-04">
       <description>
         <p>Adds Android APK packaging support via GTK Android Builder (Pixiewood) and Meson, exports JNI main entrypoint, runs background service in-process on Android, and adds Android APK build to CI and release workflows.</p>
