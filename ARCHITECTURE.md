@@ -483,6 +483,12 @@ DESKUNION_UI_CAPTURE_DIR=/tmp/captures \
   cargo test -p deskunion-gtk --features ui-tests app::ui_tests -- --test-threads=1
 ```
 
+Without a desktop, run the graphical test on a headless Wayland compositor
+(`mutter --headless --wayland --no-x11 --virtual-monitor 1400x1000
+--wayland-display=wayland-hl`, then `WAYLAND_DISPLAY=wayland-hl GDK_BACKEND=wayland`
+inside `dbus-run-session`). Captures taken there keep the rounded window
+corners; Xvfb draws them square and defaults to a 640 × 480 screen.
+
 The `dummy` backends exercise the pipeline without real devices, and
 `capture_test` / `emulation_test` run a backend by hand (`deskunion test-capture`,
 `deskunion test-emulation`). Backends that need a real desktop (portals,
