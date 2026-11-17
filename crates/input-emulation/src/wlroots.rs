@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wayland_client::WEnum;
 use wayland_client::backend::WaylandError;
 
@@ -38,6 +38,9 @@ use super::error::WaylandBindError;
 struct State {
     keymap: Option<(u32, OwnedFd, u32)>,
     keyboard: Option<Vk>,
+    /// the seat keyboard the keymap comes from; events are dispatched for the
+    /// whole session now, and a repeated `Capabilities` must not add another
+    seat_keyboard: Option<wl_keyboard::WlKeyboard>,
     input_for_client: HashMap<EmulationHandle, VirtualInput>,
     seat: wl_seat::WlSeat,
     qh: QueueHandle<Self>,
@@ -47,12 +50,73 @@ struct State {
 
 // App State, implements Dispatch event handlers
 pub(crate) struct WlrootsEmulation {
-    last_flush_failed: bool,
     state: State,
     queue: EventQueue<State>,
 }
 
+/// How long the compositor may leave our requests unread before the session is
+/// given up; the emulation task then starts a new one.
+const OUTPUT_STALL_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Reads and dispatches the compositor's replies. Left unread they fill the
+/// socket in the other direction until the compositor stops reading our
+/// requests too. This backend is the connection's only reader.
+fn dispatch_incoming(
+    queue: &mut EventQueue<State>,
+    state: &mut State,
+) -> Result<(), EmulationError> {
+    queue.dispatch_pending(state).map_err(io::Error::other)?;
+    if let Some(guard) = queue.prepare_read() {
+        match guard.read() {
+            Ok(_) => {}
+            Err(WaylandError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    queue.dispatch_pending(state).map_err(io::Error::other)?;
+    Ok(())
+}
+
+/// Calls `flush` until it reports everything sent (`Ok(true)`), waiting a
+/// moment while the socket is full (`Ok(false)`). Requests are never dropped:
+/// dropping a key-up leaves a key stuck. A socket that stays full for
+/// `timeout` fails the session instead.
+async fn flush_within(
+    timeout: Duration,
+    mut flush: impl FnMut() -> Result<bool, EmulationError>,
+) -> Result<(), EmulationError> {
+    let started = tokio::time::Instant::now();
+    let mut retried = false;
+    loop {
+        if flush()? {
+            if retried {
+                log::debug!("wayland output recovered after {:?}", started.elapsed());
+            }
+            return Ok(());
+        }
+        retried = true;
+        if started.elapsed() >= timeout {
+            return Err(EmulationError::WaylandOutputBlocked(timeout));
+        }
+        // yield to the runtime while the compositor drains the socket
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
 impl WlrootsEmulation {
+    async fn flush_pending(&mut self) -> Result<(), EmulationError> {
+        let (queue, state) = (&mut self.queue, &mut self.state);
+        flush_within(OUTPUT_STALL_TIMEOUT, || {
+            dispatch_incoming(queue, state)?;
+            match queue.flush() {
+                Ok(()) => Ok(true),
+                Err(WaylandError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
+                Err(e) => Err(e.into()),
+            }
+        })
+        .await
+    }
+
     pub(crate) fn new() -> Result<Self, WlrootsEmulationCreationError> {
         let conn = Connection::connect_to_env()?;
         let (globals, queue) = registry_queue_init::<State>(&conn)?;
@@ -72,10 +136,10 @@ impl WlrootsEmulation {
         let input_for_client: HashMap<EmulationHandle, VirtualInput> = HashMap::new();
 
         let mut emulate = WlrootsEmulation {
-            last_flush_failed: false,
             state: State {
                 keymap: None,
                 keyboard: None,
+                seat_keyboard: None,
                 input_for_client,
                 seat,
                 vpm,
@@ -140,46 +204,25 @@ impl Emulation for WlrootsEmulation {
         event: Event,
         handle: EmulationHandle,
     ) -> Result<(), EmulationError> {
+        dispatch_incoming(&mut self.queue, &mut self.state)?;
         if let Some(virtual_input) = self.state.input_for_client.get(&handle) {
-            if self.last_flush_failed {
-                match self.queue.flush() {
-                    Err(WaylandError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
-                        /*
-                         * outgoing buffer is full - sending more events
-                         * will overwhelm the output buffer and leave the
-                         * wayland connection in a broken state
-                         */
-                        log::warn!("can't keep up, discarding event: ({handle}) - {event:?}");
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-            }
             virtual_input
                 .consume_event(event)
                 .unwrap_or_else(|_| panic!("failed to convert event: {event:?}"));
-            match self.queue.flush() {
-                Err(WaylandError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.last_flush_failed = true;
-                    log::warn!("can't keep up, discarding event: ({handle}) - {event:?}");
-                }
-                Err(WaylandError::Protocol(e)) => panic!("wayland protocol violation: {e}"),
-                Ok(()) => self.last_flush_failed = false,
-                Err(e) => Err(e)?,
-            }
+            self.flush_pending().await?;
         }
         Ok(())
     }
 
     async fn create(&mut self, handle: EmulationHandle) {
         self.state.add_client(handle);
-        if let Err(e) = self.queue.flush() {
+        if let Err(e) = self.flush_pending().await {
             log::error!("{e}");
         }
     }
     async fn destroy(&mut self, handle: EmulationHandle) {
         self.state.destroy_client(handle);
-        if let Err(e) = self.queue.flush() {
+        if let Err(e) = self.flush_pending().await {
             log::error!("{e}");
         }
     }
@@ -196,6 +239,8 @@ struct VirtualInput {
 
 impl VirtualInput {
     fn consume_event(&self, event: Event) -> Result<(), ()> {
+        // the peer's timestamps use its own clock and unit (libei sends microseconds,
+        // windows and macos send 0); clients compare them to detect double clicks
         let now: u32 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -204,18 +249,14 @@ impl VirtualInput {
         match event {
             Event::Pointer(e) => {
                 match e {
-                    PointerEvent::Motion { time, dx, dy } => self.pointer.motion(time, dx, dy),
-                    PointerEvent::Button {
-                        time,
-                        button,
-                        state,
-                    } => {
+                    PointerEvent::Motion { dx, dy, .. } => self.pointer.motion(now, dx, dy),
+                    PointerEvent::Button { button, state, .. } => {
                         let state: ButtonState = state.try_into()?;
-                        self.pointer.button(time, button, state);
+                        self.pointer.button(now, button, state);
                     }
-                    PointerEvent::Axis { time, axis, value } => {
+                    PointerEvent::Axis { axis, value, .. } => {
                         let axis: Axis = (axis as u32).try_into()?;
-                        self.pointer.axis(time, axis, value);
+                        self.pointer.axis(now, axis, value);
                         // without a source wlroots reports wheel input, which makes
                         // touchpad scrolling stutter
                         self.pointer.axis_source(AxisSource::Continuous);
@@ -232,8 +273,8 @@ impl VirtualInput {
                 self.pointer.frame();
             }
             Event::Keyboard(e) => match e {
-                KeyboardEvent::Key { time, key, state } => {
-                    self.keyboard.key(time, key, state as u32);
+                KeyboardEvent::Key { key, state, .. } => {
+                    self.keyboard.key(now, key, state as u32);
                     if let Ok(mut mods) = self.modifiers.lock()
                         && mods.update_by_key_event(key, state)
                     {
@@ -299,7 +340,7 @@ impl Dispatch<WlKeyboard, ()> for State {
 
 impl Dispatch<WlSeat, ()> for State {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         seat: &WlSeat,
         event: <WlSeat as wayland_client::Proxy>::Event,
         _: &(),
@@ -310,8 +351,9 @@ impl Dispatch<WlSeat, ()> for State {
             capabilities: WEnum::Value(capabilities),
         } = event
             && capabilities.contains(wl_seat::Capability::Keyboard)
+            && state.seat_keyboard.is_none()
         {
-            seat.get_keyboard(qhandle, ());
+            state.seat_keyboard = Some(seat.get_keyboard(qhandle, ()));
         }
     }
 }
@@ -384,5 +426,51 @@ impl XMods {
 
     fn mask_pressed(&self) -> XMods {
         *self & (XMods::ShiftMask | XMods::ControlMask | XMods::Mod1Mask | XMods::Mod4Mask)
+    }
+}
+
+#[cfg(test)]
+mod flush_tests {
+    use super::*;
+
+    /// a compositor that stops reading must fail the session within the
+    /// timeout, so the emulation task can start a new one
+    #[tokio::test(start_paused = true)]
+    async fn a_socket_that_stays_full_fails_the_session() {
+        let mut calls = 0;
+        let started = tokio::time::Instant::now();
+        let result = flush_within(OUTPUT_STALL_TIMEOUT, || {
+            calls += 1;
+            Ok(false)
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(EmulationError::WaylandOutputBlocked(_))
+        ));
+        assert!(started.elapsed() >= OUTPUT_STALL_TIMEOUT);
+        assert!(started.elapsed() < OUTPUT_STALL_TIMEOUT * 2);
+        assert!(calls > 1, "retried while waiting");
+    }
+
+    /// a short stall is waited out: nothing is dropped and no error is raised
+    #[tokio::test(start_paused = true)]
+    async fn a_short_stall_is_waited_out() {
+        let mut full = 3;
+        let result = flush_within(OUTPUT_STALL_TIMEOUT, || {
+            full -= 1;
+            Ok(full < 0)
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(full, -1, "flushed again until everything was sent");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_broken_connection_is_reported_at_once() {
+        let started = tokio::time::Instant::now();
+        let result = flush_within(OUTPUT_STALL_TIMEOUT, || Err(EmulationError::EndOfStream)).await;
+        assert!(matches!(result, Err(EmulationError::EndOfStream)));
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
 }

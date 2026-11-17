@@ -27,6 +27,9 @@ pub enum EmulationError {
     Libei(#[from] reis::Error),
     #[cfg(wlroots)]
     #[error("wayland error: `{0}`")]
+    #[cfg(wlroots)]
+    #[error("the compositor did not read input for {0:?}")]
+    WaylandOutputBlocked(std::time::Duration),
     Wayland(#[from] wayland_client::backend::WaylandError),
     #[cfg(any(rdp, libei))]
     #[error("xdg-desktop-portal: `{0}`")]
