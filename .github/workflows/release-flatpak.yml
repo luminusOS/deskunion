@@ -41,16 +41,26 @@ jobs:
             exit 1
           fi
 
+          case "$TAG" in
+            *-rc*) BRANCH=testing ;;
+            *) BRANCH=stable ;;
+          esac
+
           mkdir -p dist
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "bundle_name=deskunion-${VERSION}-linux-${{ matrix.arch }}.flatpak" >> "$GITHUB_OUTPUT"
 
       - name: Install Flatpak builder
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder
+          sudo apt-get install -y appstream flatpak flatpak-builder ostree
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
       - name: Build Flatpak
+        env:
+          BRANCH: ${{ steps.names.outputs.branch }}
+          BUNDLE: ${{ steps.names.outputs.bundle_name }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           flatpak-builder \
@@ -58,18 +68,33 @@ jobs:
             --force-clean \
             --disable-rofiles-fuse \
             --install-deps-from=flathub \
+            --default-branch="${BRANCH}" \
             --repo=target/flatpak/repo \
             target/flatpak/build \
             build-aux/io.github.luminusos.DeskUnion.yml
           flatpak build-bundle \
+            --arch="${ARCH}" \
             target/flatpak/repo \
-            "dist/${{ steps.names.outputs.bundle_name }}" \
+            "dist/${BUNDLE}" \
             io.github.luminusos.DeskUnion \
-            master
+            "${BRANCH}"
+
+      - name: Verify the bundle ref
+        env:
+          BRANCH: ${{ steps.names.outputs.branch }}
+          BUNDLE: ${{ steps.names.outputs.bundle_name }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          check="$(mktemp -d)"
+          ostree init --repo="${check}/repo" --mode=archive-z2
+          flatpak build-import-bundle --no-update-summary "${check}/repo" "dist/${BUNDLE}"
+          test "$(ostree refs --repo="${check}/repo" --list)" = "app/io.github.luminusos.DeskUnion/${ARCH}/${BRANCH}"
+          rm -rf "${check}"
 
       - name: Upload release assets
         uses: actions/upload-artifact@v4
         with:
           name: flatpak-${{ matrix.arch }}
           path: dist/${{ steps.names.outputs.bundle_name }}
-          retention-days: 1
+          if-no-files-found: error
