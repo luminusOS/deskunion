@@ -28,3 +28,31 @@ fn unconfigured_mode_does_not_claim_server_is_selected() {
     assert_eq!(operation_mode_index(OperationMode::Server), 1);
     assert_eq!(operation_mode_index(OperationMode::Client), 2);
 }
+
+/// While input emulation restarts on its own (screen lock, a reset EIS
+/// socket) the client must say so, not claim emulation is disabled and ask
+/// the user to re-enable it.
+#[test]
+fn a_restarting_emulation_is_not_reported_as_disabled() {
+    use super::{ClientEmulation, client_emulation};
+    assert_eq!(
+        client_emulation(true, false, true),
+        ClientEmulation::Running
+    );
+    assert_eq!(
+        client_emulation(false, true, true),
+        ClientEmulation::Restarting
+    );
+    assert_eq!(
+        client_emulation(false, false, true),
+        ClientEmulation::Disabled
+    );
+    assert_eq!(
+        client_emulation(false, false, false),
+        ClientEmulation::Stopped
+    );
+    assert_eq!(
+        client_emulation(false, true, false),
+        ClientEmulation::Stopped
+    );
+}

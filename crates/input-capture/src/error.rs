@@ -57,6 +57,30 @@ pub enum CaptureError {
     EventTapDisabled,
 }
 
+impl InputCaptureError {
+    /// the user denied the permission request for input capture
+    pub fn cancelled_by_user(&self) -> bool {
+        matches!(self, Self::Create(e) if e.cancelled_by_user())
+    }
+
+    /// whether the desktop ended the session on its own (screen lock, a
+    /// compositor reset), which a new session fixes
+    pub fn session_closed(&self) -> bool {
+        matches!(self, Self::Capture(e) if e.session_closed())
+    }
+}
+
+impl CaptureError {
+    fn session_closed(&self) -> bool {
+        match self {
+            Self::ActivationClosed | Self::EndOfStream => true,
+            #[cfg(libei)]
+            Self::Disconnected(_) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum CaptureCreationError {
     #[error("no backend available")]
@@ -158,4 +182,34 @@ pub enum MacosCaptureCreationError {
     #[cfg(target_os = "macos")]
     #[error("failed to get display ids: {0}")]
     ActiveDisplays(CGError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_the_desktop_closed_is_told_apart_from_a_failure() {
+        let closed: InputCaptureError = CaptureError::ActivationClosed.into();
+        assert!(closed.session_closed());
+        let ended: InputCaptureError = CaptureError::EndOfStream.into();
+        assert!(ended.session_closed());
+        #[cfg(libei)]
+        {
+            let disconnected: InputCaptureError =
+                CaptureError::Disconnected("compositor reset".into()).into();
+            assert!(disconnected.session_closed());
+            let denied: InputCaptureError = CaptureCreationError::Libei(
+                LibeiCaptureCreationError::Ashpd(ashpd::Error::Response(ResponseError::Cancelled)),
+            )
+            .into();
+            assert!(denied.cancelled_by_user());
+            assert!(!denied.session_closed());
+        }
+        let io: InputCaptureError =
+            CaptureError::Io(std::io::ErrorKind::PermissionDenied.into()).into();
+        assert!(!io.session_closed());
+        let missing: InputCaptureError = CaptureCreationError::NoAvailableBackend.into();
+        assert!(!missing.session_closed() && !missing.cancelled_by_user());
+    }
 }

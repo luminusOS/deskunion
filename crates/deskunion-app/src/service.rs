@@ -522,6 +522,13 @@ impl Service {
                     self.notify_frontend(FrontendEvent::DeviceConnected { addr, fingerprint });
                 }
             }
+            EmulationEvent::EmulationRestarting { delay } => {
+                // the dial survives a short restart: keep the server target,
+                // the server sees `Pong(false)` until emulation is back
+                log::warn!("input emulation stopped; restarting it in {delay:?}");
+                let retry_in_ms = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
+                self.notify_frontend(FrontendEvent::EmulationRestarting { retry_in_ms });
+            }
         }
     }
 

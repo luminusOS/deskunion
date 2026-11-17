@@ -1,10 +1,5 @@
-// `AdwActionRow::set_icon_name` is deprecated since libadwaita 1.3 with no
-// replacement offered in the bindings (the C API is still fully
-// supported, just flagged) — same situation relm4's own `components.rs`
-// example hits, silenced the same way there.
-#![allow(deprecated)]
-
 mod audio;
+mod copy;
 mod logs;
 #[cfg(test)]
 mod tests;
@@ -54,6 +49,30 @@ fn parse_listening_port(text: &str) -> Option<u16> {
         Some(DEFAULT_PORT)
     } else {
         text.parse::<u16>().ok().filter(|port| *port != 0)
+    }
+}
+
+/// What the input emulation of a client is doing, as the window shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClientEmulation {
+    Running,
+    /// ended on its own and starts again shortly
+    Restarting,
+    /// meant to run but off: needs the user
+    Disabled,
+    /// stopped by the user
+    Stopped,
+}
+
+fn client_emulation(active: bool, restarting: bool, wanted_running: bool) -> ClientEmulation {
+    if active {
+        ClientEmulation::Running
+    } else if !wanted_running {
+        ClientEmulation::Stopped
+    } else if restarting {
+        ClientEmulation::Restarting
+    } else {
+        ClientEmulation::Disabled
     }
 }
 
@@ -195,6 +214,8 @@ pub struct AppModel {
 
     capture_active: bool,
     emulation_active: bool,
+    /// the emulation session ended on its own and is being started again
+    emulation_restarting: bool,
     /// whether the user wants the pipeline running (pressed Start, or it
     /// came up by itself at service boot). Gates the "capture/emulation
     /// is disabled" warning rows so an intentional Stop doesn't look like
@@ -397,20 +418,34 @@ impl AppModel {
             }
             OperationMode::Server if self.service_wanted_running => "Capture disabled".to_string(),
             OperationMode::Server => "Sharing stopped".to_string(),
-            OperationMode::Client if self.emulation_active => "Client running".to_string(),
-            OperationMode::Client if self.service_wanted_running => {
-                "Emulation disabled".to_string()
+            OperationMode::Client => match self.client_emulation() {
+                ClientEmulation::Running => "Client running",
+                ClientEmulation::Restarting => "Restarting input emulation…",
+                ClientEmulation::Disabled => "Emulation disabled",
+                ClientEmulation::Stopped => "Sharing stopped",
             }
-            OperationMode::Client => "Sharing stopped".to_string(),
+            .to_string(),
         }
     }
 
-    /// whether the active role's input pipeline is currently up
+    fn client_emulation(&self) -> ClientEmulation {
+        client_emulation(
+            self.emulation_active,
+            self.emulation_restarting,
+            self.service_wanted_running,
+        )
+    }
+
+    /// whether the active role's input pipeline is currently up; a client
+    /// restarting its emulation still runs and offers Stop, not Start
     fn service_running(&self) -> bool {
         match self.operation_mode {
             OperationMode::Unconfigured => false,
             OperationMode::Server => self.capture_active,
-            OperationMode::Client => self.emulation_active,
+            OperationMode::Client => matches!(
+                self.client_emulation(),
+                ClientEmulation::Running | ClientEmulation::Restarting
+            ),
         }
     }
 
@@ -478,6 +513,9 @@ impl AppModel {
                 }
             }
             OperationMode::Client if self.emulation_active => "Client · running".to_string(),
+            OperationMode::Client if self.client_emulation() == ClientEmulation::Restarting => {
+                "Client · restarting input emulation…".to_string()
+            }
             OperationMode::Client => "Client · stopped".to_string(),
         }
     }
@@ -490,7 +528,10 @@ impl AppModel {
         };
         if active {
             "success"
-        } else if self.backend_attention_required() {
+        } else if self.backend_attention_required()
+            || (self.operation_mode == OperationMode::Client
+                && self.client_emulation() == ClientEmulation::Restarting)
+        {
             "warning"
         } else {
             "inactive"
@@ -577,8 +618,7 @@ impl AppModel {
 
     fn emulation_row_visible(&self) -> bool {
         self.operation_mode == OperationMode::Client
-            && !self.emulation_active
-            && self.service_wanted_running
+            && self.client_emulation() == ClientEmulation::Disabled
     }
 
     fn backend_attention_required(&self) -> bool {
@@ -697,7 +737,7 @@ impl AppModel {
                 if config.fingerprint.is_some() {
                     let pos = config.pos;
                     self.toast_overlay
-                        .add_toast(adw::Toast::new(&format!("device paired on the {pos}")));
+                        .add_toast(adw::Toast::new(&copy::device_paired(pos)));
                 }
                 self.upsert_client(handle, config, state)
             }
@@ -769,7 +809,12 @@ impl AppModel {
                     self.service_wanted_running = true;
                 }
             }
+            FrontendEvent::EmulationRestarting { .. } => {
+                self.emulation_active = false;
+                self.emulation_restarting = true;
+            }
             FrontendEvent::EmulationStatus(status) => {
+                self.emulation_restarting = false;
                 self.emulation_active = status == Status::Enabled;
                 if self.emulation_active {
                     self.service_wanted_running = true;
@@ -828,9 +873,8 @@ impl AppModel {
                                     });
                             self.parked_devices_by_addr.insert(addr, index);
                         }
-                        self.toast_overlay.add_toast(adw::Toast::new(&format!(
-                            "device connected: {addr} — every screen edge is taken, assign a position"
-                        )));
+                        self.toast_overlay
+                            .add_toast(adw::Toast::new(&copy::device_waiting(addr)));
                     }
                     // client mode: the dial to the configured server
                     // succeeded — reflect it in the server status line
@@ -838,7 +882,7 @@ impl AppModel {
                         self.server_connected_addr = Some(addr);
                         self.server_retry = None;
                         self.toast_overlay
-                            .add_toast(adw::Toast::new(&format!("connected to server {addr}")));
+                            .add_toast(adw::Toast::new(&copy::connected_to_server(addr)));
                     }
                 }
             }
@@ -1423,7 +1467,9 @@ impl SimpleComponent for AppModel {
                                                 set_title: "This computer",
                                                 set_use_markup: false,
                                                 set_subtitle_lines: 0,
-                                                set_icon_name: Some("computer-symbolic"),
+                                                add_prefix = &gtk::Image {
+                                                    set_icon_name: Some("computer-symbolic"),
+                                                },
                                                 #[watch]
                                                 set_subtitle: &format!("{} · UDP port {}", model.hostname, model.port),
                                             },
@@ -1486,7 +1532,9 @@ impl SimpleComponent for AppModel {
                                                 set_title: "Connection test failed",
                                                 set_use_markup: false,
                                                 set_subtitle_lines: 0,
-                                                set_icon_name: Some("dialog-warning-symbolic"),
+                                                add_prefix = &gtk::Image {
+                                                    set_icon_name: Some("dialog-warning-symbolic"),
+                                                },
                                                 #[watch]
                                                 set_visible: model.server_connection_error.is_some(),
                                                 #[watch]
@@ -1519,7 +1567,9 @@ impl SimpleComponent for AppModel {
                                                 set_title: "Certificate fingerprint",
                                                 set_use_markup: false,
                                                 set_subtitle_lines: 0,
-                                                set_icon_name: Some("auth-fingerprint-symbolic"),
+                                                add_prefix = &gtk::Image {
+                                                    set_icon_name: Some("auth-fingerprint-symbolic"),
+                                                },
                                                 #[watch]
                                                 set_subtitle: &model.pk_fingerprint,
 
@@ -1554,7 +1604,9 @@ impl SimpleComponent for AppModel {
                                                 #[watch]
                                                 set_visible: model.capture_row_visible(),
                                                 add_css_class: "warning",
-                                                set_icon_name: Some("dialog-warning-symbolic"),
+                                                add_prefix = &gtk::Image {
+                                                    set_icon_name: Some("dialog-warning-symbolic"),
+                                                },
                                                 #[watch]
                                                 set_title: model.capture_row_title(),
                                                 #[watch]
@@ -1574,7 +1626,9 @@ impl SimpleComponent for AppModel {
                                                 #[watch]
                                                 set_visible: model.emulation_row_visible(),
                                                 add_css_class: "warning",
-                                                set_icon_name: Some("dialog-warning-symbolic"),
+                                                add_prefix = &gtk::Image {
+                                                    set_icon_name: Some("dialog-warning-symbolic"),
+                                                },
                                                 set_title: "Input emulation is disabled",
                                                 set_subtitle: "Required for incoming connections",
 
@@ -1923,7 +1977,9 @@ impl SimpleComponent for AppModel {
                                                 set_title: "Certificate fingerprint",
                                                 set_use_markup: false,
                                                 set_subtitle_lines: 0,
-                                                set_icon_name: Some("auth-fingerprint-symbolic"),
+                                                add_prefix = &gtk::Image {
+                                                    set_icon_name: Some("auth-fingerprint-symbolic"),
+                                                },
                                                 #[watch]
                                                 set_subtitle: &model.pk_fingerprint,
 
@@ -2055,8 +2111,8 @@ impl SimpleComponent for AppModel {
             .build();
         authorized_list.set_placeholder(Some(
             &adw::ActionRow::builder()
-                .title("No authorized devices")
-                .subtitle("Authorize a device using its certificate fingerprint")
+                .title(copy::NO_AUTHORIZED_DEVICES.0)
+                .subtitle(copy::NO_AUTHORIZED_DEVICES.1)
                 .build(),
         ));
         let authorized_rows = FactoryVecDeque::<KeyRowModel>::builder()
@@ -2069,8 +2125,8 @@ impl SimpleComponent for AppModel {
             .build();
         incoming_device_list.set_placeholder(Some(
             &adw::ActionRow::builder()
-                .title("No Devices Controlling This Computer")
-                .subtitle("Paired devices appear here when they send input")
+                .title(copy::NO_INCOMING_DEVICES.0)
+                .subtitle(copy::NO_INCOMING_DEVICES.1)
                 .build(),
         ));
         let incoming_device_rows = FactoryVecDeque::<IncomingDeviceRowModel>::builder()
@@ -2083,10 +2139,8 @@ impl SimpleComponent for AppModel {
             .build();
         parked_device_list.set_placeholder(Some(
             &adw::ActionRow::builder()
-                .title("no devices waiting")
-                .subtitle(
-                    "devices are paired automatically on the first free screen edge; they only wait here when all four are taken",
-                )
+                .title(copy::NO_PARKED_DEVICES.0)
+                .subtitle(copy::NO_PARKED_DEVICES.1)
                 .build(),
         ));
         let parked_device_rows = FactoryVecDeque::<ParkedDeviceRowModel>::builder()
@@ -2099,8 +2153,8 @@ impl SimpleComponent for AppModel {
             .build();
         audio_stream_list.set_placeholder(Some(
             &adw::ActionRow::builder()
-                .title("No Active Audio Streams")
-                .subtitle("Enable audio sharing on the sending and receiving computers")
+                .title(copy::NO_AUDIO_STREAMS.0)
+                .subtitle(copy::NO_AUDIO_STREAMS.1)
                 .build(),
         ));
         let audio_stream_rows = FactoryVecDeque::<AudioStreamRowModel>::builder()
@@ -2138,6 +2192,7 @@ impl SimpleComponent for AppModel {
             pk_fingerprint: String::new(),
             capture_active: false,
             emulation_active: false,
+            emulation_restarting: false,
             service_wanted_running: false,
             client_rows,
             authorized_rows,

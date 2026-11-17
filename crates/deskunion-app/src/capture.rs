@@ -149,6 +149,8 @@ impl Capture {
             rejected_connections: Default::default(),
             request_rx,
             release_bind: Rc::new(RefCell::new(release_bind)),
+            released_at: None,
+            session_ran: false,
             state: Default::default(),
         };
         let task = spawn_local(capture_task.run());
@@ -294,7 +296,68 @@ struct CaptureTask {
     release_bind: Rc<RefCell<Vec<scancode::Linux>>>,
     request_rx: Receiver<CaptureRequest>,
     state: State,
+    /// when the pointer last came back from a client
+    released_at: Option<Instant>,
+    /// the last capture session got its barriers set up
+    session_ran: bool,
 }
+
+/// Delays before a capture session that the desktop closed on its own
+/// (screen lock, a monitor change, a portal restart) is started again. While
+/// the screen stays locked the portal keeps refusing a new session, so the
+/// retries back off and stop at the last delay.
+const CAPTURE_RETRY: [Duration; 6] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+];
+
+/// The delay before the next capture session. `recovering` counts the
+/// attempts since the desktop closed the last good session: once that
+/// happened, a failed re-creation is retried too (the portal refuses while
+/// the screen is locked), but never a denied permission. A session that
+/// got running (`ran`) ends the recovery: a later unrelated error needs
+/// the user again.
+fn capture_retry(
+    result: &Result<(), InputCaptureError>,
+    ran: bool,
+    recovering: &mut Option<usize>,
+) -> Option<Duration> {
+    if ran {
+        *recovering = None;
+    }
+    let retry = match result {
+        Err(e) if e.cancelled_by_user() => false,
+        Err(e) if e.session_closed() => {
+            *recovering = Some(0);
+            true
+        }
+        Err(_) => recovering.is_some(),
+        Ok(()) => false,
+    };
+    if !retry {
+        *recovering = None;
+        return None;
+    }
+    let attempt = recovering.get_or_insert(0);
+    let delay = CAPTURE_RETRY[(*attempt).min(CAPTURE_RETRY.len() - 1)];
+    *attempt += 1;
+    Some(delay)
+}
+
+async fn sleep_or_pending(delay: Option<Duration>) {
+    match delay {
+        Some(delay) => tokio::time::sleep(delay).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// After a handover the pointer rests on the edge it just crossed, so any
+/// jitter would hit the barrier again and bounce control straight back.
+const HANDOVER_GRACE: Duration = Duration::from_millis(300);
 
 impl CaptureTask {
     /// connection-bookkeeping events that are handled the same whether
@@ -619,24 +682,48 @@ impl CaptureTask {
     }
 
     async fn run_loop(&mut self) {
+        let mut recovering = None;
         loop {
+            let mut retry_in = None;
             if self.enabled {
-                if let Err(e) = self.do_capture().await {
+                self.session_ran = false;
+                let result = self.do_capture().await;
+                if let Err(e) = &result {
                     log::warn!("input capture exited: {e}");
+                }
+                // `do_capture` clears `enabled` when the user turned it off
+                if self.enabled {
+                    retry_in = capture_retry(&result, self.session_ran, &mut recovering);
+                } else {
+                    recovering = None;
+                }
+                if let Some(delay) = retry_in {
+                    log::info!("input capture session closed; starting it again in {delay:?}");
                 }
                 self.enabled = false;
                 if self.cancellation_token.is_cancelled() {
                     return;
                 }
             }
+            let retry = sleep_or_pending(retry_in);
+            tokio::pin!(retry);
             loop {
                 tokio::select! {
+                    _ = &mut retry => {
+                        self.enabled = true;
+                        break;
+                    }
                     r = self.request_rx.recv() => match r.expect("channel closed") {
                         CaptureRequest::Reenable | CaptureRequest::SetEnabled(true) => {
+                            recovering = None;
                             self.enabled = true;
                             break;
                         }
-                        CaptureRequest::SetEnabled(false) => {},
+                        CaptureRequest::SetEnabled(false) => {
+                            // also cancels a pending session retry
+                            recovering = None;
+                            retry.set(sleep_or_pending(None));
+                        },
                         CaptureRequest::Create(h, p, t) => self.add_capture(h, p, t),
                         CaptureRequest::Destroy(h) => self.remove_capture(h),
                         CaptureRequest::Release => { /* nothing to do */ }
@@ -682,10 +769,18 @@ impl CaptureTask {
             capture.terminate().await?;
             return Err(e.into());
         }
+        self.session_ran = true;
 
         let r = self
             .do_capture_session(&mut capture, &mut clipboard_events)
             .await;
+        if r.is_err() {
+            // the session is gone: the client must stop expecting input
+            // and drop the keys it still holds
+            if let Err(e) = self.release_capture(&mut capture).await {
+                log::warn!("failed to release capture after the session ended: {e}");
+            }
+        }
 
         // FIXME replace with async drop when stabilized
         capture.terminate().await?;
@@ -836,6 +931,15 @@ impl CaptureTask {
             return self.release_capture(capture).await;
         }
 
+        if Some(handle) != self.active_client
+            && self
+                .released_at
+                .is_some_and(|at| at.elapsed() < HANDOVER_GRACE)
+        {
+            log::debug!("releasing capture: within the handover grace period");
+            return capture.release().await;
+        }
+
         if event == CaptureEvent::Begin {
             self.event_tx
                 .send(ICaptureEvent::CaptureBegin(handle))
@@ -888,12 +992,25 @@ impl CaptureTask {
         if let Err(e) = self.send_to_client(event, handle).await {
             const DUR: Duration = Duration::from_millis(500);
             debounce!(PREV_LOG, DUR, log::warn!("releasing capture: {e}"));
-            capture.release().await?;
+            // End the handoff, not just the grab: a stale `active_client`
+            // made the next crossing skip the Enter/Ack handshake. The
+            // peer is unreachable, so key-ups and Leave would fail too.
+            self.release_capture_with(capture, false).await?;
         }
         Ok(())
     }
 
     async fn release_capture(&mut self, capture: &mut InputCapture) -> Result<(), CaptureError> {
+        self.release_capture_with(capture, true).await
+    }
+
+    async fn release_capture_with(
+        &mut self,
+        capture: &mut InputCapture,
+        notify_peer: bool,
+    ) -> Result<(), CaptureError> {
+        self.released_at = Some(Instant::now());
+        self.state = State::WaitingForAck;
         self.early_local_clipboard = None;
         self.pending_local_clipboard = None;
         self.last_sent_clipboard_text = None;
@@ -902,6 +1019,10 @@ impl CaptureTask {
         if let Some(handle) = self.active_client.take() {
             if let Some(listener) = &self.listener {
                 listener.clear_clipboard_text();
+            }
+            if !notify_peer {
+                capture.take_pressed_keys();
+                return capture.release().await;
             }
             // Synthesize key-up events for every key still held in the
             // capture's pressed_keys set BEFORE sending Leave. Without
@@ -1059,6 +1180,8 @@ mod tests {
             request_rx,
             release_bind: Default::default(),
             state: Default::default(),
+            released_at: None,
+            session_ran: false,
         }
     }
 
@@ -1157,5 +1280,180 @@ mod tests {
             .destroy(handle)
             .await
             .expect("barrier in the new session");
+    }
+
+    fn task_with_events(client_manager: ClientManager) -> (CaptureTask, Receiver<ICaptureEvent>) {
+        let (event_tx, event_rx) = channel();
+        let mut task = task(client_manager);
+        task.event_tx = event_tx;
+        // a test key must be able to press the bind
+        *task.release_bind.borrow_mut() = vec![scancode::Linux::KeyLeftCtrl];
+        (task, event_rx)
+    }
+
+    async fn drain_entered(events: &mut Receiver<ICaptureEvent>) -> usize {
+        let mut entered = 0;
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(20), events.recv()).await
+        {
+            if matches!(event, ICaptureEvent::ClientEntered(_)) {
+                entered += 1;
+            }
+        }
+        entered
+    }
+
+    #[test]
+    fn a_closed_session_is_retried_but_other_failures_are_not() {
+        let mut recovering = None;
+        let closed = Err(CaptureError::ActivationClosed.into());
+        assert_eq!(
+            capture_retry(&closed, false, &mut recovering),
+            Some(CAPTURE_RETRY[0])
+        );
+        let ended = Err(CaptureError::EndOfStream.into());
+        assert_eq!(
+            capture_retry(&ended, false, &mut recovering),
+            Some(CAPTURE_RETRY[0])
+        );
+        let mut recovering = None;
+        let io = CaptureError::Io(std::io::ErrorKind::PermissionDenied.into());
+        assert_eq!(capture_retry(&Err(io.into()), false, &mut recovering), None);
+        assert_eq!(capture_retry(&Ok(()), false, &mut recovering), None);
+    }
+
+    /// The portal refuses a new session while the screen is locked: those
+    /// failures must keep the recovery going instead of ending it after one
+    /// retry, and the delays back off.
+    #[test]
+    fn a_failed_recreation_keeps_recovering_with_growing_delays() {
+        let mut recovering = None;
+        let closed = Err(CaptureError::ActivationClosed.into());
+        let refused = Err(input_capture::CaptureCreationError::NoAvailableBackend.into());
+        let mut delays = vec![capture_retry(&closed, false, &mut recovering).expect("retry")];
+        for _ in 0..CAPTURE_RETRY.len() + 2 {
+            delays.push(capture_retry(&refused, false, &mut recovering).expect("retry"));
+        }
+        assert_eq!(delays[..CAPTURE_RETRY.len()], CAPTURE_RETRY);
+        assert_eq!(delays.last(), CAPTURE_RETRY.last());
+        assert!(delays.windows(2).all(|w| w[0] <= w[1]));
+        // a session that ran and closed again starts the backoff over
+        assert_eq!(
+            capture_retry(&closed, false, &mut recovering),
+            Some(CAPTURE_RETRY[0])
+        );
+    }
+
+    /// Without a preceding closed session a creation failure needs the
+    /// user, as before.
+    #[test]
+    fn a_creation_failure_outside_a_recovery_is_not_retried() {
+        let mut recovering = None;
+        let refused = Err(input_capture::CaptureCreationError::NoAvailableBackend.into());
+        assert_eq!(capture_retry(&refused, false, &mut recovering), None);
+    }
+
+    /// while the screen stays locked the portal refuses a new session: a
+    /// failed re-creation must be retried too, backing off, or capture stays
+    /// off after the first retry
+    #[test]
+    fn a_closed_session_keeps_retrying_with_backoff_until_it_works() {
+        let mut recovering = None;
+        let closed: Result<(), InputCaptureError> = Err(CaptureError::EndOfStream.into());
+        let refused: Result<(), InputCaptureError> =
+            Err(input_capture::CaptureCreationError::NoAvailableBackend.into());
+
+        assert_eq!(
+            capture_retry(&closed, false, &mut recovering),
+            Some(CAPTURE_RETRY[0])
+        );
+        let delays: Vec<_> = (0..CAPTURE_RETRY.len() + 2)
+            .map(|_| capture_retry(&refused, false, &mut recovering))
+            .collect();
+        assert_eq!(
+            delays[..CAPTURE_RETRY.len() - 1],
+            CAPTURE_RETRY.map(Some)[1..]
+        );
+        assert!(delays.iter().all(|d| *d <= CAPTURE_RETRY.last().copied()));
+        assert!(delays.windows(2).all(|w| w[0] <= w[1]));
+
+        // a clean end stops the recovery; a later refusal is not retried
+        assert_eq!(capture_retry(&Ok(()), false, &mut recovering), None);
+        assert_eq!(capture_retry(&refused, false, &mut recovering), None);
+    }
+
+    /// A session that recovered and ran must end the recovery: an
+    /// unrelated error later on waits for the user instead of being retried
+    /// every minute forever.
+    #[test]
+    fn a_session_that_ran_ends_the_recovery() {
+        let mut recovering = None;
+        let closed = Err(CaptureError::ActivationClosed.into());
+        assert!(capture_retry(&closed, false, &mut recovering).is_some());
+        let io = Err(CaptureError::Io(std::io::ErrorKind::Other.into()).into());
+        assert_eq!(capture_retry(&io, true, &mut recovering), None);
+        assert_eq!(recovering, None);
+        // closed again after running: the backoff starts over
+        assert_eq!(
+            capture_retry(&closed, true, &mut recovering),
+            Some(CAPTURE_RETRY[0])
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_retry_waits_its_delay_and_none_waits_forever() {
+        let started = tokio::time::Instant::now();
+        sleep_or_pending(Some(CAPTURE_RETRY[0])).await;
+        assert_eq!(started.elapsed(), CAPTURE_RETRY[0]);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3600), sleep_or_pending(None))
+                .await
+                .is_err()
+        );
+    }
+
+    /// A send that fails (the peer dropped, or its emulation is off) must
+    /// end the handoff, not only release the pointer: otherwise the next
+    /// crossing into the same client is not seen as a new entry and skips
+    /// the `Enter`/`Ack` handshake and the per-entry state reset.
+    #[tokio::test]
+    async fn a_failed_send_ends_the_handoff() {
+        let manager = ClientManager::default();
+        let handle = manager.add_client();
+        let (mut task, mut events) = task_with_events(manager);
+        task.add_capture(handle, Position::Left, CaptureType::Default);
+        let mut capture = dummy_capture().await;
+
+        task.handle_capture_event(&mut capture, (handle, CaptureEvent::Begin))
+            .await
+            .expect("event");
+
+        assert_eq!(task.active_client, None);
+        assert_eq!(task.state, State::WaitingForAck);
+        assert_eq!(drain_entered(&mut events).await, 1);
+    }
+
+    /// Right after the pointer comes back, it rests on the edge it just
+    /// crossed: a barrier hit within the grace period must not hand it
+    /// straight back to the client.
+    #[tokio::test]
+    async fn a_barrier_hit_right_after_a_release_is_ignored() {
+        let manager = ClientManager::default();
+        let handle = manager.add_client();
+        let (mut task, mut events) = task_with_events(manager);
+        task.add_capture(handle, Position::Left, CaptureType::Default);
+        let mut capture = dummy_capture().await;
+
+        task.release_capture(&mut capture).await.expect("release");
+        task.handle_capture_event(&mut capture, (handle, CaptureEvent::Begin))
+            .await
+            .expect("event");
+        assert_eq!(drain_entered(&mut events).await, 0);
+
+        task.released_at = Some(Instant::now() - HANDOVER_GRACE);
+        task.handle_capture_event(&mut capture, (handle, CaptureEvent::Begin))
+            .await
+            .expect("event");
+        assert_eq!(drain_entered(&mut events).await, 1);
     }
 }

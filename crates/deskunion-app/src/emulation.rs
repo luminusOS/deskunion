@@ -50,6 +50,9 @@ pub(crate) enum EmulationEvent {
     },
     /// emulation was disabled
     EmulationDisabled,
+    /// the emulation session failed and starts again after `delay`; input
+    /// is dropped meanwhile, but the server connection stays up
+    EmulationRestarting { delay: Duration },
     /// emulation was enabled
     EmulationEnabled,
     /// capture should be released
@@ -282,12 +285,18 @@ impl DialTask {
                             }
                         }
                     }
-                    EmulationEvent::EmulationDisabled => {
+                    event @ (EmulationEvent::EmulationDisabled
+                    | EmulationEvent::EmulationRestarting { .. }) => {
+                        // input is dropped from now on: hand the pointer
+                        // back instead of leaving the server grabbing it
+                        if let Some(addr) = active_addr {
+                            self.conn.reply(addr, ProtoEvent::Leave(0)).await;
+                        }
                         pending_local_clipboard = None;
                         active_addr = None;
                         last_sent_local_clipboard = None;
                         self.conn.clear_clipboard_text();
-                        self.event_tx.send(EmulationEvent::EmulationDisabled).expect("channel closed");
+                        self.event_tx.send(event).expect("channel closed");
                     }
                     event => self.event_tx.send(event).expect("channel closed"),
                 },
@@ -403,6 +412,9 @@ impl EmulationProxy {
             event_tx,
             handles: Default::default(),
             next_id: 0,
+            announced_enabled: false,
+            session_backend: None,
+            session_started: None,
         };
         let task = spawn_local(emulation_task.run());
         Self {
@@ -419,7 +431,10 @@ impl EmulationProxy {
         if matches!(&event, EmulationEvent::EmulationEnabled) {
             self.emulation_active.replace(true);
         }
-        if matches!(&event, EmulationEvent::EmulationDisabled) {
+        if matches!(
+            &event,
+            EmulationEvent::EmulationDisabled | EmulationEvent::EmulationRestarting { .. }
+        ) {
             self.emulation_active.replace(false);
         }
         event
@@ -478,57 +493,206 @@ struct EmulationTask {
     event_tx: Sender<EmulationEvent>,
     handles: HashMap<SocketAddr, EmulationHandle>,
     next_id: EmulationHandle,
+    /// `EmulationEnabled` was sent and not yet followed by `EmulationDisabled`
+    announced_enabled: bool,
+    /// the backend the last session ran on; a restart must not fall back
+    /// to another one (the dummy backend would swallow all input)
+    session_backend: Option<input_emulation::Backend>,
+    /// when the current session became usable, for [`STABLE_SESSION`]
+    session_started: Option<Instant>,
+}
+
+/// Delays before input emulation is started again after it failed (a
+/// compositor ending the portal session on screen lock, a reset EIS
+/// socket). Once they are used up, emulation stays off until it is
+/// enabled again by hand.
+const RESTART_DELAYS: [Duration; 7] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+];
+
+/// A session that ran at least this long starts the restart delays over.
+const STABLE_SESSION: Duration = Duration::from_secs(10);
+
+/// How many times input emulation was restarted in a row.
+#[derive(Debug, Default)]
+struct Restarts {
+    attempts: usize,
+}
+
+impl Restarts {
+    /// the delay before the next restart, or `None` once they are used up
+    fn next_delay(&mut self) -> Option<Duration> {
+        let delay = RESTART_DELAYS.get(self.attempts).copied()?;
+        self.attempts += 1;
+        Some(delay)
+    }
+
+    fn reset(&mut self) {
+        self.attempts = 0;
+    }
+}
+
+/// what ended the wait before input emulation starts again
+#[derive(Debug, PartialEq, Eq)]
+enum Wait {
+    Restart,
+    /// the user turned emulation off; only an explicit enable restarts it
+    Disabled,
+    Terminate,
+}
+
+/// A denied permission prompt would come back on every retry, so that one
+/// waits for the user.
+fn should_restart(result: &Result<(), InputEmulationError>) -> bool {
+    matches!(result, Err(e) if !e.cancelled_by_user())
+}
+
+/// The delay before the next restart after a session ended with `result`,
+/// having been usable for `ran` (`None` when it never got that far, e.g. the
+/// portal failed). Only a session that really ran for [`STABLE_SESSION`]
+/// starts the delays over, so a slow failing portal cannot restart forever.
+fn next_restart(
+    restarts: &mut Restarts,
+    result: &Result<(), InputEmulationError>,
+    ran: Option<Duration>,
+) -> Option<Duration> {
+    if ran.is_some_and(|ran| ran >= STABLE_SESSION) {
+        restarts.reset();
+    }
+    if should_restart(result) {
+        restarts.next_delay()
+    } else {
+        None
+    }
+}
+
+/// A request that ended the setup of a session.
+#[derive(Debug, PartialEq, Eq)]
+enum Interrupt {
+    Disabled,
+    Terminate,
 }
 
 impl EmulationTask {
     async fn run(mut self) {
+        let mut restarts = Restarts::default();
         loop {
             if self.enabled {
-                if let Err(e) = self.do_emulation().await {
+                let result = self.do_emulation().await;
+                if let Err(e) = &result {
                     log::warn!("input emulation exited: {e}");
                 }
+                if self.exit_requested.get() {
+                    break;
+                }
+                let ran = self.session_started.take().map(|at| at.elapsed());
+                let delay = if self.enabled {
+                    next_restart(&mut restarts, &result, ran)
+                } else {
+                    None
+                };
+                if let Some(delay) = delay {
+                    log::info!("restarting input emulation in {delay:?}");
+                    self.event_tx
+                        .send(EmulationEvent::EmulationRestarting { delay })
+                        .expect("channel closed");
+                    match self.wait_to_restart(Some(delay)).await {
+                        Wait::Restart => continue,
+                        Wait::Disabled => {}
+                        Wait::Terminate => break,
+                    }
+                }
                 self.enabled = false;
+                self.announce_disabled();
             }
             if self.exit_requested.get() {
                 break;
             }
-            // wait for reenable request
-            loop {
-                match self.request_rx.recv().await.expect("channel closed") {
-                    ProxyRequest::Reenable | ProxyRequest::SetEnabled(true) => {
-                        self.enabled = true;
-                        break;
-                    }
-                    ProxyRequest::SetEnabled(false) => {}
-                    ProxyRequest::Terminate => return,
-                    ProxyRequest::Input(..) => { /* emulation inactive => ignore */ }
-                    ProxyRequest::ClipboardText(..) => { /* emulation inactive => ignore */ }
-                    ProxyRequest::Remove(..) => { /* emulation inactive => ignore */ }
+            match self.wait_to_restart(None).await {
+                Wait::Restart => {
+                    restarts.reset();
+                    // enabled by hand: any backend may be picked again
+                    self.session_backend = None;
+                    self.enabled = true;
                 }
+                Wait::Disabled => {}
+                Wait::Terminate => break,
+            }
+        }
+        self.announce_disabled();
+    }
+
+    fn announce_disabled(&mut self) {
+        if std::mem::take(&mut self.announced_enabled) {
+            self.event_tx
+                .send(EmulationEvent::EmulationDisabled)
+                .expect("channel closed");
+        }
+    }
+
+    /// Waits for `delay` (forever with `None`), or until emulation is
+    /// enabled or disabled by hand.
+    async fn wait_to_restart(&mut self, delay: Option<Duration>) -> Wait {
+        let sleep = async {
+            match delay {
+                Some(delay) => tokio::time::sleep(delay).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(sleep);
+        loop {
+            select! {
+                _ = &mut sleep => return Wait::Restart,
+                request = self.request_rx.recv() => match request.expect("channel closed") {
+                    ProxyRequest::Reenable | ProxyRequest::SetEnabled(true) => return Wait::Restart,
+                    ProxyRequest::SetEnabled(false) => {
+                        self.enabled = false;
+                        return Wait::Disabled;
+                    }
+                    ProxyRequest::Terminate => return Wait::Terminate,
+                    // no session to destroy it in: the next one must not
+                    // recreate a device for a peer that is gone
+                    ProxyRequest::Remove(addr) => {
+                        self.handles.remove(&addr);
+                    }
+                    ProxyRequest::Input(..) | ProxyRequest::ClipboardText(..) => {
+                        /* emulation inactive => ignore */
+                    }
+                },
             }
         }
     }
 
     async fn do_emulation(&mut self) -> Result<(), InputEmulationError> {
         log::info!("creating input emulation ...");
+        let backend = self.backend.or(self.session_backend);
         let mut emulation = tokio::select! {
-            r = InputEmulation::new_with_clipboard(self.backend, self.clipboard_enabled) => r?,
-            // allow termination event while requesting input emulation
-            _ = wait_for_termination(&mut self.request_rx) => return Ok(()),
+            r = InputEmulation::new_with_clipboard(backend, self.clipboard_enabled) => r?,
+            // a portal prompt can take long: stay responsive meanwhile
+            _ = self.interrupted() => return Ok(()),
         };
-
-        // used to send enabled and disabled events
-        let _emulation_guard = DropGuard::new(
-            self.event_tx.clone(),
-            EmulationEvent::EmulationEnabled,
-            EmulationEvent::EmulationDisabled,
-        );
+        self.session_backend = Some(emulation.backend());
 
         // create active handles
-        if let Err(e) = self.create_clients(&mut emulation).await {
+        let created = self.create_clients(&mut emulation).await;
+        if created.is_err() || self.exit_requested.get() || !self.enabled {
             emulation.terminate().await;
-            return Err(e);
+            return created;
         }
+
+        // sent again after every restart: it is what lets the proxy forward
+        // input once more. `run` reports how the session ended.
+        self.announced_enabled = true;
+        self.session_started = Some(Instant::now());
+        self.event_tx
+            .send(EmulationEvent::EmulationEnabled)
+            .expect("channel closed");
 
         let res = self.do_emulation_session(&mut emulation).await;
         // FIXME replace with async drop when stabilized
@@ -540,13 +704,37 @@ impl EmulationTask {
         &mut self,
         emulation: &mut InputEmulation,
     ) -> Result<(), InputEmulationError> {
-        for handle in self.handles.values() {
+        let handles: Vec<_> = self.handles.values().copied().collect();
+        for handle in handles {
             tokio::select! {
-                _ = emulation.create(*handle) => {},
-                _ = wait_for_termination(&mut self.request_rx) => return Ok(()),
+                _ = emulation.create(handle) => {},
+                _ = self.interrupted() => return Ok(()),
             }
         }
         Ok(())
+    }
+
+    /// Serves requests while a session is set up, until one of them ends
+    /// the setup. A disable or terminate must not be lost while a portal
+    /// prompt is pending, nor a peer removal: the new session would
+    /// recreate a device for a peer that is gone.
+    async fn interrupted(&mut self) -> Interrupt {
+        loop {
+            match self.request_rx.recv().await.expect("channel closed") {
+                ProxyRequest::Terminate => return Interrupt::Terminate,
+                ProxyRequest::SetEnabled(false) => {
+                    self.enabled = false;
+                    return Interrupt::Disabled;
+                }
+                ProxyRequest::Remove(addr) => {
+                    self.handles.remove(&addr);
+                }
+                ProxyRequest::Input(..)
+                | ProxyRequest::ClipboardText(..)
+                | ProxyRequest::Reenable
+                | ProxyRequest::SetEnabled(true) => {}
+            }
+        }
     }
 
     async fn do_emulation_session(
@@ -608,36 +796,194 @@ fn to_ipc_pos(pos: Position) -> deskunion_ipc::Position {
     }
 }
 
-async fn wait_for_termination(rx: &mut Receiver<ProxyRequest>) {
-    loop {
-        match rx.recv().await.expect("channel closed") {
-            ProxyRequest::Terminate => return,
-            ProxyRequest::Input(_, _) => continue,
-            ProxyRequest::ClipboardText(_, _) => continue,
-            ProxyRequest::Remove(_) => continue,
-            ProxyRequest::Reenable => continue,
-            ProxyRequest::SetEnabled(_) => continue,
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    fn task() -> (EmulationTask, Sender<ProxyRequest>) {
+        let (request_tx, request_rx) = channel();
+        let (event_tx, _event_rx) = channel();
+        let task = EmulationTask {
+            backend: Some(input_emulation::Backend::Dummy),
+            enabled: true,
+            clipboard_enabled: false,
+            exit_requested: Default::default(),
+            request_rx,
+            event_tx,
+            handles: Default::default(),
+            next_id: 0,
+            announced_enabled: false,
+            session_backend: None,
+            session_started: None,
+        };
+        (task, request_tx)
+    }
+
+    #[test]
+    fn restart_delays_grow_and_run_out() {
+        let mut restarts = Restarts::default();
+        let delays: Vec<_> = std::iter::from_fn(|| restarts.next_delay()).collect();
+        assert_eq!(delays, RESTART_DELAYS);
+        assert!(delays.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(restarts.next_delay(), None);
+    }
+
+    #[test]
+    fn restart_delays_start_over_after_reset() {
+        let mut restarts = Restarts::default();
+        restarts.next_delay();
+        restarts.next_delay();
+        restarts.reset();
+        assert_eq!(restarts.next_delay(), Some(RESTART_DELAYS[0]));
+    }
+
+    #[test]
+    fn a_failed_session_is_restarted_but_a_clean_exit_is_not() {
+        let failed: Result<(), InputEmulationError> =
+            Err(input_emulation::EmulationError::EndOfStream.into());
+        assert!(should_restart(&failed));
+        assert!(!should_restart(&Ok(())));
+    }
+
+    /// a portal that takes longer than [`STABLE_SESSION`] to fail must not
+    /// start the delays over every time: the restarts have to run out
+    #[test]
+    fn only_a_session_that_really_ran_starts_the_delays_over() {
+        let failed: Result<(), InputEmulationError> =
+            Err(input_emulation::EmulationError::EndOfStream.into());
+        let mut restarts = Restarts::default();
+        let delays: Vec<_> =
+            std::iter::from_fn(|| next_restart(&mut restarts, &failed, None)).collect();
+        assert_eq!(delays, RESTART_DELAYS);
+
+        assert_eq!(
+            next_restart(&mut restarts, &failed, Some(STABLE_SESSION)),
+            Some(RESTART_DELAYS[0])
+        );
+        assert_eq!(
+            next_restart(&mut restarts, &failed, Some(STABLE_SESSION / 2)),
+            Some(RESTART_DELAYS[1])
+        );
+        assert_eq!(next_restart(&mut restarts, &Ok(()), None), None);
+    }
+
+    /// a disable or a peer removal that arrives while a portal prompt is
+    /// pending must not be lost
+    #[tokio::test]
+    async fn a_disable_during_setup_ends_it_and_removals_are_kept() {
+        let (mut task, tx) = task();
+        let addr: SocketAddr = "127.0.0.1:4242".parse().expect("addr");
+        task.handles.insert(addr, 0);
+        tx.send(ProxyRequest::Remove(addr)).expect("send");
+        tx.send(ProxyRequest::Reenable).expect("send");
+        tx.send(ProxyRequest::SetEnabled(false)).expect("send");
+        assert_eq!(task.interrupted().await, Interrupt::Disabled);
+        assert!(!task.enabled);
+        assert!(task.handles.is_empty());
+        tx.send(ProxyRequest::Terminate).expect("send");
+        assert_eq!(task.interrupted().await, Interrupt::Terminate);
+    }
+
+    /// a restart must reuse the backend that worked: picking again could
+    /// land on the dummy backend, which swallows all input without failing
+    #[tokio::test]
+    async fn a_session_remembers_its_backend_and_announces_itself_once_usable() {
+        let (request_tx, request_rx) = channel();
+        let (event_tx, mut event_rx) = channel();
+        let mut task = EmulationTask {
+            backend: Some(input_emulation::Backend::Dummy),
+            enabled: true,
+            clipboard_enabled: false,
+            exit_requested: Default::default(),
+            request_rx,
+            event_tx,
+            handles: Default::default(),
+            next_id: 0,
+            announced_enabled: false,
+            session_backend: None,
+            session_started: None,
+        };
+        // the session is ended only after it announced itself, so the
+        // terminate cannot race the creation of the session
+        async fn one_session(
+            task: &mut EmulationTask,
+            requests: &Sender<ProxyRequest>,
+            events: &mut Receiver<EmulationEvent>,
+        ) -> Option<EmulationEvent> {
+            let stop = async {
+                let event = events.recv().await;
+                requests.send(ProxyRequest::Terminate).expect("send");
+                event
+            };
+            let (session, event) = tokio::join!(task.do_emulation(), stop);
+            session.expect("session");
+            event
         }
+
+        let event = one_session(&mut task, &request_tx, &mut event_rx).await;
+        assert!(matches!(event, Some(EmulationEvent::EmulationEnabled)));
+        assert_eq!(task.session_backend, Some(input_emulation::Backend::Dummy));
+        assert!(task.session_started.is_some());
+
+        // a restart without a configured backend reuses the one that worked
+        task.backend = None;
+        let event = one_session(&mut task, &request_tx, &mut event_rx).await;
+        assert!(matches!(event, Some(EmulationEvent::EmulationEnabled)));
+        assert_eq!(task.session_backend, Some(input_emulation::Backend::Dummy));
     }
-}
 
-struct DropGuard<T> {
-    tx: Sender<T>,
-    on_drop: Option<T>,
-}
-
-impl<T> DropGuard<T> {
-    fn new(tx: Sender<T>, on_new: T, on_drop: T) -> Self {
-        tx.send(on_new).expect("channel closed");
-        let on_drop = Some(on_drop);
-        Self { tx, on_drop }
+    #[tokio::test(start_paused = true)]
+    async fn the_wait_ends_after_the_delay() {
+        let (mut task, _tx) = task();
+        assert_eq!(
+            task.wait_to_restart(Some(Duration::from_millis(250))).await,
+            Wait::Restart
+        );
     }
-}
 
-impl<T> Drop for DropGuard<T> {
-    fn drop(&mut self) {
-        self.tx
-            .send(self.on_drop.take().expect("item"))
-            .expect("channel closed");
+    #[tokio::test(start_paused = true)]
+    async fn enabling_by_hand_cuts_the_wait_short() {
+        let (mut task, tx) = task();
+        tx.send(ProxyRequest::Reenable).expect("send");
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            task.wait_to_restart(Some(Duration::from_secs(30))).await,
+            Wait::Restart
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disabling_or_terminating_ends_the_wait_without_a_restart() {
+        let (mut task, tx) = task();
+        tx.send(ProxyRequest::SetEnabled(false)).expect("send");
+        assert_eq!(
+            task.wait_to_restart(Some(Duration::from_secs(30))).await,
+            Wait::Disabled
+        );
+        tx.send(ProxyRequest::Terminate).expect("send");
+        assert_eq!(task.wait_to_restart(None).await, Wait::Terminate);
+    }
+
+    /// a peer that left while no session existed must not get its device
+    /// recreated by the next session
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_removed_during_the_wait_is_forgotten() {
+        let (mut task, tx) = task();
+        let addr: SocketAddr = "127.0.0.1:4242".parse().expect("addr");
+        task.handles.insert(addr, 0);
+        tx.send(ProxyRequest::Remove(addr)).expect("send");
+        tx.send(ProxyRequest::Input(
+            Event::Pointer(input_event::PointerEvent::Motion {
+                time: 0,
+                dx: 1.0,
+                dy: 1.0,
+            }),
+            addr,
+        ))
+        .expect("send");
+        tx.send(ProxyRequest::Reenable).expect("send");
+        assert_eq!(task.wait_to_restart(None).await, Wait::Restart);
+        assert!(task.handles.is_empty());
     }
 }

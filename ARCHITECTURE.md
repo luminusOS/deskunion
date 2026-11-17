@@ -244,7 +244,12 @@ sequenceDiagram
 
 While waiting for the `Ack`, the server repeats `Enter` instead of input, so a
 lost datagram does not leave the client without the handoff. If a send fails
-(the client is gone) the capture is released at once. A release bind
+(the client is gone, or its emulation is off) the handoff ends at once: the
+capture is released and the active client is forgotten, without the key-ups and
+`Leave` that would fail the same way, so the next crossing starts with a fresh
+`Enter`/`Ack`. For 300 ms after any release (`HANDOVER_GRACE`) every barrier hit
+is ignored, including one from the client just left, because the returning
+pointer rests on the edge it just crossed. A release bind
 (`Ctrl+Shift+Alt+Meta` by default) returns the pointer to the server at any time;
 before the `Leave`, the key-ups of every held key are synthesized so the peer
 does not keep phantom modifiers.
@@ -277,6 +282,52 @@ watchdog that closes the session when the server goes silent.
 ## Client Connection Retry
 
 ```mermaid
+## Session Recovery
+
+A compositor can end a portal session on its own, for example GNOME closing the
+RemoteDesktop session on screen lock, or the EIS socket being reset. Both sides
+start their session again without the user pressing Start:
+
+- **Emulation (client).** `EmulationTask::run` restarts a failed session after
+  250 ms, 500 ms, 1 s, 2 s, 5 s, 10 s and 30 s. Only a session that was usable for
+  at least 10 s starts the delays over; time spent waiting on the portal does not
+  count, so a portal that keeps failing slowly still runs out of restarts. A
+  restart reuses the backend of the session that worked, never falling back to
+  another one (the dummy backend would accept input and drop it). While a restart
+  is pending it reports `EmulationEvent::EmulationRestarting`: the client sends
+  `Leave` if it held the pointer, and the service keeps the server target, so the
+  DTLS session survives. `EmulationDisabled`, which drops the target, is only sent
+  once a session had been announced and then the delays run out, the user denied
+  the portal prompt (`cancelled_by_user`) or turned emulation off. A disable,
+  terminate or peer removal that arrives while a session is still being set up is
+  applied, not lost. libei transport errors such as `ConnectionReset` or
+  `BrokenPipe` count as the end of the stream; with libei that end is only noticed
+  by the next event sent, so the restart usually happens on the first input after
+  an unlock.
+- **A compositor that stops reading.** Neither backend drops input when its socket
+  is full, since a dropped key-up leaves a key stuck. libei keeps the unsent bytes
+  in its write buffer and a flush task sends them once the socket is writable; if
+  a flush does not complete within 5 s the session fails with `LibeiStalled`, and
+  every later call fails too. wlroots reads the compositor's replies before each
+  send (unread replies would block the compositor in turn) and waits for the
+  socket, failing with `WaylandOutputBlocked` after 500 ms. Either error restarts
+  the session as above; on wlroots that happens on the next event, since `create`
+  and `destroy` only log it, and tearing down a stalled session can take about
+  1 s per client.
+- **Capture (server).** On any session error `do_capture` releases a held pointer
+  (key-ups and `Leave`). When the desktop closed the session (`ActivationClosed`,
+  `EndOfStream`, or a libei `Disconnected`), `CaptureTask::run_loop` starts it again
+  after 1, 2, 5, 10, 30 s and then every 60 s, while it keeps serving listener
+  events and requests. Once recovering, a failed re-creation is retried too,
+  because the portal refuses new sessions while the screen is locked; a denied
+  permission is not. A session that gets running, or disabling or enabling
+  capture by hand, ends the recovery.
+
+The two sides give up differently on purpose: emulation stops after about 49 s
+of failed restarts and then waits for the user, because a client that keeps
+failing should show as disabled; capture keeps trying every 60 s, because the
+server has nothing else to do until its desktop is unlocked.
+
 flowchart TD
     Start["set_server / reconnect_now / session dropped"] --> Resolve[resolve the host name<br/>merge with manual addresses]
     Resolve --> Dial[dial all addresses in parallel]

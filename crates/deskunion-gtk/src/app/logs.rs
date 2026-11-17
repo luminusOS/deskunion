@@ -143,6 +143,10 @@ impl LogState {
                 LogCategory::Connections,
                 format!("emulation status: {status:?}"),
             ),
+            FrontendEvent::EmulationRestarting { retry_in_ms } => (
+                LogCategory::Connections,
+                format!("input emulation stopped, restarting in {retry_in_ms} ms"),
+            ),
             FrontendEvent::AuthorizedUpdated(keys) => (
                 LogCategory::Connections,
                 format!("authorized keys updated: {} key(s)", keys.len()),

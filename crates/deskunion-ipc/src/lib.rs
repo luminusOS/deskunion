@@ -239,6 +239,10 @@ pub enum FrontendEvent {
     CaptureStatus(Status),
     /// emulation status
     EmulationStatus(Status),
+    /// the emulation session ended on its own (screen lock, a reset EIS
+    /// socket) and starts again after `retry_in_ms`; until then input is
+    /// dropped, but the connection to the server stays up
+    EmulationRestarting { retry_in_ms: u32 },
     /// authorized public key fingerprints have been updated
     AuthorizedUpdated(HashMap<String, String>),
     /// public key fingerprint of this device

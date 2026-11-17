@@ -516,6 +516,35 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
     );
     capture(window, "screens-short-light");
 
+    controller.emit(AppMsg::SetOperationMode(OperationMode::Client));
+    window.set_default_size(1100, 750);
+    // emulation that restarts on its own is not a failure the user must fix
+    controller.emit(AppMsg::Frontend(FrontendEvent::EmulationStatus(
+        Status::Enabled,
+    )));
+    controller.emit(AppMsg::Frontend(FrontendEvent::EmulationRestarting {
+        retry_in_ms: 250,
+    }));
+    settle();
+    assert_eq!(
+        controller.model().client_emulation(),
+        ClientEmulation::Restarting
+    );
+    assert!(!controller.model().emulation_row_visible());
+    assert!(
+        controller.model().service_running(),
+        "offers Stop, not Start"
+    );
+    capture(window, "client-restarting-emulation");
+    controller.emit(AppMsg::Frontend(FrontendEvent::EmulationStatus(
+        Status::Enabled,
+    )));
+    settle();
+    assert_eq!(
+        controller.model().client_emulation(),
+        ClientEmulation::Running
+    );
+
     window.close();
     drop(controller);
     drop(connection);

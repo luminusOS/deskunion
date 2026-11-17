@@ -6,6 +6,13 @@ pub enum InputEmulationError {
     Emulate(#[from] EmulationError),
 }
 
+impl InputEmulationError {
+    /// the user denied the permission request for input emulation
+    pub fn cancelled_by_user(&self) -> bool {
+        matches!(self, Self::Create(e) if e.cancelled_by_user())
+    }
+}
+
 #[cfg(any(libei, rdp))]
 use ashpd::{Error::Response, desktop::ResponseError};
 use std::io;
@@ -20,6 +27,9 @@ use wayland_client::{
 
 #[derive(Debug, Error)]
 pub enum EmulationError {
+    #[cfg(wlroots)]
+    #[error("the compositor did not read input for {0:?}")]
+    WaylandOutputBlocked(std::time::Duration),
     #[error("event stream closed")]
     EndOfStream,
     #[cfg(libei)]
@@ -27,15 +37,15 @@ pub enum EmulationError {
     Libei(#[from] reis::Error),
     #[cfg(wlroots)]
     #[error("wayland error: `{0}`")]
-    #[cfg(wlroots)]
-    #[error("the compositor did not read input for {0:?}")]
-    WaylandOutputBlocked(std::time::Duration),
     Wayland(#[from] wayland_client::backend::WaylandError),
     #[cfg(any(rdp, libei))]
     #[error("xdg-desktop-portal: `{0}`")]
     Ashpd(#[from] ashpd::Error),
     #[error("io error: `{0}`")]
     Io(#[from] io::Error),
+    #[cfg(libei)]
+    #[error("libei socket did not accept data for {0:?}")]
+    LibeiStalled(std::time::Duration),
 }
 
 #[derive(Debug, Error)]
@@ -158,3 +168,26 @@ pub enum MacOSEmulationCreationError {
 #[cfg(windows)]
 #[derive(Debug, Error)]
 pub enum WindowsEmulationCreationError {}
+
+#[cfg(all(test, libei))]
+mod tests {
+    use super::*;
+
+    /// a denied portal prompt must not be retried on its own: it would
+    /// pop up again on every restart
+    #[test]
+    fn a_denied_portal_prompt_counts_as_cancelled_by_the_user() {
+        let denied: InputEmulationError = EmulationCreationError::Libei(
+            LibeiEmulationCreationError::Ashpd(Response(ResponseError::Cancelled)),
+        )
+        .into();
+        assert!(denied.cancelled_by_user());
+        let failed: InputEmulationError = EmulationError::EndOfStream.into();
+        assert!(!failed.cancelled_by_user());
+        let other: InputEmulationError = EmulationCreationError::Libei(
+            LibeiEmulationCreationError::Ashpd(Response(ResponseError::Other)),
+        )
+        .into();
+        assert!(!other.cancelled_by_user());
+    }
+}

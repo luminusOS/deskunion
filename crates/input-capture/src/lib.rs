@@ -155,6 +155,8 @@ impl InputCapture {
             .id_map
             .remove(&id)
             .expect("no position for this handle");
+        // a queued Begin for a removed handle would enter a client that is gone
+        self.pending.retain(|&(handle, _)| handle != id);
 
         log::debug!("destroying capture {id} @ {pos}");
         let remaining = self.position_map.get_mut(&pos).expect("id vector");
@@ -228,8 +230,9 @@ impl InputCapture {
     }
 
     /// check whether the given keys are pressed
+    /// whether the whole chord is held; an empty chord is no shortcut at all
     pub fn keys_pressed(&self, keys: &[scancode::Linux]) -> bool {
-        keys.iter().all(|k| self.pressed_keys.contains(k))
+        !keys.is_empty() && keys.iter().all(|k| self.pressed_keys.contains(k))
     }
 
     fn update_pressed_keys(&mut self, key: u32, state: u8) {
@@ -390,4 +393,20 @@ async fn create(
         }
     }
     Err(CaptureCreationError::NoAvailableBackend)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `release_bind = []` in config.toml used to match on every event and
+    /// release the pointer right after each crossing
+    #[tokio::test]
+    async fn an_empty_release_bind_is_never_pressed() {
+        let capture = InputCapture::new(Some(Backend::Dummy))
+            .await
+            .expect("dummy capture");
+        assert!(!capture.keys_pressed(&[]));
+        assert!(!capture.keys_pressed(&[scancode::Linux::KeyLeftCtrl]));
+    }
 }
