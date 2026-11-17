@@ -763,10 +763,27 @@ impl SimpleComponent for ConnectionsPage {
                                     add_css_class: "pill",
                                     add_css_class: "suggested-action",
                                     #[watch]
-                                    set_label: if model.pending_test.is_some() { "Checking…" } else { "Connect" },
-                                    #[watch]
                                     set_sensitive: model.pending_test.is_none() && !model.server_host_draft.trim().is_empty(),
                                     connect_clicked => ConnectionsMsg::ServerConnect,
+
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Box {
+                                        set_spacing: 8,
+                                        set_halign: gtk::Align::Center,
+
+                                        #[name(server_connect_spinner)]
+                                        gtk::Spinner {
+                                            #[watch]
+                                            set_spinning: model.pending_test.is_some(),
+                                            #[watch]
+                                            set_visible: model.pending_test.is_some(),
+                                        },
+
+                                        gtk::Label {
+                                            #[watch]
+                                            set_label: if model.pending_test.is_some() { "Checking…" } else { "Connect" },
+                                        },
+                                    },
                                 },
                             },
 

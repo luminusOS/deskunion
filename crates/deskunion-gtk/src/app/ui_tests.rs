@@ -268,6 +268,13 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
         .unwrap();
     assert!(!connections.is_sensitive());
     assert!(!host_entry.is_sensitive());
+    let spinner = controller
+        .model()
+        .connections
+        .widgets()
+        .server_connect_spinner
+        .clone();
+    assert!(spinner.is_spinning(), "checking the server shows activity");
     capture(window, "connection-checking");
 
     controller
@@ -320,6 +327,7 @@ fn sharing_workflow_preserves_intent_feedback_and_navigation() {
             .pending_test()
             .is_none()
     );
+    assert!(!spinner.is_spinning());
     assert!(error_row.is_visible());
     assert!(connections.is_sensitive());
     assert!(connections.has_css_class("suggested-action"));
