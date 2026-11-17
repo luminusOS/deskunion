@@ -33,6 +33,7 @@ jobs:
           fi
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "base_version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "windows_name=deskunion-${VERSION}-windows-x86_64.zip" >> "$GITHUB_OUTPUT"
           echo "setup_name=deskunion-${VERSION}-windows-x86_64-setup.exe" >> "$GITHUB_OUTPUT"
 
@@ -121,6 +122,7 @@ jobs:
 
           MSYS2_ARG_CONV_EXCL='*' iscc \
             "/DAppVersion=${{ steps.names.outputs.version }}" \
+            "/DAppVersionInfo=${{ steps.names.outputs.base_version }}" \
             "/DSourceDir=${source_dir}" \
             "/DOutputDir=${output_dir}" \
             "/DSetupIconFile=${setup_icon_file}" \

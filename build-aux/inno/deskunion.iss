@@ -2,12 +2,16 @@
 ;
 ; Preprocessor defines passed by CI:
 ;   AppVersion    — e.g. "0.1.0"
+;   AppVersionInfo — numeric x.y.z, because VersionInfoVersion rejects "-rc.1"
 ;   SourceDir     — path to the bundled Windows folder
 ;   OutputDir     — where to write the installer exe
 ;   SetupIconFile — optional .ico path
 
 #ifndef AppVersion
   #define AppVersion "0.1.0"
+#endif
+#ifndef AppVersionInfo
+  #define AppVersionInfo AppVersion
 #endif
 #ifndef SourceDir
   #define SourceDir "..\..\target\windows\deskunion"
@@ -21,7 +25,7 @@ AppName=DeskUnion
 AppVersion={#AppVersion}
 AppVerName=DeskUnion
 AppId={{B9B448DF-64D3-4E7A-BD99-1D9B5E29C518}
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#AppVersionInfo}
 AppPublisher=LuminusOS
 AppPublisherURL=https://github.com/luminusOS/deskunion
 AppSupportURL=https://github.com/luminusOS/deskunion/issues
