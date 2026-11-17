@@ -3,9 +3,9 @@ use deskunion_ipc::AudioDeviceInfo;
 /// kbps choices backing `audio_bitrate_combo`, in encode order — see
 /// `deskunion/DESKUNION_AUDIO_PLAN.md` §7.4. Values are bits/sec, matching
 /// `FrontendRequest::UpdateAudioSettings`'s `bitrate` field.
-pub const AUDIO_BITRATES: [u32; 5] = [64_000, 96_000, 128_000, 192_000, 256_000];
+pub(crate) const AUDIO_BITRATES: [u32; 5] = [64_000, 96_000, 128_000, 192_000, 256_000];
 
-pub fn audio_bitrate_index(bitrate: u32) -> u32 {
+pub(crate) fn audio_bitrate_index(bitrate: u32) -> u32 {
     AUDIO_BITRATES
         .iter()
         .position(|&b| b == bitrate)
@@ -33,7 +33,7 @@ fn audio_device_labels(devices: &[AudioDeviceInfo], configured: Option<&str>) ->
     labels
 }
 
-pub fn audio_device_model(
+pub(crate) fn audio_device_model(
     devices: &[AudioDeviceInfo],
     configured: Option<&str>,
 ) -> gtk::StringList {
@@ -41,7 +41,7 @@ pub fn audio_device_model(
     gtk::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
-pub fn audio_device_index(devices: &[AudioDeviceInfo], id: Option<&str>) -> u32 {
+pub(crate) fn audio_device_index(devices: &[AudioDeviceInfo], id: Option<&str>) -> u32 {
     match id {
         None => 0,
         Some(id) => devices
@@ -53,7 +53,7 @@ pub fn audio_device_index(devices: &[AudioDeviceInfo], id: Option<&str>) -> u32 
 
 /// Index zero selects the default; an unavailable configured device is kept
 /// after the enumerated devices so it cannot masquerade as the default.
-pub fn selected_audio_device(
+pub(crate) fn selected_audio_device(
     devices: &[AudioDeviceInfo],
     selected: u32,
     configured: Option<&str>,

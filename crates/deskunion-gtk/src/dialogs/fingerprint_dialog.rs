@@ -50,7 +50,7 @@ impl SimpleComponent for FingerprintDialogModel {
         #[name(root)]
         adw::AlertDialog {
             set_heading: Some("Add authorized device"),
-            set_body: "Enter the certificate fingerprint shown on the other device.",
+            set_body: "Enter the fingerprint shown on the other computer.",
             add_response: ("cancel", "_Cancel"),
             add_response: ("confirm", "C_onfirm"),
             set_response_appearance: ("confirm", adw::ResponseAppearance::Suggested),
@@ -100,7 +100,7 @@ impl SimpleComponent for FingerprintDialogModel {
                     set_margin_end: 6,
                     add_css_class: "dim-label",
                     add_css_class: "caption",
-                    set_label: "Format: 32 colon-separated hex bytes (aa:bb:…) or 64 hex characters",
+                    set_label: "32 hex bytes, such as aa:bb:…",
                     set_visible: true,
                 },
             },

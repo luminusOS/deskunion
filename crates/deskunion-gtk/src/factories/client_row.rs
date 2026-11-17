@@ -6,7 +6,7 @@ use deskunion_ipc::{ClientConfig, ClientHandle, ClientState, Position};
 
 use crate::ping::{PingLevel, ping_description, ping_label};
 
-const NO_HOSTNAME_TITLE: &str = "No hostname";
+pub const NO_HOSTNAME_TITLE: &str = "No hostname";
 const PORT_ERROR: &str = "Enter a port from 1 to 65535";
 
 fn position_from_selected(selected: u32) -> Position {
@@ -293,7 +293,6 @@ impl FactoryComponent for ClientRowModel {
 
             add_row = &adw::SwitchRow {
                 set_title: "Enabled",
-                set_subtitle: "Route input events to this client",
                 #[watch]
                 #[block_signal(active_handler)]
                 set_active: self.active,

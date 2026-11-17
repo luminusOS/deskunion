@@ -67,7 +67,7 @@ impl SimpleComponent for AddClientDialogModel {
         #[name(root)]
         adw::AlertDialog {
             set_heading: Some("Add a client"),
-            set_body: "Pair an authorized device by its certificate fingerprint. A client shows its fingerprint on its Connection page.",
+            set_body: "Enter the fingerprint shown in the client's settings.",
             add_response: ("cancel", "_Cancel"),
             add_response: ("add", "_Add"),
             set_response_appearance: ("add", adw::ResponseAppearance::Suggested),
@@ -124,7 +124,7 @@ impl SimpleComponent for AddClientDialogModel {
                     set_margin_end: 6,
                     add_css_class: "dim-label",
                     add_css_class: "caption",
-                    set_label: "Format: 32 colon-separated hex bytes (aa:bb:…) or 64 hex characters",
+                    set_label: "32 hex bytes, such as aa:bb:…",
                     set_visible: true,
                 },
             },

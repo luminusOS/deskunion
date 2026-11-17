@@ -285,7 +285,14 @@ fn show_shortcuts_dialog(parent: Option<&gtk::Window>) {
         .accelerator("<Control>q")
         .build();
 
+    // the default release bind; it only differs when config.toml sets one
+    let sc_release = gtk::ShortcutsShortcut::builder()
+        .title("Return Control to This Computer")
+        .accelerator("<Control><Shift><Super><Alt>")
+        .build();
+
     general_group.append(&sc_shortcuts);
+    general_group.append(&sc_release);
     general_group.append(&sc_quit);
 
     let nav_group = gtk::ShortcutsGroup::builder().title("Navigation").build();

@@ -17,23 +17,6 @@ impl ServerRetry {
             format!("retrying in {}", delay_text(self.in_secs))
         }
     }
-
-    pub fn status_text(&self, hostname: &str, port: u16) -> String {
-        if self.awaiting_authorization {
-            return format!(
-                "Waiting for this computer to be authorized on {hostname}. Trying again in {}",
-                delay_text(self.in_secs)
-            );
-        }
-        let wait = if self.in_secs <= 1 {
-            "Reconnecting…".to_string()
-        } else {
-            format!("Retrying in {}", delay_text(self.in_secs))
-        };
-        format!(
-            "Can't reach {hostname}:{port}. {wait}. Check the address and that UDP port {port} is allowed in the server's firewall"
-        )
-    }
 }
 
 fn delay_text(secs: u32) -> String {
@@ -77,17 +60,5 @@ mod tests {
             awaiting_authorization: true,
         };
         assert_eq!(waiting.short_text(), "waiting for authorization");
-        let status = waiting.status_text("desk", 4242);
-        assert!(status.contains("authorized on desk"), "{status}");
-        assert!(status.contains("15 s"), "{status}");
-        assert!(!status.contains("firewall"), "{status}");
-    }
-
-    #[test]
-    fn the_status_text_names_the_endpoint_and_the_wait() {
-        let status = retry(10).status_text("desk", 4242);
-        assert!(status.contains("desk:4242"), "{status}");
-        assert!(status.contains("Retrying in 10 s"), "{status}");
-        assert!(status.contains("UDP port 4242"), "{status}");
     }
 }

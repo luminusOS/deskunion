@@ -174,8 +174,14 @@ follows the device clock. Behind the `audio` cargo feature (on by default).
 
 The Rust/Relm4 frontend, four pages: Connections, Audio, Logs and Settings.
 
-- `app/mod.rs`: the `AppModel` component, its message handling and the state
-  derived from `FrontendEvent`s.
+- `app/mod.rs`: the window. An `AdwNavigationSplitView` that collapses below
+  600sp, so on a phone the sidebar fills the window and pages open over it; the
+  dialogs and toasts the pages share; the tray.
+- `app/session.rs`: `Session`, the sharing state every page reads (role, port,
+  capture and emulation, the user's Start/Stop intent, the server link, client
+  summaries) and the status line derived from it; pure and unit tested.
+- `app/pages/`: one Relm4 component per page (`connections`, `audio`, `logs`,
+  `settings`), each owning its widgets and the state only it shows.
 - `screen_arrangement/`: the drag-and-drop canvas where screens are placed on the
   four edges.
 - `factories/`: list rows (clients, parked devices, incoming devices, audio
@@ -372,17 +378,24 @@ flowchart LR
     Svc[Service] -->|FrontendEvent| Reader[blocking reader thread]
     Reader --> Chan[async channel]
     Chan --> App[AppModel::update]
+    App -->|Session::apply| Session
+    App -->|Session, FrontendEvent| Pages[Connections, Audio, Logs, Settings]
+    Pages -->|PageOutput| App
     App -->|FrontendRequest| Svc
-    App --> View[widgets, post_view]
-    View --> Tray["tray::publish(TrayInfo)"]
+    App --> Tray["tray::publish(TrayInfo)"]
     Tray --> Render[ksni / tray-icon]
     Render -->|TrayCommand| App
 ```
 
-The model is the only owner of UI state. After every update `post_view`
-publishes a `TrayInfo` (mode, whether sharing runs, status line, clients) to the
-tray, which redraws only when it changed; tray actions come back as
-`AppMsg::Tray` and reuse the requests the window already sends.
+The window owns the `Session`. Each `FrontendEvent` is applied to it first and
+then forwarded to every page, so a page handling an event already holds the
+session that event leads to; the window pushes a new `Session` to the pages
+only when it changed. Pages never talk to the service or to each other: they
+send `PageOutput` (a request, a toast, a role change, Start/Stop, a dialog to
+open, or the client list for the tray) and the window acts on it. After every
+update `post_view` publishes a `TrayInfo` (role, whether sharing runs, status
+line, clients) to the tray, which redraws only when it changed; tray actions
+come back as `AppMsg::Tray` and reuse the same requests.
 
 ## Windows Specifics
 

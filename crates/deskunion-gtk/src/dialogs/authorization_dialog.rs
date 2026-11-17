@@ -43,7 +43,7 @@ impl SimpleComponent for AuthorizationDialogModel {
         #[name(root)]
         adw::AlertDialog {
             set_heading: Some("Allow this device to connect?"),
-            set_body: "Another computer wants to share this computer's keyboard and mouse. Allow it only if the fingerprint matches the one shown on that computer.",
+            set_body: "Allow it only if this fingerprint matches the one shown on that computer.",
             add_response: ("cancel", "_Cancel"),
             add_response: ("authorize", "_Allow"),
             set_default_response: Some("cancel"),

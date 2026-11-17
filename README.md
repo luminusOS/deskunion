@@ -38,7 +38,7 @@ Focus lies on performance, ease of use and a maintainable implementation that ca
 <picture>
     <source media="(prefers-color-scheme: dark)" srcset="/screenshots/ui-server-dark.png?raw=true">
     <source media="(prefers-color-scheme: light)" srcset="/screenshots/ui-server-light.png?raw=true">
-    <img alt="DeskUnion Connections page with no paired clients" src="/screenshots/ui-server-dark.png">
+    <img alt="DeskUnion Connections page of a server with two clients" src="/screenshots/ui-server-dark.png">
 </picture>
 
 
@@ -476,13 +476,14 @@ the gtk frontend (see conditional compilation).
 
 By default the gtk frontend will open when running `deskunion`.
 
-On a fresh, unconfigured installation, choose **Use as Server** or **Use as
-Client** before input sharing starts. Existing configurations retain their
-operation mode. The sidebar becomes an overlay in narrow windows; reopen it
-with the navigation button in the header bar.
+On a fresh, unconfigured installation, choose **Share this keyboard and mouse**
+(server) or **Use another computer's keyboard** (client) before input sharing
+starts. Existing configurations retain their role; change it later under
+**Settings → Role**. In narrow windows, such as on a phone, the sidebar fills
+the window and each page opens over it with a back button.
 
-The machine whose mouse and keyboard you want to share runs in **server** mode
-(`Operation mode` selector in the sidebar): it listens for incoming connections
+The machine whose mouse and keyboard you want to share runs in **server** mode:
+it listens for incoming connections
 on UDP port `4242` (configurable). Each machine you want to control runs in
 **client** mode: enter the server's hostname or IP address and port in the
 **Server** section and click `Connect`. The client only dials out, so it works
@@ -491,7 +492,7 @@ and needs no firewall changes.
 
 When a client connects for the first time, an authorization dialog pops up on
 the **server** showing the client's certificate fingerprint (also visible on
-the client under **Settings → Identity**, of the form "aa:bb:cc:..."). Authorize
+the client under **Settings → This computer**, of the form "aa:bb:cc:..."). Authorize
 it — the device is then paired automatically and placed on the first free
 screen edge, preferring the right one (right, then left, top, bottom). This
 persists the fingerprint binding in the configuration file (see
@@ -499,7 +500,7 @@ persists the fingerprint binding in the configuration file (see
 any time from the Connections page.
 
 Only when all four edges are already taken does the device show up under
-"Devices awaiting a position" on the server's Connections page and wait for you to
+"Waiting for a position" on the server's Connections page and wait for you to
 pick an edge by hand.
 
 Paired clients announce their OS computer name over the authenticated connection
@@ -565,7 +566,7 @@ systemctl --user enable --now deskunion.service
 To automatically load clients on startup, the file `$XDG_CONFIG_HOME/deskunion/config.toml` is parsed.
 `$XDG_CONFIG_HOME` defaults to `~/.config/`.
 
-The GTK sidebar exposes an **Operation mode** selector:
+The GTK frontend sets the role under **Settings → Role**:
 
 - `server` captures this computer's keyboard and pointer, listens for incoming
   client connections on UDP port `4242` and sends input to paired clients;

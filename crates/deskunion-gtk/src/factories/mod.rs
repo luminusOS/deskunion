@@ -5,7 +5,9 @@ mod key_row;
 mod parked_device_row;
 
 pub use audio_stream_row::{AudioStreamRowInit, AudioStreamRowInput, AudioStreamRowModel};
-pub use client_row::{ClientRowInit, ClientRowInput, ClientRowModel, ClientRowOutput};
+pub use client_row::{
+    ClientRowInit, ClientRowInput, ClientRowModel, ClientRowOutput, NO_HOSTNAME_TITLE,
+};
 pub use incoming_device_row::{
     IncomingDeviceRowInit, IncomingDeviceRowInput, IncomingDeviceRowModel,
 };

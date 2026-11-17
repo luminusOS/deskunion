@@ -61,7 +61,7 @@ impl FactoryComponent for ParkedDeviceRowModel {
     view! {
         root = adw::ActionRow {
             set_title: &self.addr,
-            set_subtitle: &format!("{} · waiting for a screen position", self.fingerprint),
+            set_subtitle: &self.fingerprint,
             add_prefix = &gtk::Image {
                 set_icon_name: Some("computer-symbolic"),
                 set_pixel_size: 24,
