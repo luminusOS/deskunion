@@ -4,36 +4,15 @@ Prebuilt packages for Linux, Windows and macOS are on the [releases page](https:
 
 To build from source, see [building.md](building.md).
 
-## Arch Linux
+## Linux
 
-DeskUnion is in the [official repositories](https://archlinux.org/packages/extra/x86_64/deskunion/):
-
-```sh
-pacman -S deskunion
-```
-
-The AUR has a prerelease that follows `main`:
+Install a Flatpak bundle or run an AppImage. Both are built for x86_64 and aarch64.
 
 ```sh
-paru -S deskunion-git
+flatpak install --user deskunion-<version>-linux-x86_64.flatpak
 ```
 
-## Fedora
-
-Enable the [Terra repository](https://terra.fyralabs.com), then:
-
-```sh
-dnf install deskunion
-```
-
-## Nix
-
-- nixpkgs: [search.nixos.org](https://search.nixos.org/packages?channel=unstable&show=deskunion&from=0&size=50&sort=relevance&type=packages&query=deskunion)
-- flake: [nix/README.md](../nix/README.md)
-
-## Flatpak and AppImage
-
-Each release ships Flatpak bundles and AppImages for x86_64 and aarch64.
+For a Nix flake, see [nix/README.md](../nix/README.md).
 
 ## Windows
 

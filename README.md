@@ -20,7 +20,7 @@
   <a href="https://github.com/luminusOS/deskunion/actions/workflows/release.yml"><img alt="Release" src="https://github.com/luminusOS/deskunion/actions/workflows/release.yml/badge.svg"></a>
 </p>
 
-DeskUnion shares one mouse and keyboard across several computers on a local network, like Universal Control on Apple devices. It is an open-source alternative to [Synergy](https://symless.com/synergy), [ShareMouse](https://www.sharemouse.com/de/), [Deskflow](https://github.com/deskflow/deskflow) and [Input Leap](https://github.com/input-leap). It is written in Rust and has a GTK4 and libadwaita frontend, optional client-to-server audio streaming, and builds for Linux, Windows, macOS and Android.
+DeskUnion shares one mouse and keyboard across several computers on a local network, like Universal Control on Apple devices. It is an open-source alternative to [Synergy](https://symless.com/synergy), [ShareMouse](https://www.sharemouse.com/de/), [Deskflow](https://github.com/deskflow/deskflow) and [Input Leap](https://github.com/input-leap). DeskUnion is a hard fork of [lan-mouse](https://github.com/feschber/lan-mouse) by Ferdinand Schober. It is written in Rust and has a GTK4 and libadwaita frontend, optional client-to-server audio streaming, and builds for Linux, Windows, macOS and Android.
 
 <picture>
     <source media="(prefers-color-scheme: dark)" srcset="/screenshots/ui-server-dark.png?raw=true">
@@ -39,14 +39,13 @@ DeskUnion shares one mouse and keyboard across several computers on a local netw
 
 ## Install
 
-Download a package from the [releases page](https://github.com/luminusOS/deskunion/releases), or use your distribution:
+Download a package from the [releases page](https://github.com/luminusOS/deskunion/releases): Flatpak and AppImage for Linux (x86_64 and aarch64), an installer and a ZIP for Windows, and APKs for Android. For example, with the Flatpak bundle:
 
 ```sh
-pacman -S deskunion        # Arch Linux
-dnf install deskunion      # Fedora, with the Terra repository enabled
+flatpak install --user deskunion-<version>-linux-x86_64.flatpak
 ```
 
-Nix, Flatpak, AppImage, Windows, macOS, Android and manual installs are covered in [docs/installation.md](docs/installation.md). To compile it yourself, see [docs/building.md](docs/building.md).
+DeskUnion is not in the Luminus Flatpak repository, Arch Linux, Fedora or nixpkgs yet. Other install methods are in [docs/installation.md](docs/installation.md), and building from source is in [docs/building.md](docs/building.md).
 
 ## Quick start
 
