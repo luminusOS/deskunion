@@ -202,25 +202,35 @@ impl ClientRowModel {
         self.active_addr.is_some()
     }
 
-    /// Connection details. Latency is real data from the audio stream
-    /// and is shown only while streaming.
     fn connection_subtitle(&self) -> String {
-        let Some(addr) = self.active_addr.as_deref() else {
-            return String::new();
-        };
-        let ip = addr.rsplit_once(':').map(|(ip, _)| ip).unwrap_or(addr);
-        let mut parts = vec![ip.to_string()];
-        if self.audio_active
-            && let Some(ms) = self.audio_latency_ms
-        {
-            parts.push(format!("audio buffer {ms} ms"));
-        }
-        parts.push("TLS active".to_string());
-        if self.audio_active {
-            parts.push("sending audio".to_string());
-        }
-        parts.join(" · ")
+        connection_subtitle(
+            self.active_addr.as_deref(),
+            self.audio_active,
+            self.audio_latency_ms,
+        )
     }
+}
+
+/// Connection details. Latency is real data from the audio stream and is
+/// shown only while streaming.
+fn connection_subtitle(
+    addr: Option<&str>,
+    audio_active: bool,
+    audio_latency_ms: Option<u32>,
+) -> String {
+    let Some(addr) = addr else {
+        return "Offline".to_string();
+    };
+    let ip = addr.rsplit_once(':').map(|(ip, _)| ip).unwrap_or(addr);
+    let mut parts = vec![ip.to_string()];
+    if audio_active && let Some(ms) = audio_latency_ms {
+        parts.push(format!("audio buffer {ms} ms"));
+    }
+    parts.push("TLS active".to_string());
+    if audio_active {
+        parts.push("sending audio".to_string());
+    }
+    parts.join(" · ")
 }
 
 #[relm4::factory(pub)]
@@ -479,6 +489,23 @@ mod tests {
 
     fn new_draft(hostname: Option<&str>, port: u16) -> ClientDraft {
         ClientDraft::new(hostname.map(str::to_owned), port)
+    }
+
+    #[test]
+    fn a_client_that_is_not_connected_says_so_in_words() {
+        assert_eq!(connection_subtitle(None, false, None), "Offline");
+    }
+
+    #[test]
+    fn a_connected_client_lists_its_address_and_security() {
+        assert_eq!(
+            connection_subtitle(Some("192.168.1.4:50798"), false, None),
+            "192.168.1.4 · TLS active"
+        );
+        assert_eq!(
+            connection_subtitle(Some("192.168.1.4:50798"), true, Some(42)),
+            "192.168.1.4 · audio buffer 42 ms · TLS active · sending audio"
+        );
     }
 
     #[test]
