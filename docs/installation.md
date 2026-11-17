@@ -6,11 +6,17 @@ To build from source, see [building.md](building.md).
 
 ## Linux
 
-Install a Flatpak bundle or run an AppImage. Both are built for x86_64 and aarch64.
+The Luminus Flatpak repository carries the stable releases:
 
 ```sh
-flatpak install --user deskunion-<version>-linux-x86_64.flatpak
+flatpak remote-add --user --if-not-exists luminus https://flatpak.luminusos.org/stable/luminus-stable.flatpakrepo
+flatpak install --user luminus org.luminusos.DeskUnion
+flatpak run org.luminusos.DeskUnion
 ```
+
+Each release also has Flatpak bundles and AppImages for x86_64 and aarch64 on the releases page. Install a bundle with `flatpak install --user deskunion-<version>-linux-x86_64.flatpak`.
+
+An earlier build used the application id `io.github.luminusos.DeskUnion`. It does not update to the new id, so remove it with `flatpak remove io.github.luminusos.DeskUnion` before installing.
 
 For a Nix flake, see [nix/README.md](../nix/README.md).
 

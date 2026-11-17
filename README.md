@@ -39,13 +39,14 @@ DeskUnion shares one mouse and keyboard across several computers on a local netw
 
 ## Install
 
-Download a package from the [releases page](https://github.com/luminusOS/deskunion/releases): Flatpak and AppImage for Linux (x86_64 and aarch64), an installer and a ZIP for Windows, and APKs for Android. For example, with the Flatpak bundle:
+On Linux, install the Flatpak from the Luminus repository:
 
 ```sh
-flatpak install --user deskunion-<version>-linux-x86_64.flatpak
+flatpak remote-add --user --if-not-exists luminus https://flatpak.luminusos.org/stable/luminus-stable.flatpakrepo
+flatpak install --user luminus org.luminusos.DeskUnion
 ```
 
-DeskUnion is not in the Luminus Flatpak repository, Arch Linux, Fedora or nixpkgs yet. Other install methods are in [docs/installation.md](docs/installation.md), and building from source is in [docs/building.md](docs/building.md).
+AppImage, Windows, macOS and Android builds are on the [releases page](https://github.com/luminusOS/deskunion/releases). See [docs/installation.md](docs/installation.md) for the details and [docs/building.md](docs/building.md) to compile it yourself.
 
 ## Quick start
 
