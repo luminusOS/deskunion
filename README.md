@@ -67,7 +67,7 @@ Only the server needs an open firewall port. Clients dial out and work through N
 
 ## Credits
 
-- [lan-mouse](https://github.com/feschber/lan-mouse) by Ferdinand Schober, the project DeskUnion was forked from. Its capture and emulation backends and its pairing design are the base of this code, and fixes from upstream are ported when they apply.
+- [lan-mouse](https://github.com/feschber/lan-mouse) by Ferdinand Schober, the project DeskUnion was forked from. Fixes from upstream are ported when they apply.
 - [WebRTC.rs](https://github.com/webrtc-rs/webrtc) for the DTLS transport and [cpal](https://github.com/RustAudio/cpal) for audio capture and playback.
 - [Deskflow](https://github.com/deskflow/deskflow), whose reconnection schedule the client follows.
 - [rohitsangwan01](https://github.com/rohitsangwan01), for the [deskunion-mobile](https://github.com/rohitsangwan01/deskunion-mobile) proof of concept.
